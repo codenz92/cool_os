@@ -2,7 +2,6 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Move the kernel start address to 1MB + 1MB offset to avoid collisions */
     . = 0x100000;
 
     .text :

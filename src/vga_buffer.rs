@@ -114,6 +114,10 @@ impl Writer {
         }
         self.column_position = 0;
     }
+
+    pub fn set_color(&mut self, fore: Color, back: Color) {
+        self.color_code = ColorCode::new(fore, back);
+    }
 }
 
 impl fmt::Write for Writer {
@@ -141,6 +145,9 @@ pub fn clear_screen() {
 }
 pub fn backspace() {
     WRITER.lock().backspace();
+}
+pub fn set_color(foreground: Color, background: Color) {
+    WRITER.lock().set_color(foreground, background);
 }
 
 #[macro_export]

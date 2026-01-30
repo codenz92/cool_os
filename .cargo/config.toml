@@ -2,12 +2,12 @@
 target = "x86_64-unknown-none.json"
 
 [unstable]
-build-std = ["core", "compiler_builtins"]
+# Added "alloc" here to fix the "crate not found" error
+build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "none"))']
 runner = "bootimage runner"
-# Simplified flags: disable SSE/MMX and enable soft-float
 rustflags = [
     "-C", "target-feature=-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,+soft-float"
 ]
