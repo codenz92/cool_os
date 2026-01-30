@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock file (Optional: some prefer to keep it for binaries)
+# Cargo.lock
+
+# OS/Build Specific
+*.bin
+*.iso
+*.img
+
+# macOS system files (since you're on a Mac)
+.DS_Store
