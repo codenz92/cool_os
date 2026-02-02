@@ -45,6 +45,10 @@ To support dynamic allocation in a `no_std` environment, coolOS implements a thr
 | `uptime` | Shows system ticks since boot. |
 | `reboot` | Triggers a hardware reset via the PS/2 keyboard controller. |
 
+
+<img width="735" height="433" alt="image" src="https://github.com/user-attachments/assets/dd88a04d-e211-46e4-bf6f-8166c41e3628" />
+
+
 ## 🚀 Getting Started
 
 ### Prerequisites
