@@ -57,14 +57,23 @@ static CURSOR: Mutex<Cursor> = Mutex::new(Cursor::new());
 /// Initialise the PS/2 mouse and draw the cursor at the centre of the screen.
 pub fn init() {
     unsafe { init_hardware(); }
-    // Draw the initial cursor.
-    let mut c = CURSOR.lock();
-    save_pixels(&mut c);
-    draw_cursor(&c);
-    c.visible = true;
+
+    // Draw the initial cursor with interrupts disabled.
+    //
+    // Bug fixed: after init_hardware() unmasks IRQ12, an IRQ can fire before
+    // we finish drawing the cursor.  The IRQ12 handler also locks CURSOR.
+    // If it fires while we hold the lock, the handler spins forever with
+    // interrupts disabled → deadlock.  without_interrupts prevents that.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut c = CURSOR.lock();
+        save_pixels(&mut c);
+        draw_cursor(&c);
+        c.visible = true;
+    });
 }
 
-/// Process a decoded 3-byte PS/2 packet.  Called from the IRQ12 handler.
+/// Process a decoded 3-byte PS/2 packet.  Called from the IRQ12 handler
+/// (interrupts already disabled by the CPU on handler entry).
 pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
     // Bit 3 of byte 0 is always 1 — if not, we're out of sync.
     if b0 & 0x08 == 0 {
@@ -101,52 +110,81 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
 
 // ── Hardware init ─────────────────────────────────────────────────────────────
 
+/// Spin until the PS/2 input buffer (bit 1 of status) is empty.
+/// Has a timeout so a broken controller can't hang the kernel forever.
 unsafe fn wait_for_write() {
     let mut status: Port<u8> = Port::new(0x64);
-    while status.read() & 0x02 != 0 {}
+    for _ in 0..100_000u32 {
+        if status.read() & 0x02 == 0 {
+            return;
+        }
+    }
 }
 
+/// Spin until the PS/2 output buffer (bit 0 of status) has data.
+/// Has a timeout — returns even if no data arrives.
 unsafe fn wait_for_read() {
     let mut status: Port<u8> = Port::new(0x64);
-    while status.read() & 0x01 == 0 {}
+    for _ in 0..100_000u32 {
+        if status.read() & 0x01 != 0 {
+            return;
+        }
+    }
 }
 
 unsafe fn init_hardware() {
     let mut cmd:  Port<u8> = Port::new(0x64);
     let mut data: Port<u8> = Port::new(0x60);
 
-    // 1. Enable the auxiliary (mouse) device.
+    // 1. Disable keyboard scanning so its scancodes cannot land in the output
+    //    buffer while we are waiting for PS/2 controller responses.
+    //
+    //    Bug fixed: without this, a keypress during init causes wait_for_read()
+    //    to return early and we read a scancode as the CCB.  Writing it back
+    //    clears bit 0 (keyboard IRQ enable), silencing all future keypresses.
+    wait_for_write(); cmd.write(0xADu8); // disable keyboard
+
+    // 2. Flush any bytes that arrived before we disabled the keyboard.
+    for _ in 0..16u8 {
+        if cmd.read() & 0x01 == 0 {
+            break;
+        }
+        let _ = data.read();
+    }
+
+    // 3. Enable the auxiliary (mouse) device.
     wait_for_write(); cmd.write(0xA8u8);
 
-    // 2. Enable mouse interrupts: read the Controller Command Byte,
-    //    set bit 1 (IRQ12 enable) and clear bit 5 (disable mouse clock).
+    // 4. Read-modify-write the Controller Command Byte:
+    //    set bit 1 (enable IRQ12) and clear bit 5 (enable mouse clock).
     wait_for_write(); cmd.write(0x20u8);
     wait_for_read();
-    let mut ccb = data.read();
-    ccb |= 0x02;   // enable IRQ12
-    ccb &= !0x20;  // enable mouse clock
+    let ccb = data.read();
     wait_for_write(); cmd.write(0x60u8);
-    wait_for_write(); data.write(ccb);
+    wait_for_write(); data.write((ccb | 0x02) & !0x20);
 
-    // 3. Send 0xF6 (Set Defaults) to the mouse.
+    // 5. Send 0xF6 (Set Defaults) to the mouse.
     wait_for_write(); cmd.write(0xD4u8);
     wait_for_write(); data.write(0xF6u8);
-    wait_for_read();  let _ = data.read(); // ACK
+    wait_for_read(); let _ = data.read(); // ACK
 
-    // 4. Send 0xF4 (Enable Data Reporting) to the mouse.
+    // 6. Send 0xF4 (Enable Data Reporting) to the mouse.
     wait_for_write(); cmd.write(0xD4u8);
     wait_for_write(); data.write(0xF4u8);
-    wait_for_read();  let _ = data.read(); // ACK
+    wait_for_read(); let _ = data.read(); // ACK
 
-    // 5. Unmask IRQ12 (bit 4) on the secondary PIC, and IRQ2 (bit 2)
-    //    on the primary PIC so the cascade line is open.
-    let mut pic1_mask: Port<u8> = Port::new(0x21);
-    let m = pic1_mask.read();
-    pic1_mask.write(m & !(1 << 2));
+    // 7. Re-enable keyboard scanning.
+    wait_for_write(); cmd.write(0xAEu8);
 
+    // 8. Unmask IRQ12 (bit 4) on the secondary PIC, and ensure the cascade
+    //    line (bit 2) is open on the primary PIC.
     let mut pic2_mask: Port<u8> = Port::new(0xA1);
     let m = pic2_mask.read();
     pic2_mask.write(m & !(1 << 4));
+
+    let mut pic1_mask: Port<u8> = Port::new(0x21);
+    let m = pic1_mask.read();
+    pic1_mask.write(m & !(1 << 2));
 }
 
 // ── Cursor helpers ────────────────────────────────────────────────────────────
