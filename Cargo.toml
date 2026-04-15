@@ -1,5 +1,8 @@
 [workspace]
-members = ["disk-image"]
+# disk-image is intentionally excluded — it is a host-side build tool that
+# uses std and must NOT inherit the kernel workspace's x86_64-unknown-none
+# target or build-std settings.
+exclude = ["disk-image"]
 resolver = "2"
 
 [package]

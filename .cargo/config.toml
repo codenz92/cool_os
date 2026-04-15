@@ -2,4 +2,4 @@
 # Needed to accept a custom JSON target spec file (x86_64-unknown-none.json).
 json-target-spec = true
 # build-std is passed via -Z flags in the Makefile so it only applies to the
-# kernel build, not to the host-side disk-image crate.
+# kernel build, not to the host-side disk-image tool.

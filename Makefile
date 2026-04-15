@@ -17,8 +17,9 @@ build:
 	cargo build --target $(TARGET) \
 		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem
-	cargo run -p disk-image -- "$(KERNEL)"
+	(cd disk-image && cargo run -- "$(KERNEL)")
 
 clean:
 	cargo clean
 	rm -rf target
+	rm -rf disk-image/target
