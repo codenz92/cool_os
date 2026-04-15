@@ -357,10 +357,11 @@ fn s_put(s: &mut [u8], x: i32, y: i32, color: u8) {
 }
 
 fn s_fill(s: &mut [u8], x: i32, y: i32, w: i32, h: i32, color: u8) {
-    let x0 = x.max(0) as usize;
+    let x0 = (x.max(0) as usize).min(WIDTH);
     let y0 = y.max(0) as usize;
     let x1 = ((x + w).max(0) as usize).min(WIDTH);
     let y1 = ((y + h).max(0) as usize).min(HEIGHT);
+    if x0 >= x1 || y0 >= y1 { return; }
     for row in y0..y1 {
         let base = row * WIDTH;
         s[base + x0..base + x1].fill(color);
