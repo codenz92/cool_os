@@ -1,7 +1,4 @@
-
-
-https://github.com/user-attachments/assets/13f6d9bf-6710-47c9-8f77-65353ecb8c0b
-
+https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f
 # coolOS
 
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
