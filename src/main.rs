@@ -8,6 +8,7 @@ mod allocator;
 mod framebuffer;
 mod interrupts;
 mod memory;
+mod mouse;
 mod vga_buffer;
 
 use bootloader::{entry_point, BootInfo};
@@ -31,6 +32,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     crate::vga_buffer::clear_screen();
     println!("coolOS Shell v1.2 [Heap Online]");
     print!("> ");
+
+    mouse::init();
 
     loop {
         x86_64::instructions::hlt();

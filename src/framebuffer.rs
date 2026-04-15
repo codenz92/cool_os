@@ -41,6 +41,15 @@ pub fn put_pixel(x: usize, y: usize, color: u8) {
     }
 }
 
+#[inline]
+pub fn get_pixel(x: usize, y: usize) -> u8 {
+    if x < WIDTH && y < HEIGHT {
+        unsafe { FB.add(y * WIDTH + x).read_volatile() }
+    } else {
+        0
+    }
+}
+
 pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
     let x_end = (x + w).min(WIDTH);
     let y_end = (y + h).min(HEIGHT);

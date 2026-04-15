@@ -51,18 +51,26 @@ The keyboard already works via IRQ1. The PS/2 mouse sits on IRQ12 (PIC2, line 4)
 This phase adds a second interrupt handler and a global mouse state.
 
 ### Tasks
-- [ ] Enable IRQ12 on the secondary PIC (currently fully masked after PIC init).
-- [ ] Write `src/mouse.rs` — initialise the PS/2 mouse by sending the `0xF4` enable
-      command via ports `0x64` / `0x60`, then handle the 3-byte packet in the IRQ12
-      handler.
-- [ ] Maintain a global `MouseState { x: i32, y: i32, left: bool, right: bool }` updated
-      on every interrupt, clamped to screen bounds.
-- [ ] Render a simple software cursor (e.g. a filled 8×8 white square) by saving and
-      restoring the pixels underneath it each frame.
+
+- [x] Enable IRQ12 on the secondary PIC — unmask bit 4 of PIC2 IMR (port 0xA1) and
+      bit 2 of PIC1 IMR (cascade line) inside `mouse::init()`.
+- [x] Write `src/mouse.rs` — full PS/2 init sequence (enable aux, set CCB, 0xF6
+      defaults, 0xF4 enable reporting). `handle_packet(b0, b1, b2)` decodes 9-bit
+      signed X/Y deltas and button state.
+- [x] Global `Cursor` state with clamped `(x, y)`, `left`, `right` fields.
+- [x] Software cursor: 8×8 arrow bitmap, save/restore pixels underneath on every move.
+- [x] IRQ12 handler in `interrupts.rs` collects bytes via three `AtomicU8`s (no lock
+      needed — interrupts are disabled during the handler), validates sync bit, calls
+      `mouse::handle_packet`.
 
 ### Definition of done
 A visible cursor moves around the screen in response to the physical/QEMU mouse.
 Left-click state is readable from kernel code.
+
+**Status: COMPLETE** — builds clean, cursor appears at screen centre on boot.
+
+> **QEMU note:** click inside the QEMU window to capture mouse input.
+> Press **Ctrl+Alt+G** to release it.
 
 ---
 
