@@ -1,5 +1,0 @@
-{
-    "rust-analyzer.cargo.target": "x86_64-unknown-none.json",
-    "rust-analyzer.checkOnSave.allTargets": false,
-    "rust-analyzer.cargo.sysroot": "discover"
-}
