@@ -1,56 +1,70 @@
 # coolOS
 
-A 64-bit operating system kernel written in Rust, currently evolving from a text-mode
-shell into a graphical desktop OS with a windowing system.
+A 64-bit operating system kernel written in Rust that boots into a graphical
+desktop — windowed apps, a taskbar, a PS/2 mouse cursor, and a live system
+monitor, all running as bare-metal kernel code.
 
-See [ROADMAP.md](ROADMAP.md) for the full plan.
+See [ROADMAP.md](ROADMAP.md) for the full development history.
 
 ---
 
-## Current state (v1.2)
+## Current state (v1.5)
 
-The kernel boots into an interactive shell running over the VGA text buffer.
-Memory management, hardware interrupts, and a heap allocator are all functional.
+The OS boots directly into a graphical desktop running in VGA Mode 13h
+(320×200, 256 colours). A terminal window opens on boot; right-clicking the
+desktop spawns more apps from a context menu.
 
 ### Features
 
-- **Dynamic heap** — `LockedHeap` allocator enabling `String`, `Vec`, and `Box` in a `no_std` kernel.
-- **4-level paging** — `OffsetPageTable` maps physical frames into virtual address space.
-- **Physical frame allocator** — discovers usable RAM from the bootloader's E820 memory map.
-- **Custom IDT** — handles Breakpoint and Double Fault CPU exceptions.
-- **Hardware interrupts** — 8259 PIC configured for the system timer (IRQ0) and PS/2 keyboard (IRQ1).
-- **Thread-safe VGA driver** — `spin::Mutex`-protected text buffer with colour, scrolling, and `println!`.
-- **Interactive shell** — tokenizer, heap-backed command history, and the commands below.
+- **Pixel framebuffer** — VGA Mode 13h (320×200, 8 bpp) enabled by the
+  bootloader. Shadow-buffer compositing eliminates screen tearing: the full
+  frame is rendered in RAM and blitted to `0xA0000` in one `memcpy`.
+- **PS/2 mouse driver** — full hardware init sequence (CCB, 0xF6/0xF4),
+  9-bit signed X/Y deltas, IRQ12 packet collection via atomic bytes.
+- **Window manager** — z-ordered windows with focus-on-click, title-bar
+  dragging, and a close button. Each window has its own pixel back-buffer.
+- **Taskbar** — 12 px bar at the bottom; one button per open window, click
+  to raise and focus.
+- **Right-click context menu** — spawns any of the four built-in apps.
+- **Shadow cursor** — 8×8 arrow sprite drawn on top of every frame.
+- **Dynamic heap** — `LockedHeap` allocator; `String`, `Vec`, `Box` all work.
+- **4-level paging** — `OffsetPageTable` + bootloader E820 frame allocator.
+- **IDT** — Breakpoint, Double Fault, Timer (IRQ0), Keyboard (IRQ1),
+  Mouse (IRQ12).
 
-### Shell commands
+### Apps
+
+| App | Open via | Description |
+| :-- | :------- | :---------- |
+| **Terminal** | boot / right-click | Interactive shell — type commands, press Enter |
+| **System Monitor** | right-click | Live CPU vendor, heap usage, and uptime |
+| **Text Viewer** | right-click | Scrollable "About" doc; `j`/`k` to scroll |
+| **Color Picker** | right-click | Clickable 16-colour VGA palette grid |
+
+### Terminal commands
 
 | Command | Description |
 | :------ | :---------- |
-| `help` | List available commands. |
-| `clear` | Clear the screen. |
-| `echo <text>` | Print text back. |
-| `color <name>` | Change text colour (`red`, `green`, `blue`, `yellow`, `white`). |
-| `info` | Show CPU vendor and heap usage. |
-| `uptime` | Show timer ticks since boot. |
-| `reboot` | Hardware reset. |
-
-![coolOS shell](https://github.com/user-attachments/assets/dd88a04d-e211-46e4-bf6f-8166c41e3628)
+| `help` | List available commands |
+| `echo <text>` | Print text |
+| `info` | CPU vendor and heap usage |
+| `uptime` | Timer ticks and approximate seconds since boot |
+| `clear` | Clear the terminal |
+| `reboot` | Hardware reset |
 
 ---
 
 ## Roadmap
 
-The project is being built toward a graphical desktop OS. The five phases are:
+| Phase | Deliverable | Status |
+| :---: | :---------- | :----- |
+| 1 | Pixel framebuffer + font rendering | **Done** |
+| 2 | PS/2 mouse driver + on-screen cursor | **Done** |
+| 3 | Window manager — draggable windows, focus, close | **Done** |
+| 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
+| 5 | Applications — system monitor, text viewer, color picker | **Done** |
 
-| Phase | Goal | Status |
-| ----- | ---- | ------ |
-| 1 | Pixel framebuffer + font rendering | Not started |
-| 2 | PS/2 mouse driver + on-screen cursor | Not started |
-| 3 | Window manager — draggable windows | Not started |
-| 4 | Desktop shell — taskbar, context menu, terminal window | Not started |
-| 5 | Applications — terminal, system monitor, text viewer | Not started |
-
-Full details in [ROADMAP.md](ROADMAP.md).
+Full details and task checklists in [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -72,16 +86,34 @@ brew install qemu
 make run
 ```
 
-### Architecture
+Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to
+release it.
+
+---
+
+## Architecture
 
 ```text
 src/
-  main.rs          # Kernel entry point, hardware init, heap setup
-  interrupts.rs    # IDT, PIC, keyboard + timer handlers, shell command processor
-  memory.rs        # Page table init, physical frame allocator
-  allocator.rs     # Heap allocator (linked_list_allocator wrapper)
-  vga_buffer.rs    # Text-mode VGA driver (will be replaced in Phase 1)
+  main.rs            Kernel entry point — heap init, window setup, main loop
+  interrupts.rs      IDT, PIC, keyboard/timer/mouse handlers
+  memory.rs          Page table init, physical frame allocator
+  allocator.rs       Heap allocator (linked_list_allocator wrapper)
+  framebuffer.rs     VGA Mode 13h pixel driver — put_pixel, draw_char, scroll
+  vga_buffer.rs      Text layer over framebuffer — used by panic handler
+  mouse.rs           PS/2 mouse hardware init and packet decoder
+  wm/
+    mod.rs           Public WM API — request_repaint, compose_if_needed
+    compositor.rs    WindowManager — shadow buffer, z-order, drag, taskbar,
+                     context menu, AppWindow enum dispatch
+    window.rs        Window struct — back-buffer, hit tests
+  apps/
+    terminal.rs      TerminalApp — keyboard input, shell commands, text render
+    sysmon.rs        SysMonApp   — live CPU/heap/uptime display
+    textviewer.rs    TextViewerApp — scrollable static text
+    colorpicker.rs   ColorPickerApp — clickable VGA palette swatches
 ```
 
-The bootloader crate handles the transition from real mode to 64-bit long mode and
-passes a `BootInfo` struct (physical memory map, memory offset) to `kernel_main`.
+The bootloader sets VGA Mode 13h before jumping to the kernel. The kernel
+identity-maps the framebuffer at `0xA0000` and writes pixels directly. All
+app code runs in kernel mode — no scheduler, no privilege separation.
