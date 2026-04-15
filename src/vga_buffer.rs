@@ -1,97 +1,52 @@
-/// Text-rendering layer backed by the Mode 13h pixel framebuffer.
+/// Text-rendering layer backed by the 32bpp linear framebuffer.
 ///
-/// Public API is identical to the old VGA-text implementation so that
-/// `main.rs`, `interrupts.rs`, and the `print!`/`println!` macros need
-/// no changes.
+/// Used by the `print!`/`println!` macros and the panic handler.
+/// Writes directly to the hardware framebuffer (not through the WM shadow).
 
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::framebuffer::{self, COLS, ROWS};
-
-// ── Colour ────────────────────────────────────────────────────────────────────
-
-/// Logical colours — values map directly to VGA Mode 13h palette indices 0-15.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Color {
-    Black     = 0,
-    Blue      = 1,
-    Green     = 2,
-    Cyan      = 3,
-    Red       = 4,
-    Magenta   = 5,
-    Brown     = 6,
-    LightGray = 7,
-    DarkGray  = 8,
-    LightBlue = 9,
-    LightGreen  = 10,
-    LightCyan   = 11,
-    LightRed    = 12,
-    Pink        = 13,
-    Yellow      = 14,
-    White       = 15,
-}
-
-// ── Writer ────────────────────────────────────────────────────────────────────
+use crate::framebuffer;
 
 pub struct Writer {
     col: usize,
     row: usize,
-    fg:  u8,
-    bg:  u8,
+    fg:  u32,
+    bg:  u32,
+}
+
+/// Write a byte to QEMU's debug console (I/O port 0xE9).
+/// Requires `-debugcon stdio` in the QEMU command.
+#[inline(always)]
+fn debug_byte(byte: u8) {
+    unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte); }
 }
 
 impl Writer {
     pub fn write_byte(&mut self, byte: u8) {
+        debug_byte(byte);  // mirror every byte to QEMU debug console
         match byte {
             b'\n' => self.new_line(),
-            byte => {
-                if self.col >= COLS {
-                    self.new_line();
-                }
+            byte  => {
+                let cols = framebuffer::cols();
+                if cols == 0 { return; }  // framebuffer not yet initialised
+                if self.col >= cols { self.new_line(); }
                 framebuffer::draw_char(self.col, self.row, byte as char, self.fg, self.bg);
                 self.col += 1;
             }
         }
     }
 
-    #[allow(dead_code)]
-    pub fn backspace(&mut self) {
-        // Guard: don't erase past the "> " prompt (2 chars).
-        if self.col > 2 {
-            self.col -= 1;
-            framebuffer::draw_char(self.col, self.row, ' ', self.fg, self.bg);
-        }
-    }
-
     fn new_line(&mut self) {
         self.col = 0;
-        if self.row + 1 < ROWS {
+        let rows = framebuffer::rows();
+        if rows == 0 { return; }
+        if self.row + 1 < rows {
             self.row += 1;
         } else {
             framebuffer::scroll_up(self.bg);
-            // row stays at ROWS - 1
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_screen(&mut self) {
-        for row in 0..crate::framebuffer::ROWS {
-            for col in 0..crate::framebuffer::COLS {
-                crate::framebuffer::draw_char(col, row, ' ', self.fg, self.bg);
-            }
-        }
-        self.col = 0;
-        self.row = 0;
-    }
-
-    #[allow(dead_code)]
-    pub fn set_color(&mut self, fore: Color, back: Color) {
-        self.fg = fore as u8;
-        self.bg = back as u8;
     }
 }
 
@@ -107,35 +62,14 @@ impl fmt::Write for Writer {
     }
 }
 
-// ── Global instance ───────────────────────────────────────────────────────────
-
 lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
         col: 0,
         row: 0,
-        fg:  Color::Yellow as u8,
-        bg:  Color::Black  as u8,
+        fg:  framebuffer::YELLOW,
+        bg:  framebuffer::BLACK,
     });
 }
-
-// ── Public helpers ────────────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-pub fn clear_screen() {
-    WRITER.lock().clear_screen();
-}
-
-#[allow(dead_code)]
-pub fn backspace() {
-    WRITER.lock().backspace();
-}
-
-#[allow(dead_code)]
-pub fn set_color(foreground: Color, background: Color) {
-    WRITER.lock().set_color(foreground, background);
-}
-
-// ── Macros ────────────────────────────────────────────────────────────────────
 
 #[macro_export]
 macro_rules! print {

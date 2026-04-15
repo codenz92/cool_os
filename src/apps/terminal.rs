@@ -1,28 +1,25 @@
 /// Terminal app — renders a shell into a window's pixel back-buffer.
-///
-/// Text is drawn at 8×8 pixels per character directly into `window.buf`.
-/// Keyboard characters arrive via `handle_key()`.
 
 extern crate alloc;
 use alloc::string::String;
 use font8x8::UnicodeFonts;
 
-use crate::framebuffer::{CHAR_W, CHAR_H, BLACK, LIGHT_GRAY};
+use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, BLACK, LIGHT_GRAY};
 use crate::wm::window::{Window, TITLE_H};
 
-pub const TERM_W: i32 = 160;
-pub const TERM_H: i32 = 110;
+pub const TERM_W: i32 = 640;
+pub const TERM_H: i32 = 440;
 
-const FG: u8 = LIGHT_GRAY;
-const BG: u8 = BLACK;
+const FG: u32 = LIGHT_GRAY;
+const BG: u32 = BLACK;
 
 pub struct TerminalApp {
-    pub window:  Window,
-    cmd_buf:     String,
-    col:         usize,
-    row:         usize,
-    cols:        usize,
-    rows:        usize,
+    pub window: Window,
+    cmd_buf:    String,
+    col:        usize,
+    row:        usize,
+    cols:       usize,
+    rows:       usize,
 }
 
 impl TerminalApp {
@@ -40,8 +37,6 @@ impl TerminalApp {
             cols,
             rows,
         };
-
-        // Fill background and show initial prompt.
         for b in t.window.buf.iter_mut() { *b = BG; }
         t.print_str("> ");
         t
@@ -80,14 +75,9 @@ impl TerminalApp {
                 self.col = 0;
                 self.row = 0;
             }
-            Some("reboot") => {
-                crate::interrupts::reboot();
-            }
+            Some("reboot") => crate::interrupts::reboot(),
             Some("echo") => {
-                for word in words {
-                    self.print_str(word);
-                    self.print_char(' ');
-                }
+                for word in words { self.print_str(word); self.print_char(' '); }
                 self.print_char('\n');
             }
             Some("uptime") => {
@@ -117,51 +107,33 @@ impl TerminalApp {
     }
 
     fn print_char(&mut self, c: char) {
-        if c == '\n' {
-            self.col = 0;
-            self.advance_row();
-            return;
-        }
-        if self.col >= self.cols {
-            self.col = 0;
-            self.advance_row();
-        }
+        if c == '\n' { self.col = 0; self.advance_row(); return; }
+        if self.col >= self.cols { self.col = 0; self.advance_row(); }
         self.draw_char_at(self.col, self.row, c);
         self.col += 1;
     }
 
-    fn print_str(&mut self, s: &str) {
-        for c in s.chars() { self.print_char(c); }
-    }
+    fn print_str(&mut self, s: &str) { for c in s.chars() { self.print_char(c); } }
 
     fn print_u64(&mut self, mut n: u64) {
         if n == 0 { self.print_char('0'); return; }
         let mut buf = [0u8; 20];
         let mut i = 20usize;
-        while n > 0 {
-            i -= 1;
-            buf[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-        }
-        for &b in &buf[i..] {
-            self.print_char(b as char);
-        }
+        while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+        for &b in &buf[i..] { self.print_char(b as char); }
     }
 
     fn advance_row(&mut self) {
         self.row += 1;
-        if self.row >= self.rows {
-            self.scroll_up();
-            self.row = self.rows - 1;
-        }
+        if self.row >= self.rows { self.scroll_up(); self.row = self.rows - 1; }
     }
 
     fn scroll_up(&mut self) {
         let stride = self.window.width as usize;
-        let row_bytes = stride * CHAR_H;
+        let row_pixels = stride * CHAR_H;
         let total = self.window.buf.len();
-        self.window.buf.copy_within(row_bytes..total, 0);
-        let last = total - row_bytes;
+        self.window.buf.copy_within(row_pixels..total, 0);
+        let last = total - row_pixels;
         for b in self.window.buf[last..].iter_mut() { *b = BG; }
     }
 
@@ -169,15 +141,21 @@ impl TerminalApp {
         let glyph = font8x8::BASIC_FONTS
             .get(c)
             .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-        let px = col * CHAR_W;
-        let py = row * CHAR_H;
+        let px0 = col * CHAR_W;
+        let py0 = row * CHAR_H;
         let stride = self.window.width as usize;
         for (gy, &byte) in glyph.iter().enumerate() {
-            for bit in 0..CHAR_W {
+            for bit in 0..8usize {
                 let color = if byte & (1 << bit) != 0 { FG } else { BG };
-                let idx = (py + gy) * stride + (px + bit);
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
+                for sy in 0..FONT_SCALE {
+                    for sx in 0..FONT_SCALE {
+                        let px = px0 + bit * FONT_SCALE + sx;
+                        let py = py0 + gy  * FONT_SCALE + sy;
+                        let idx = py * stride + px;
+                        if idx < self.window.buf.len() {
+                            self.window.buf[idx] = color;
+                        }
+                    }
                 }
             }
         }

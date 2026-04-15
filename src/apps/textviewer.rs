@@ -1,15 +1,15 @@
-/// Text Viewer — scrollable read-only display of a static document.
+/// Text Viewer — scrollable read-only document display.
 /// Press 'j' to scroll down, 'k' to scroll up.
 
 use font8x8::UnicodeFonts;
-use crate::framebuffer::{CHAR_W, CHAR_H, WHITE, DARK_GRAY, LIGHT_GRAY, YELLOW};
+use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, WHITE, DARK_GRAY, LIGHT_GRAY, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
 
-pub const VIEWER_W: i32 = 160;
-pub const VIEWER_H: i32 = 120;
+pub const VIEWER_W: i32 = 640;
+pub const VIEWER_H: i32 = 480;
 
 const ABOUT: &[&str] = &[
-    " coolOS v1.4",
+    " coolOS v1.5",
     " Bare-metal OS in Rust",
     "",
     " == Phases ==",
@@ -18,6 +18,7 @@ const ABOUT: &[&str] = &[
     " 3. Window manager",
     " 4. Desktop shell",
     " 5. Applications",
+    " 6. High-res framebuffer",
     "",
     " == Commands ==",
     " help    - list commands",
@@ -62,15 +63,11 @@ impl TextViewerApp {
         match c {
             'j' | 'J' => {
                 if self.scroll + self.rows < ABOUT.len() {
-                    self.scroll += 1;
-                    self.render();
+                    self.scroll += 1; self.render();
                 }
             }
             'k' | 'K' => {
-                if self.scroll > 0 {
-                    self.scroll -= 1;
-                    self.render();
-                }
+                if self.scroll > 0 { self.scroll -= 1; self.render(); }
             }
             _ => {}
         }
@@ -89,36 +86,38 @@ impl TextViewerApp {
                 if ci >= self.cols { break; }
                 let px = ci * CHAR_W;
                 let fg = if line.starts_with(" ==") { YELLOW }
-                         else if line.starts_with(" //") || line.starts_with("  ") { LIGHT_GRAY }
+                         else if line.starts_with("  ") { LIGHT_GRAY }
                          else { WHITE };
-                Self::put_char(&mut self.window.buf, stride, px, py, c, fg);
+                put_char(&mut self.window.buf, stride, px, py, c, fg);
             }
         }
 
-        // Scroll hint bar at top and bottom.
+        // Scroll indicators.
         let top_color = if self.scroll > 0 { LIGHT_GRAY } else { DARK_GRAY };
         let bot_color = if self.scroll + self.rows < ABOUT.len() { LIGHT_GRAY } else { DARK_GRAY };
         let hint_row = (self.rows - 1) * CHAR_H;
         for px in 0..stride {
-            if self.window.buf[px] != DARK_GRAY {
-                self.window.buf[px] = top_color;
-            }
+            if self.window.buf[px] != DARK_GRAY { self.window.buf[px] = top_color; }
             let idx = hint_row * stride + px;
-            if idx < self.window.buf.len() {
-                self.window.buf[idx] = bot_color;
-            }
+            if idx < self.window.buf.len() { self.window.buf[idx] = bot_color; }
         }
     }
+}
 
-    fn put_char(buf: &mut [u8], stride: usize, px: usize, py: usize, c: char, fg: u8) {
-        let glyph = font8x8::BASIC_FONTS
-            .get(c)
-            .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-        for (gy, &byte) in glyph.iter().enumerate() {
-            for bit in 0..CHAR_W {
-                if byte & (1 << bit) != 0 {
-                    let idx = (py + gy) * stride + (px + bit);
-                    if idx < buf.len() { buf[idx] = fg; }
+fn put_char(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
+    let glyph = font8x8::BASIC_FONTS
+        .get(c)
+        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    for (gy, &byte) in glyph.iter().enumerate() {
+        for bit in 0..8usize {
+            if byte & (1 << bit) != 0 {
+                for sy in 0..FONT_SCALE {
+                    for sx in 0..FONT_SCALE {
+                        let px = px0 + bit * FONT_SCALE + sx;
+                        let py = py0 + gy  * FONT_SCALE + sy;
+                        let idx = py * stride + px;
+                        if idx < buf.len() { buf[idx] = fg; }
+                    }
                 }
             }
         }

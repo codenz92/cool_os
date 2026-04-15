@@ -1,89 +1,194 @@
-/// VGA Mode 13h pixel framebuffer — 320×200, 256-colour palette.
+// Suppress dead_code for palette constants and put_pixel — they're part of the
+// public API and will be used by future phases.
+#![allow(dead_code)]
+
+/// Linear 32bpp framebuffer — high-resolution, bootloader-provided.
 ///
-/// The bootloader's `vga_320x200` feature sets this mode before handing
-/// control to the kernel, so we only need to write pixels.  The VGA
-/// frame-buffer lives at physical 0xA0000, which is identity-mapped in
-/// the kernel's page tables just like the text buffer at 0xB8000.
+/// The bootloader delivers a base address, width, height, stride (pixels per
+/// row), and pixel format (RGB or BGR) at boot time.  We store these in a
+/// global and expose the public helpers used by `vga_buffer` (panic output)
+/// and the compositor.
 
-use font8x8::UnicodeFonts;
+use spin::Mutex;
 
-pub const WIDTH: usize = 320;
-pub const HEIGHT: usize = 200;
-pub const CHAR_W: usize = 8;
-pub const CHAR_H: usize = 8;
-pub const COLS: usize = WIDTH / CHAR_W;  // 40
-pub const ROWS: usize = HEIGHT / CHAR_H; // 25
+// ── Font constants ────────────────────────────────────────────────────────────
 
-const FB: *mut u8 = 0xa0000 as *mut u8;
+/// Render each 8×8 font glyph at 2× scale → 16×16 effective pixels.
+pub const FONT_SCALE: usize = 2;
+pub const CHAR_W:     usize = 8 * FONT_SCALE; // 16
+pub const CHAR_H:     usize = 8 * FONT_SCALE; // 16
 
-// Standard VGA Mode 13h palette indices (colours 0-15 match EGA/CGA).
-#[allow(dead_code)]
-pub const BLACK:       u8 = 0;
-pub const BLUE:        u8 = 1;
-#[allow(dead_code)]
-pub const GREEN:       u8 = 2;
-#[allow(dead_code)]
-pub const CYAN:        u8 = 3;
-pub const RED:         u8 = 4;
-#[allow(dead_code)]
-pub const MAGENTA:     u8 = 5;
-#[allow(dead_code)]
-pub const BROWN:       u8 = 6;
-pub const LIGHT_GRAY:  u8 = 7;
-pub const DARK_GRAY:   u8 = 8;
-#[allow(dead_code)]
-pub const LIGHT_BLUE:  u8 = 9;
-#[allow(dead_code)]
-pub const LIGHT_GREEN: u8 = 10;
-#[allow(dead_code)]
-pub const LIGHT_CYAN:  u8 = 11;
-#[allow(dead_code)]
-pub const LIGHT_RED:   u8 = 12;
-#[allow(dead_code)]
-pub const PINK:        u8 = 13;
-#[allow(dead_code)]
-pub const YELLOW:      u8 = 14;
-pub const WHITE:       u8 = 15;
+// ── Pixel format ──────────────────────────────────────────────────────────────
 
-#[inline]
-pub fn put_pixel(x: usize, y: usize, color: u8) {
-    if x < WIDTH && y < HEIGHT {
-        unsafe { FB.add(y * WIDTH + x).write_volatile(color); }
-    }
+/// How bytes are ordered in a 4-byte framebuffer pixel on this machine.
+/// Our internal color representation is always `0x00_RR_GG_BB`.
+/// For BGR hardware: write the u32 as-is (on LE the bytes land B, G, R, 0).
+/// For RGB hardware: swap R and B before writing.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum PixFmt { Bgr, Rgb }
+
+// ── Global state ──────────────────────────────────────────────────────────────
+
+struct FbState {
+    base:   u64,   // pointer to first pixel (as integer for Send-safety)
+    width:  usize,
+    height: usize,
+    stride: usize, // pixels per row (≥ width, may include right-hand padding)
+    bpp:    usize, // bytes per pixel (3 or 4)
+    fmt:    PixFmt,
 }
 
+static FB: Mutex<Option<FbState>> = Mutex::new(None);
 
-/// Scroll the entire screen up by one character row and fill the vacated
-/// bottom row with `bg`.
-pub fn scroll_up(bg: u8) {
-    unsafe {
-        // Shift everything up CHAR_H pixel rows.
-        core::ptr::copy(
-            FB.add(CHAR_H * WIDTH),
-            FB,
-            (ROWS - 1) * CHAR_H * WIDTH,
-        );
-        // Clear the exposed bottom row.
-        let bottom = (ROWS - 1) * CHAR_H * WIDTH;
-        for i in bottom..(bottom + CHAR_H * WIDTH) {
-            FB.add(i).write_volatile(bg);
+/// Called once in `kernel_main` after the bootloader provides framebuffer info.
+pub fn init(base: u64, width: usize, height: usize, stride: usize, bpp: usize, fmt: PixFmt) {
+    *FB.lock() = Some(FbState { base, width, height, stride, bpp, fmt });
+}
+
+/// Screen width in pixels (0 until `init` is called).
+pub fn width()  -> usize { FB.lock().as_ref().map_or(0, |s| s.width)  }
+/// Screen height in pixels (0 until `init` is called).
+pub fn height() -> usize { FB.lock().as_ref().map_or(0, |s| s.height) }
+/// Pixel stride — pixels per scanline (≥ width).
+pub fn stride() -> usize { FB.lock().as_ref().map_or(0, |s| s.stride) }
+/// Bytes per pixel (3 or 4).
+pub fn bpp()    -> usize { FB.lock().as_ref().map_or(4, |s| s.bpp)    }
+/// Base pointer as u64.
+pub fn base()   -> u64   { FB.lock().as_ref().map_or(0, |s| s.base)   }
+/// Pixel format.
+pub fn fmt()    -> PixFmt { FB.lock().as_ref().map_or(PixFmt::Bgr, |s| s.fmt) }
+
+/// Character columns available on screen.
+pub fn cols() -> usize { width()  / CHAR_W }
+/// Character rows available on screen.
+pub fn rows() -> usize { height() / CHAR_H }
+
+// ── Color constants (0x00_RR_GG_BB) ──────────────────────────────────────────
+
+// All colour constants are part of the public palette API; suppress dead_code
+// warnings for the ones not yet used by the current set of apps.
+// All colour constants are part of the public palette API.
+pub const BLACK:       u32 = 0x00_00_00_00;
+pub const BLUE:        u32 = 0x00_00_00_AA;
+pub const GREEN:       u32 = 0x00_00_AA_00;
+pub const CYAN:        u32 = 0x00_00_AA_AA;
+pub const RED:         u32 = 0x00_AA_00_00;
+pub const MAGENTA:     u32 = 0x00_AA_00_AA;
+pub const BROWN:       u32 = 0x00_AA_55_00;
+pub const LIGHT_GRAY:  u32 = 0x00_AA_AA_AA;
+pub const DARK_GRAY:   u32 = 0x00_55_55_55;
+pub const LIGHT_BLUE:  u32 = 0x00_55_55_FF;
+pub const LIGHT_GREEN: u32 = 0x00_55_FF_55;
+pub const LIGHT_CYAN:  u32 = 0x00_55_FF_FF;
+pub const LIGHT_RED:   u32 = 0x00_FF_55_55;
+pub const PINK:        u32 = 0x00_FF_55_FF;
+pub const YELLOW:      u32 = 0x00_FF_FF_55;
+pub const WHITE:       u32 = 0x00_FF_FF_FF;
+
+// ── Pixel-format conversion ───────────────────────────────────────────────────
+
+/// Swap the R and B channels of a `0x00_RR_GG_BB` color to produce
+/// `0x00_BB_GG_RR`, needed when writing to an RGB framebuffer.
+#[inline(always)]
+fn to_hw(color: u32, fmt: PixFmt) -> u32 {
+    match fmt {
+        PixFmt::Bgr => color,  // 0x00RRGGBB bytes = [BB GG RR 00] = BGR ✓
+        PixFmt::Rgb => {       // need bytes [RR GG BB 00]
+            let r = (color >> 16) & 0xFF;
+            let g = (color >>  8) & 0xFF;
+            let b =  color        & 0xFF;
+            (b << 16) | (g << 8) | r
         }
     }
 }
 
-/// Draw a single ASCII/Unicode character at character-grid position
-/// `(col, row)` using `fg` and `bg` palette indices.
-pub fn draw_char(col: usize, row: usize, c: char, fg: u8, bg: u8) {
-    let x = col * CHAR_W;
-    let y = row * CHAR_H;
+// ── Low-level pixel writer (handles 3bpp and 4bpp) ───────────────────────────
+
+/// Write one pixel at `offset` (in pixels from the framebuffer base).
+/// `hw_color` must already be in hardware byte order (`to_hw` applied).
+#[inline(always)]
+unsafe fn write_hw_pixel(base: u64, offset: usize, bpp: usize, hw_color: u32) {
+    match bpp {
+        4 => (base as *mut u32).add(offset).write_volatile(hw_color),
+        3 => {
+            let p = (base as *mut u8).add(offset * 3);
+            p.write_volatile((hw_color       & 0xFF) as u8);
+            p.add(1).write_volatile(((hw_color >>  8) & 0xFF) as u8);
+            p.add(2).write_volatile(((hw_color >> 16) & 0xFF) as u8);
+        }
+        _ => {}
+    }
+}
+
+// ── Direct-to-hardware pixel write (used by vga_buffer panic output) ──────────
+
+pub fn put_pixel(x: usize, y: usize, color: u32) {
+    let guard = FB.lock();
+    if let Some(ref s) = *guard {
+        if x < s.width && y < s.height {
+            unsafe {
+                write_hw_pixel(s.base, y * s.stride + x, s.bpp, to_hw(color, s.fmt));
+            }
+        }
+    }
+}
+
+/// Draw a single character directly onto the hardware framebuffer at
+/// character-grid cell `(col, row)`, scaled by `FONT_SCALE`.
+pub fn draw_char(col: usize, row: usize, c: char, fg: u32, bg: u32) {
+    use font8x8::UnicodeFonts;
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    for (gy, byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            let color = if byte & (1 << bit) != 0 { fg } else { bg };
-            put_pixel(x + bit, y + gy, color);
+
+    let x0 = col * CHAR_W;
+    let y0 = row * CHAR_H;
+
+    let guard = FB.lock();
+    if let Some(ref s) = *guard {
+        let hw_fg = to_hw(fg, s.fmt);
+        let hw_bg = to_hw(bg, s.fmt);
+
+        for (gy, byte) in glyph.iter().enumerate() {
+            for bit in 0..8usize {
+                let hw_color = if byte & (1 << bit) != 0 { hw_fg } else { hw_bg };
+                for sy in 0..FONT_SCALE {
+                    for sx in 0..FONT_SCALE {
+                        let px = x0 + bit * FONT_SCALE + sx;
+                        let py = y0 + gy  * FONT_SCALE + sy;
+                        if px < s.width && py < s.height {
+                            unsafe {
+                                write_hw_pixel(s.base, py * s.stride + px, s.bpp, hw_color);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
+/// Scroll the hardware framebuffer up by one character row, filling the
+/// vacated bottom row with `bg`.  Used by the panic-mode VGA writer.
+pub fn scroll_up(bg: u32) {
+    let guard = FB.lock();
+    if let Some(ref s) = *guard {
+        let rows_to_keep = s.height.saturating_sub(CHAR_H);
+        let hw_bg = to_hw(bg, s.fmt);
+        let bpp = s.bpp;
+        let base = s.base;
+        let stride = s.stride;
+        unsafe {
+            // Shift all pixel rows up by CHAR_H rows (byte-accurate).
+            let byte_stride = stride * bpp;
+            let src = (base as *mut u8).add(CHAR_H * byte_stride);
+            let dst = base as *mut u8;
+            core::ptr::copy(src, dst, rows_to_keep * byte_stride);
+            // Clear the newly revealed bottom rows.
+            let bottom_base = base + (rows_to_keep * byte_stride) as u64;
+            for i in 0..CHAR_H * stride {
+                write_hw_pixel(bottom_base, i, bpp, hw_bg);
+            }
+        }
+    }
+}

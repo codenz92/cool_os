@@ -4,11 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–5 are complete. Everything below builds directly on that foundation.
+Phases 1–6 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## ✅ Phases 1–5 — Complete
+## ✅ Phases 1–6 — Complete
 
 | Phase | Deliverable |
 | :---: | :---------- |
@@ -17,31 +17,26 @@ Phases 1–5 are complete. Everything below builds directly on that foundation.
 | 3 | Window manager — shadow compositor, z-order, drag |
 | 4 | Desktop shell — taskbar, context menu, terminal |
 | 5 | Four built-in apps running as kernel-mode modules |
+| 6 | High-res linear framebuffer via `bootloader 0.11` — 1280×720, 3/4bpp |
 
----
+### Phase 6 implementation notes
 
-## Phase 6 — Modern Framebuffer
-
-**Goal:** Replace Mode 13h (320×200, 256 colours) with a high-resolution linear
-framebuffer negotiated at boot time via the UEFI GOP or a Limine framebuffer tag.
-Nothing above 320×200 is achievable without this.
-
-- [ ] Switch bootloader to [Limine](https://github.com/limine-bootloader/limine)
-      (or upgrade to `bootloader 0.11`). Both can deliver a 32bpp linear framebuffer
-      at the display's native resolution before jumping to the kernel.
-- [ ] Rewrite `src/framebuffer.rs` — drop the `0xA0000` hard-code; instead accept a
-      base address, pitch, width, height, and bpp from the bootloader info struct.
-- [ ] Update `put_pixel` for 32bpp ARGB; update `draw_char` for the new stride.
-- [ ] Scale the shadow buffer and compositor to match the new resolution. Allocate
-      the shadow buffer from the heap (`Vec<u32>`) rather than a fixed 64 KB array.
-- [ ] Rewrite or replace `font8x8` with a scalable or higher-resolution bitmap font
-      (e.g. a 16×16 or PSF2 font) so text is readable at 1080p.
-- [ ] Remove all `vga_320x200` references from `Cargo.toml` and the target spec.
-- [ ] Update the compositor's layout constants (taskbar height, window chrome, cursor
-      sprite) to work at the new resolution.
-
-**Exit criteria:** boots at ≥1280×720, draws the existing desktop UI cleanly, all
-five Phase 5 apps remain functional.
+- Replaced `bootloader 0.9.x` + `cargo bootimage` with a host-side `disk-image`
+  crate that calls `BiosBoot::new(&kernel).set_boot_config(&cfg).create_disk_image(...)`.
+- `BootConfig` requests ≥1280×720; actual resolution negotiated at runtime via VBE.
+- `framebuffer.rs` rewritten: accepts base address, width, height, stride, bpp, and
+  pixel format from `bootloader_api::info::FrameBufferInfo` at boot time.
+- Shadow buffer allocated from heap as `Vec<u32>` (width × height × 4 bytes).
+- Compositor blit handles both 3bpp (24-bit, QEMU `-vga std`) and 4bpp (32-bit).
+- Font rendered at 2× scale (8×8 glyph → 16×16 pixels) for readability at 1280×720.
+- `build-std` moved from `.cargo/config.toml` into Makefile `-Z` flags to prevent
+  it bleeding into the host-side `disk-image` crate build.
+- Heap increased from 1 MiB to 32 MiB to accommodate the ~3.5 MiB shadow buffer
+  and per-window pixel back-buffers.
+- Full exception handler coverage added to IDT: page fault (with CR2), general
+  protection fault, invalid opcode — all print diagnostics via `println!`.
+- Debug console mirroring added (`-debugcon stdio`, port 0xE9) so `println!` output
+  appears in the host terminal even when the desktop is rendering.
 
 ---
 

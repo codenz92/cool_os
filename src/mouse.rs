@@ -7,7 +7,6 @@
 /// Call `init()` once after the heap is ready.  After that, the IRQ12
 /// handler in `interrupts.rs` feeds packets to `handle_packet()`.
 
-use crate::framebuffer::{HEIGHT, WIDTH};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -22,12 +21,8 @@ struct MouseState {
 
 impl MouseState {
     const fn new() -> Self {
-        MouseState {
-            x:     WIDTH  / 2,
-            y:     HEIGHT / 2,
-            left:  false,
-            right: false,
-        }
+        // Start at (0,0); mouse::init() will centre after framebuffer is ready.
+        MouseState { x: 0, y: 0, left: false, right: false }
     }
 }
 
@@ -35,8 +30,13 @@ static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Initialise the PS/2 mouse.
+/// Initialise the PS/2 mouse and centre the cursor on screen.
 pub fn init() {
+    {
+        let mut m = MOUSE.lock();
+        m.x = crate::framebuffer::width()  / 2;
+        m.y = crate::framebuffer::height() / 2;
+    }
     unsafe { init_hardware(); }
 }
 
@@ -71,8 +71,10 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
 
     {
         let mut m = MOUSE.lock();
-        m.x = ((m.x as i32 + dx).max(0) as usize).min(WIDTH  - 1);
-        m.y = ((m.y as i32 - dy).max(0) as usize).min(HEIGHT - 1);
+        let w = crate::framebuffer::width().saturating_sub(1);
+        let h = crate::framebuffer::height().saturating_sub(1);
+        m.x = ((m.x as i32 + dx).max(0) as usize).min(w);
+        m.y = ((m.y as i32 - dy).max(0) as usize).min(h);
         m.left  = left;
         m.right = right;
     }

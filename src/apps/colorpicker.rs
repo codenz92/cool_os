@@ -1,30 +1,43 @@
-/// Color Picker — shows all 16 VGA palette colours as clickable swatches.
-/// Click a swatch to select it; the status bar shows its name and index.
+/// Color Picker — shows 16 EGA-style colours as clickable swatches.
+/// Click a swatch to select it; the status bar shows its name and hex value.
 
 use font8x8::UnicodeFonts;
-use crate::framebuffer::{CHAR_W, WHITE, LIGHT_GRAY, DARK_GRAY};
+use crate::framebuffer::{CHAR_W, FONT_SCALE, WHITE, LIGHT_GRAY, DARK_GRAY};
 use crate::wm::window::{Window, TITLE_H};
 
-pub const PICKER_W: i32 = 148;
-pub const PICKER_H: i32 = 100;
+pub const PICKER_W: i32 = 480;
+pub const PICKER_H: i32 = 320;
 
-const SWATCH: i32  = 16;   // pixels per swatch (square)
-const GAP:    i32  = 3;    // pixels between swatches
-const STEP:   i32  = SWATCH + GAP;
-const GRID_X: i32  = 10;   // content-area origin
-const GRID_Y: i32  = 8;
-const COLS:   i32  = 8;    // 8 wide × 2 tall = 16 colours
+const SWATCH: i32 = 32;   // pixels per swatch
+const GAP:    i32 = 6;
+const STEP:   i32 = SWATCH + GAP;
+const GRID_X: i32 = 20;
+const GRID_Y: i32 = 16;
+const COLS:   i32 = 8;
 
-const COLORS: [(&str, u8); 16] = [
-    ("Black",    0),  ("Blue",     1),  ("Green",    2),  ("Cyan",     3),
-    ("Red",      4),  ("Magenta",  5),  ("Brown",    6),  ("Lt Gray",  7),
-    ("Dk Gray",  8),  ("Lt Blue",  9),  ("Lt Green", 10), ("Lt Cyan",  11),
-    ("Lt Red",   12), ("Pink",     13), ("Yellow",   14), ("White",    15),
+/// True RGB colors matching the classic EGA/VGA 16-colour palette.
+const COLORS: [(&str, u32); 16] = [
+    ("Black",    0x00_00_00_00),
+    ("Blue",     0x00_00_00_AA),
+    ("Green",    0x00_00_AA_00),
+    ("Cyan",     0x00_00_AA_AA),
+    ("Red",      0x00_AA_00_00),
+    ("Magenta",  0x00_AA_00_AA),
+    ("Brown",    0x00_AA_55_00),
+    ("Lt Gray",  0x00_AA_AA_AA),
+    ("Dk Gray",  0x00_55_55_55),
+    ("Lt Blue",  0x00_55_55_FF),
+    ("Lt Green", 0x00_55_FF_55),
+    ("Lt Cyan",  0x00_55_FF_FF),
+    ("Lt Red",   0x00_FF_55_55),
+    ("Pink",     0x00_FF_55_FF),
+    ("Yellow",   0x00_FF_FF_55),
+    ("White",    0x00_FF_FF_FF),
 ];
 
 pub struct ColorPickerApp {
-    pub window:   Window,
-    selected:     Option<usize>,
+    pub window: Window,
+    selected:   Option<usize>,
 }
 
 impl ColorPickerApp {
@@ -35,17 +48,12 @@ impl ColorPickerApp {
         app
     }
 
-    /// Called when the user clicks in the content area
-    /// `(lx, ly)` are coordinates relative to the content area top-left.
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         let col = (lx - GRID_X) / STEP;
         let row = (ly - GRID_Y) / STEP;
         if col >= 0 && col < COLS && row >= 0 && row < 2 {
             let idx = (row * COLS + col) as usize;
-            if idx < 16 {
-                self.selected = Some(idx);
-                self.render();
-            }
+            if idx < 16 { self.selected = Some(idx); self.render(); }
         }
     }
 
@@ -54,56 +62,56 @@ impl ColorPickerApp {
         let content_h = (PICKER_H - TITLE_H) as usize;
         for b in self.window.buf.iter_mut() { *b = DARK_GRAY; }
 
-        // Draw swatches.
         for i in 0..16usize {
             let col = (i % COLS as usize) as i32;
             let row = (i / COLS as usize) as i32;
-            let x  = GRID_X + col * STEP;
-            let y  = GRID_Y + row * STEP;
-            let color = COLORS[i].1;
+            let x   = GRID_X + col * STEP;
+            let y   = GRID_Y + row * STEP;
+            let color    = COLORS[i].1;
             let selected = self.selected == Some(i);
 
-            // Selection highlight (1-px border in WHITE).
             if selected {
                 fill_buf(&mut self.window.buf, stride, content_h,
-                         x - 1, y - 1, SWATCH + 2, SWATCH + 2, WHITE);
+                         x - 2, y - 2, SWATCH + 4, SWATCH + 4, WHITE);
             }
             fill_buf(&mut self.window.buf, stride, content_h, x, y, SWATCH, SWATCH, color);
         }
 
-        // Status bar — show selected colour name.
-        let status_y = (GRID_Y + 2 * STEP + GAP) as usize;
-        let status_py = status_y;
+        // Status bar.
+        let status_py = (GRID_Y + 2 * STEP + GAP) as usize;
         if let Some(idx) = self.selected {
-            let (name, palette) = COLORS[idx];
-            let mut line = [b' '; 20];
-            // Compose "Name (N)"
-            let mut pos = 0;
-            for b in name.bytes() { if pos < 20 { line[pos] = b; pos += 1; } }
-            let suffix = b" (xx)";
-            // Write palette index
-            let mut tmp = [0u8; 4];
-            let s = usize_to_buf(palette as usize, &mut tmp);
-            if pos < 20 { line[pos] = b' '; pos += 1; }
-            if pos < 20 { line[pos] = b'('; pos += 1; }
-            for &b in s { if pos < 20 { line[pos] = b; pos += 1; } }
-            if pos < 20 { line[pos] = b')'; pos += 1; }
-            let _ = suffix;
+            let (name, rgb) = COLORS[idx];
+            let r = (rgb >> 16) & 0xFF;
+            let g = (rgb >>  8) & 0xFF;
+            let b =  rgb        & 0xFF;
 
-            for (ci, &b) in line[..pos].iter().enumerate() {
+            // Build "Name #RRGGBB"
+            let mut line = [b' '; 24];
+            let mut pos = 0usize;
+            for byte in name.bytes() { if pos < 24 { line[pos] = byte; pos += 1; } }
+            if pos < 24 { line[pos] = b' '; pos += 1; }
+            if pos < 24 { line[pos] = b'#'; pos += 1; }
+            for nibble in [r >> 4, r & 0xF, g >> 4, g & 0xF, b >> 4, b & 0xF] {
+                if pos < 24 {
+                    line[pos] = if nibble < 10 { b'0' + nibble as u8 }
+                                else           { b'A' + nibble as u8 - 10 };
+                    pos += 1;
+                }
+            }
+
+            for (ci, &byte) in line[..pos].iter().enumerate() {
                 let px = ci * CHAR_W;
                 if px + CHAR_W > stride { break; }
-                put_char(&mut self.window.buf, stride, px, status_py, b as char,
-                         WHITE, DARK_GRAY);
+                put_char_buf(&mut self.window.buf, stride, px, status_py,
+                             byte as char, WHITE, DARK_GRAY);
             }
         } else {
-            // Hint text.
             let hint = "Click a colour";
             for (ci, c) in hint.chars().enumerate() {
                 let px = ci * CHAR_W;
                 if px + CHAR_W > stride { break; }
-                put_char(&mut self.window.buf, stride, px, status_py, c,
-                         LIGHT_GRAY, DARK_GRAY);
+                put_char_buf(&mut self.window.buf, stride, px, status_py,
+                             c, LIGHT_GRAY, DARK_GRAY);
             }
         }
     }
@@ -111,8 +119,8 @@ impl ColorPickerApp {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn fill_buf(buf: &mut [u8], stride: usize, content_h: usize,
-            x: i32, y: i32, w: i32, h: i32, color: u8)
+fn fill_buf(buf: &mut [u32], stride: usize, content_h: usize,
+            x: i32, y: i32, w: i32, h: i32, color: u32)
 {
     let x0 = (x.max(0) as usize).min(stride);
     let y0 = (y.max(0) as usize).min(content_h);
@@ -125,24 +133,23 @@ fn fill_buf(buf: &mut [u8], stride: usize, content_h: usize,
     }
 }
 
-fn put_char(buf: &mut [u8], stride: usize, px: usize, py: usize,
-            c: char, fg: u8, bg: u8)
+fn put_char_buf(buf: &mut [u32], stride: usize,
+                px0: usize, py0: usize, c: char, fg: u32, bg: u32)
 {
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
     for (gy, &byte) in glyph.iter().enumerate() {
-        for bit in 0..CHAR_W {
+        for bit in 0..8usize {
             let color = if byte & (1 << bit) != 0 { fg } else { bg };
-            let idx = (py + gy) * stride + (px + bit);
-            if idx < buf.len() { buf[idx] = color; }
+            for sy in 0..FONT_SCALE {
+                for sx in 0..FONT_SCALE {
+                    let px = px0 + bit * FONT_SCALE + sx;
+                    let py = py0 + gy  * FONT_SCALE + sy;
+                    let idx = py * stride + px;
+                    if idx < buf.len() { buf[idx] = color; }
+                }
+            }
         }
     }
-}
-
-fn usize_to_buf(mut n: usize, buf: &mut [u8; 4]) -> &[u8] {
-    if n == 0 { buf[0] = b'0'; return &buf[..1]; }
-    let mut i = 4usize;
-    while n > 0 && i > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
-    &buf[i..]
 }

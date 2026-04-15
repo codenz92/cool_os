@@ -1,4 +1,4 @@
-use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
+use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::{
     structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
@@ -19,23 +19,20 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
 }
 
 pub struct BootInfoFrameAllocator {
-    memory_map: &'static MemoryMap,
+    memory_regions: &'static [MemoryRegion],
     next: usize,
 }
 
 impl BootInfoFrameAllocator {
-    pub unsafe fn init(memory_map: &'static MemoryMap) -> Self {
-        BootInfoFrameAllocator {
-            memory_map,
-            next: 0,
-        }
+    pub unsafe fn init(memory_regions: &'static [MemoryRegion]) -> Self {
+        BootInfoFrameAllocator { memory_regions, next: 0 }
     }
 
-    fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
-        self.memory_map
+    fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
+        self.memory_regions
             .iter()
-            .filter(|r| r.region_type == MemoryRegionType::Usable)
-            .map(|r| r.range.start_addr()..r.range.end_addr())
+            .filter(|r| r.kind == MemoryRegionKind::Usable)
+            .map(|r| r.start..r.end)
             .flat_map(|r| r.step_by(4096))
             .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }

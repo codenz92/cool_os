@@ -49,6 +49,9 @@ lazy_static! {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.double_fault.set_handler_fn(double_fault_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_usize()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Mouse.as_usize()].set_handler_fn(mouse_interrupt_handler);
@@ -65,7 +68,26 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn double_fault_handler(sf: InterruptStackFrame, _err: u64) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", sf);
+    panic!("DOUBLE FAULT\n{:#?}", sf);
+}
+
+extern "x86-interrupt" fn page_fault_handler(
+    sf: InterruptStackFrame,
+    err: x86_64::structures::idt::PageFaultErrorCode,
+) {
+    use x86_64::registers::control::Cr2;
+    panic!("PAGE FAULT\naddr={:?} err={:?}\n{:#?}", Cr2::read(), err, sf);
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    sf: InterruptStackFrame,
+    err: u64,
+) {
+    panic!("GENERAL PROTECTION FAULT err={:#x}\n{:#?}", err, sf);
+}
+
+extern "x86-interrupt" fn invalid_opcode_handler(sf: InterruptStackFrame) {
+    panic!("INVALID OPCODE\n{:#?}", sf);
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
