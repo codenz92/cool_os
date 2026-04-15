@@ -58,10 +58,10 @@ Phases 1–7 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## Phase 7 — Preemptive Scheduler
+## Phase 8 — Preemptive Scheduler
 
 **Goal:** Multiple concurrent execution contexts sharing the CPU via timer-driven
-preemption. This is the hardest single phase and everything from Phase 8 onwards
+preemption. This is the hardest single phase and everything from Phase 9 onwards
 depends on it.
 
 - [ ] Define a `Task` struct: kernel stack, saved register state (all GP registers +
@@ -253,7 +253,7 @@ response and writes it to a file on disk.
 
 ### The ordering is non-negotiable
 
-Phase 7 (scheduler) is the hardest gate. Every phase from 8 onwards requires
+Phase 8 (scheduler) is the hardest gate. Every phase from 9 onwards requires
 multiple concurrent execution contexts. Don't skip it or fake it with cooperative
 yielding — preemption is what makes the OS real.
 
@@ -265,7 +265,7 @@ Eventually a `libcool` crate can wrap the raw syscalls into safe Rust APIs
 
 ### Real hardware vs QEMU
 
-Phase 6 (Limine framebuffer) and Phase 13 (USB) are the two gates to booting on
+Phase 6 (VBE framebuffer) and Phase 14 (USB) are the two gates to booting on
 real machines. Everything in between can be developed entirely in QEMU.
 
 ### Versioning
@@ -273,6 +273,6 @@ real machines. Everything in between can be developed entirely in QEMU.
 | Tag | Milestone |
 | :-- | :-------- |
 | v1.7 | Current — high-res framebuffer, fluid input, release build |
-| v3.0 | Phase 8 complete — first userspace process |
+| v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete — network-capable |
