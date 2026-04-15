@@ -11,7 +11,7 @@ scheduler and no userspace. Yet.
 
 ---
 
-## Current state — v1.6
+## Current state — v1.7
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -92,6 +92,7 @@ src/
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
   mouse.rs         PS/2 mouse hardware init and packet decoder
+  keyboard.rs      Lock-free ring buffer — IRQ handler pushes chars, compositor drains
   wm/
     mod.rs         Public WM API — request_repaint, compose_if_needed
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
@@ -119,7 +120,8 @@ separation, and no system call interface. That is what the roadmap is for.
 | 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
 | 5 | Applications — system monitor, text viewer, color picker | **Done** |
 | 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
-| 7 | Preemptive scheduler + context switching | Planned |
+| 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
+| 8 | Preemptive scheduler + context switching | Planned |
 | 8 | Ring-3 userspace + syscall interface | Planned |
 | 9 | Per-process virtual memory + isolation | Planned |
 | 10 | Filesystem (FAT32) + VFS + disk driver | Planned |

@@ -4,11 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–6 are complete. Everything below builds directly on that foundation.
+Phases 1–7 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## ✅ Phases 1–6 — Complete
+## ✅ Phases 1–7 — Complete
 
 | Phase | Deliverable |
 | :---: | :---------- |
@@ -18,6 +18,24 @@ Phases 1–6 are complete. Everything below builds directly on that foundation.
 | 4 | Desktop shell — taskbar, context menu, terminal |
 | 5 | Four built-in apps running as kernel-mode modules |
 | 6 | High-res linear framebuffer via `bootloader 0.11` — 1280×720, 3/4bpp |
+| 7 | Fluid input — lock-free keyboard queue, scratch-buffer blit, release build |
+
+### Phase 7 implementation notes
+
+- Removed `without_interrupts` wrapper from the main loop — it was blocking
+  all IRQs (mouse, keyboard) for the entire frame blit, causing visible lag.
+- Added lock-free keyboard ring buffer (`src/keyboard.rs`): the PS/2 IRQ
+  handler was deadlocking by trying to acquire `WM.lock()` while `compose()`
+  already held it. IRQ handler now just pushes chars into an atomic queue;
+  `compose()` drains it at frame start.
+- Replaced per-pixel volatile MMIO writes with a row scratch buffer:
+  each row is converted from `u32` shadow pixels to packed BGR bytes into a
+  stack-allocated `[u8; 5120]` (fast RAM→RAM), then flushed with one
+  `copy_nonoverlapping`. Reduces framebuffer write transactions per frame from
+  ~691,200 to 720 bulk copies.
+- Switched to `--release` build: LLVM vectorises the pixel conversion loop
+  with SSE2/AVX, removing bounds checks. Combined with the above, roughly
+  10–20× faster than the debug blit.
 
 ### Phase 6 implementation notes
 
@@ -218,15 +236,16 @@ response and writes it to a file on disk.
 
 | Phase | Deliverable | Depends on |
 | :---: | :---------- | :--------- |
-| 6  | High-resolution framebuffer (Limine / UEFI GOP) | 1–5 |
-| 7  | Preemptive scheduler, context switching | 6 |
-| 8  | Ring-3 userspace + syscall interface | 7 |
-| 9  | Per-process virtual memory, isolation | 8 |
-| 10 | Filesystem (FAT32), VFS, disk driver | 9 |
-| 11 | ELF loader, `exec`, real user programs | 10 |
-| 12 | Pipes, shared memory, IPC | 11 |
-| 13 | USB HID — real hardware input | 8 |
-| 14 | Networking (virtio-net, TCP/IP) | 12 |
+| 6  | High-resolution framebuffer (`bootloader 0.11`, VBE) | 1–5 |
+| 7  | Input lag fixes — keyboard queue, scratch blit, release build | 6 |
+| 8  | Preemptive scheduler, context switching | 7 |
+| 9  | Ring-3 userspace + syscall interface | 8 |
+| 10 | Per-process virtual memory, isolation | 9 |
+| 11 | Filesystem (FAT32), VFS, disk driver | 10 |
+| 12 | ELF loader, `exec`, real user programs | 11 |
+| 13 | Pipes, shared memory, IPC | 12 |
+| 14 | USB HID — real hardware input | 9 |
+| 15 | Networking (virtio-net, TCP/IP) | 13 |
 
 ---
 
@@ -253,8 +272,7 @@ real machines. Everything in between can be developed entirely in QEMU.
 
 | Tag | Milestone |
 | :-- | :-------- |
-| v1.5 | Current — kernel-mode GUI, four built-in apps |
-| v2.0 | Phase 6 complete — high-res framebuffer |
+| v1.7 | Current — high-res framebuffer, fluid input, release build |
 | v3.0 | Phase 8 complete — first userspace process |
-| v4.0 | Phase 11 complete — ELF binaries load from disk |
-| v5.0 | Phase 14 complete — network-capable |
+| v4.0 | Phase 12 complete — ELF binaries load from disk |
+| v5.0 | Phase 15 complete — network-capable |
