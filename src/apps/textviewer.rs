@@ -1,9 +1,8 @@
+use crate::framebuffer::{CHAR_H, CHAR_W, DARK_GRAY, FONT_SCALE, LIGHT_GRAY, WHITE, YELLOW};
+use crate::wm::window::{Window, TITLE_H};
 /// Text Viewer — scrollable read-only document display.
 /// Press 'j' to scroll down, 'k' to scroll up.
-
 use font8x8::UnicodeFonts;
-use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, WHITE, DARK_GRAY, LIGHT_GRAY, YELLOW};
-use crate::wm::window::{Window, TITLE_H};
 
 pub const VIEWER_W: i32 = 640;
 pub const VIEWER_H: i32 = 480;
@@ -35,14 +34,14 @@ const ABOUT: &[&str] = &[
     " Right-click: new app",
     "",
     " github.com/codenz92",
-    "   /cool_os",
+    "   /cool-os",
 ];
 
 pub struct TextViewerApp {
     pub window: Window,
-    scroll:     usize,
-    rows:       usize,
-    cols:       usize,
+    scroll: usize,
+    rows: usize,
+    cols: usize,
 }
 
 impl TextViewerApp {
@@ -52,8 +51,8 @@ impl TextViewerApp {
         let mut app = TextViewerApp {
             window,
             scroll: 0,
-            rows:   content_h / CHAR_H,
-            cols:   VIEWER_W as usize / CHAR_W,
+            rows: content_h / CHAR_H,
+            cols: VIEWER_W as usize / CHAR_W,
         };
         app.render();
         app
@@ -63,11 +62,15 @@ impl TextViewerApp {
         match c {
             'j' | 'J' => {
                 if self.scroll + self.rows < ABOUT.len() {
-                    self.scroll += 1; self.render();
+                    self.scroll += 1;
+                    self.render();
                 }
             }
             'k' | 'K' => {
-                if self.scroll > 0 { self.scroll -= 1; self.render(); }
+                if self.scroll > 0 {
+                    self.scroll -= 1;
+                    self.render();
+                }
             }
             _ => {}
         }
@@ -75,31 +78,53 @@ impl TextViewerApp {
 
     fn render(&mut self) {
         let stride = VIEWER_W as usize;
-        for b in self.window.buf.iter_mut() { *b = DARK_GRAY; }
+        for b in self.window.buf.iter_mut() {
+            *b = DARK_GRAY;
+        }
 
         for screen_row in 0..self.rows {
             let doc_row = self.scroll + screen_row;
-            if doc_row >= ABOUT.len() { break; }
+            if doc_row >= ABOUT.len() {
+                break;
+            }
             let line = ABOUT[doc_row];
             let py = screen_row * CHAR_H;
             for (ci, c) in line.chars().enumerate() {
-                if ci >= self.cols { break; }
+                if ci >= self.cols {
+                    break;
+                }
                 let px = ci * CHAR_W;
-                let fg = if line.starts_with(" ==") { YELLOW }
-                         else if line.starts_with("  ") { LIGHT_GRAY }
-                         else { WHITE };
+                let fg = if line.starts_with(" ==") {
+                    YELLOW
+                } else if line.starts_with("  ") {
+                    LIGHT_GRAY
+                } else {
+                    WHITE
+                };
                 put_char(&mut self.window.buf, stride, px, py, c, fg);
             }
         }
 
         // Scroll indicators.
-        let top_color = if self.scroll > 0 { LIGHT_GRAY } else { DARK_GRAY };
-        let bot_color = if self.scroll + self.rows < ABOUT.len() { LIGHT_GRAY } else { DARK_GRAY };
+        let top_color = if self.scroll > 0 {
+            LIGHT_GRAY
+        } else {
+            DARK_GRAY
+        };
+        let bot_color = if self.scroll + self.rows < ABOUT.len() {
+            LIGHT_GRAY
+        } else {
+            DARK_GRAY
+        };
         let hint_row = (self.rows - 1) * CHAR_H;
         for px in 0..stride {
-            if self.window.buf[px] != DARK_GRAY { self.window.buf[px] = top_color; }
+            if self.window.buf[px] != DARK_GRAY {
+                self.window.buf[px] = top_color;
+            }
             let idx = hint_row * stride + px;
-            if idx < self.window.buf.len() { self.window.buf[idx] = bot_color; }
+            if idx < self.window.buf.len() {
+                self.window.buf[idx] = bot_color;
+            }
         }
     }
 }
@@ -114,9 +139,11 @@ fn put_char(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg:
                 for sy in 0..FONT_SCALE {
                     for sx in 0..FONT_SCALE {
                         let px = px0 + bit * FONT_SCALE + sx;
-                        let py = py0 + gy  * FONT_SCALE + sy;
+                        let py = py0 + gy * FONT_SCALE + sy;
                         let idx = py * stride + px;
-                        if idx < buf.len() { buf[idx] = fg; }
+                        if idx < buf.len() {
+                            buf[idx] = fg;
+                        }
                     }
                 }
             }
