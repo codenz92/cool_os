@@ -2,13 +2,15 @@
 /target/
 **/*.rs.bk
 
-# Cargo lock file (Optional: some prefer to keep it for binaries)
-# Cargo.lock
-
 # OS/Build Specific
 *.bin
 *.iso
 *.img
+*.elf
+*.o
 
-# macOS system files (since you're on a Mac)
+# Editor
+.vscode/
+
+# macOS
 .DS_Store
