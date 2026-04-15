@@ -1,61 +1,87 @@
-# coolOS 🚀
+# coolOS
 
-A minimal, 64-bit operating system kernel written in Rust.
+A 64-bit operating system kernel written in Rust, currently evolving from a text-mode
+shell into a graphical desktop OS with a windowing system.
 
-This project demonstrates the core fundamentals of OS development, including hardware interrupt handling, physical and virtual memory management, and an extensible interactive shell.
+See [ROADMAP.md](ROADMAP.md) for the full plan.
 
-## 🛠 Features
+---
 
-* **Dynamic Memory (Heap)**: Implemented a `LockedHeap` allocator allowing the use of dynamic types like `String`, `Vec`, and `Box`.
-* **4-Level Paging**: Full virtual memory management using an `OffsetPageTable` to map physical frames into the virtual address space.
-* **Physical Frame Allocation**: A custom allocator that discovers "Usable" RAM blocks via the bootloader’s memory map.
-* **Advanced Shell**: A CLI featuring a custom tokenizer that supports command-argument splitting and a heap-backed command history.
-* **Custom IDT**: Implements an Interrupt Descriptor Table to handle critical CPU exceptions such as Breakpoints and Double Faults.
-* **Hardware Interrupts**: Configures the 8259 PIC to manage asynchronous events from the system Timer and Keyboard.
-* **Thread-Safe VGA Driver**: A `spin::Mutex` protected VGA buffer writer supporting standard colors, scrolling, and formatted output via `println!`.
+## Current state (v1.2)
 
+The kernel boots into an interactive shell running over the VGA text buffer.
+Memory management, hardware interrupts, and a heap allocator are all functional.
 
+### Features
 
-## 🏗 Technical Architecture
+- **Dynamic heap** — `LockedHeap` allocator enabling `String`, `Vec`, and `Box` in a `no_std` kernel.
+- **4-level paging** — `OffsetPageTable` maps physical frames into virtual address space.
+- **Physical frame allocator** — discovers usable RAM from the bootloader's E820 memory map.
+- **Custom IDT** — handles Breakpoint and Double Fault CPU exceptions.
+- **Hardware interrupts** — 8259 PIC configured for the system timer (IRQ0) and PS/2 keyboard (IRQ1).
+- **Thread-safe VGA driver** — `spin::Mutex`-protected text buffer with colour, scrolling, and `println!`.
+- **Interactive shell** — tokenizer, heap-backed command history, and the commands below.
 
-### 1. Memory Management Stack
-To support dynamic allocation in a `no_std` environment, coolOS implements a three-tier memory stack:
-1.  **Physical Layer**: The `BootInfoFrameAllocator` identifies "Usable" blocks in the E820 memory map provided by the BIOS/UEFI.
-2.  **Virtual Layer**: An `OffsetPageTable` creates a 1:1 mapping of physical memory to a virtual offset, allowing the kernel to access all physical RAM safely.
-3.  **Allocation Layer**: The `linked_list_allocator` manages a dedicated virtual address range (`0x4444_4444_0000`) to provide a 100 KiB heap for the kernel.
-
-
-
-### 2. Input & Shell Processing
-* **Hardware**: A keypress triggers an IRQ 1 via the PS/2 controller.
-* **Interrupt Flow**: The Programmable Interrupt Controller (PIC) maps this IRQ to interrupt vector 33. The CPU looks up this vector in the IDT and jumps to the handler.
-* **Decoding**: The handler reads scancodes from Port 0x60, decodes them using the `pc-keyboard` crate, and updates the global, heap-allocated `COMMAND_BUFFER`.
-* **Execution**: Upon a newline character, the shell tokenizes the buffer using whitespace splitting to execute the requested function.
-
-## ⌨️ Shell Commands
+### Shell commands
 
 | Command | Description |
-| :--- | :--- |
-| `help` | Displays the available command list and usage information. |
-| `clear` | Wipes the VGA display buffer and resets the cursor. |
-| `color <name>` | Changes foreground text color (supports red, green, blue, yellow, white). |
-| `echo <text>` | Prints the provided text back to the shell (demonstrates argument parsing). |
-| `info` | Queries CPUID for vendor info and displays current Heap usage stats. |
-| `history` | Displays the list of previously executed commands stored in the heap. |
-| `uptime` | Shows system ticks since boot. |
-| `reboot` | Triggers a hardware reset via the PS/2 keyboard controller. |
+| :------ | :---------- |
+| `help` | List available commands. |
+| `clear` | Clear the screen. |
+| `echo <text>` | Print text back. |
+| `color <name>` | Change text colour (`red`, `green`, `blue`, `yellow`, `white`). |
+| `info` | Show CPU vendor and heap usage. |
+| `uptime` | Show timer ticks since boot. |
+| `reboot` | Hardware reset. |
 
+![coolOS shell](https://github.com/user-attachments/assets/dd88a04d-e211-46e4-bf6f-8166c41e3628)
 
-<img width="735" height="433" alt="image" src="https://github.com/user-attachments/assets/dd88a04d-e211-46e4-bf6f-8166c41e3628" />
+---
 
+## Roadmap
 
-## 🚀 Getting Started
+The project is being built toward a graphical desktop OS. The five phases are:
+
+| Phase | Goal | Status |
+| ----- | ---- | ------ |
+| 1 | Pixel framebuffer + font rendering | Not started |
+| 2 | PS/2 mouse driver + on-screen cursor | Not started |
+| 3 | Window manager — draggable windows | Not started |
+| 4 | Desktop shell — taskbar, context menu, terminal window | Not started |
+| 5 | Applications — terminal, system monitor, text viewer | Not started |
+
+Full details in [ROADMAP.md](ROADMAP.md).
+
+---
+
+## Getting started
 
 ### Prerequisites
-You will need the Rust nightly toolchain and the following components:
 
 ```bash
+rustup toolchain install nightly
 rustup component add rust-src
 cargo install bootimage
-# For macOS users:
+# macOS:
 brew install qemu
+```
+
+### Build and run
+
+```bash
+make run
+```
+
+### Architecture
+
+```text
+src/
+  main.rs          # Kernel entry point, hardware init, heap setup
+  interrupts.rs    # IDT, PIC, keyboard + timer handlers, shell command processor
+  memory.rs        # Page table init, physical frame allocator
+  allocator.rs     # Heap allocator (linked_list_allocator wrapper)
+  vga_buffer.rs    # Text-mode VGA driver (will be replaced in Phase 1)
+```
+
+The bootloader crate handles the transition from real mode to 64-bit long mode and
+passes a `BootInfo` struct (physical memory map, memory offset) to `kernel_main`.

@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod allocator;
+mod framebuffer;
 mod interrupts;
 mod memory;
 mod vga_buffer;

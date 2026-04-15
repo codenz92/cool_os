@@ -25,12 +25,16 @@ name = "bootloader"
 version = "0.9.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bdfddac270bbdd45903296bc1caf29a7fdce6b326aaf0bbab7f04c5f98b7447"
+dependencies = [
+ "font8x8",
+]
 
 [[package]]
 name = "cool_os"
 version = "0.1.0"
 dependencies = [
  "bootloader",
+ "font8x8",
  "lazy_static",
  "linked_list_allocator",
  "pc-keyboard",
@@ -40,6 +44,12 @@ dependencies = [
  "volatile 0.2.7",
  "x86_64",
 ]
+
+[[package]]
+name = "font8x8"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e63201c624b8c8883921b1a1accc8916c4fa9dbfb15d122b26e4dde945b86bbf"
 
 [[package]]
 name = "lazy_static"
