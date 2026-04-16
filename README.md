@@ -8,12 +8,14 @@ scheduler and no userspace. Yet.
 
 ---
 
-## Current state — v1.7
+# Current state — v1.8
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps.
+apps. A preemptive round-robin scheduler runs two kernel tasks concurrently:
+the WM/idle task and a background counter task — both driven by the hardware
+timer (IRQ0).
 
 ### What's working
 
@@ -27,6 +29,7 @@ apps.
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging** | 4-level `OffsetPageTable` + bootloader E820 frame allocator. |
 | **IDT** | Breakpoint, Double Fault, Page Fault, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
+| **Scheduler** | Preemptive round-robin. Naked timer ISR saves all 15 GP registers + 5-word CPU interrupt frame, switches `rsp` to the next task's saved context, and `iretq`s into it. 64 KiB heap-allocated kernel stack per task. Idle task reuses the kernel boot stack. |
 
 ### Applications
 
@@ -36,6 +39,15 @@ apps.
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
+
+### Scheduler
+
+Two kernel tasks run concurrently, preempted by IRQ0 (≈18.2 Hz):
+
+| Task | Description |
+| :--- | :---------- |
+| **idle/wm** | The kernel boot stack — runs `compose_if_needed()` + `hlt` in a loop. |
+| **counter** | Tight loop incrementing `BACKGROUND_COUNTER`. Open System Monitor to watch the value climb — proof that preemption is working. |
 
 ### Terminal commands
 
@@ -82,10 +94,11 @@ release it.
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
 src/
-  main.rs          Kernel entry point — framebuffer init, heap, windows, main loop
-  interrupts.rs    IDT, PIC, keyboard/timer/mouse/fault handlers
+  main.rs          Kernel entry point — framebuffer init, heap, scheduler, windows, main loop
+  interrupts.rs    IDT, PIC, keyboard/timer(naked)/mouse/fault handlers
   memory.rs        Page table init, physical frame allocator
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
+  scheduler.rs     Preemptive scheduler — Task, Scheduler, SCHEDULER global, timer_schedule
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
   mouse.rs         PS/2 mouse hardware init and packet decoder
@@ -97,7 +110,7 @@ src/
     window.rs      Window struct — back-buffer, hit tests
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
-    sysmon.rs      SysMonApp   — live CPU/heap/uptime display
+    sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler display
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
 ```
@@ -118,7 +131,7 @@ separation, and no system call interface. That is what the roadmap is for.
 | 5 | Applications — system monitor, text viewer, color picker | **Done** |
 | 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
 | 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
-| 8 | Preemptive scheduler + context switching | Planned |
+| 8 | Preemptive scheduler + context switching | **Done** |
 | 9 | Ring-3 userspace + syscall interface | Planned |
 | 10 | Per-process virtual memory + isolation | Planned |
 | 11 | Filesystem (FAT32) + VFS + disk driver | Planned |
@@ -156,7 +169,17 @@ back-to-front, cursor sprite — into a heap-allocated `Vec<u32>`, then blits
 the finished frame to the hardware framebuffer row by row. The display sees
 only complete frames, eliminating tearing and partial redraws.
 
-**No processes (yet)** — all apps are Rust structs dispatched from the WM's
-main loop. Phase 7 (scheduler) and Phase 8 (userspace) replace this with real
-concurrent processes. Until then, a crash in any app takes down the whole
-kernel, which is expected and fine for this stage of development.
+**Preemptive scheduler (Phase 8).** The timer ISR (`timer_naked` in
+`interrupts.rs`) is a `#[unsafe(naked)]` function using `naked_asm!`. It
+pushes all 15 GP registers onto the current stack, calls `timer_inner` (which
+handles ticks/repaint/EOI and delegates to `scheduler::timer_schedule`), then
+does `mov rsp, rax` to switch to the winning task's stack before popping its
+registers and executing `iretq`. New tasks are given a 64 KiB heap-allocated
+kernel stack pre-populated with a fake 20-word interrupt frame so the first
+`iretq` drops straight into the entry function.
+
+**No userspace (yet)** — all apps are Rust structs dispatched from the WM's
+main loop, running in ring 0 alongside the scheduler. Phase 9 (userspace) and
+Phase 10 (per-process VM) replace this with proper isolation. Until then, a
+crash in any task takes down the whole kernel, which is expected and fine for
+this stage of development.

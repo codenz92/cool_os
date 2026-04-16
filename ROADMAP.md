@@ -4,11 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–7 are complete. Everything below builds directly on that foundation.
+Phases 1–8 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## ✅ Phases 1–7 — Complete
+## ✅ Phases 1–8 — Complete
 
 | Phase | Deliverable |
 | :---: | :---------- |
@@ -19,6 +19,7 @@ Phases 1–7 are complete. Everything below builds directly on that foundation.
 | 5 | Four built-in apps running as kernel-mode modules |
 | 6 | High-res linear framebuffer via `bootloader 0.11` — 1280×720, 3/4bpp |
 | 7 | Fluid input — lock-free keyboard queue, scratch-buffer blit, release build |
+| 8 | Preemptive scheduler — naked timer ISR, round-robin context switching, idle + counter tasks |
 
 ### Phase 7 implementation notes
 
@@ -58,28 +59,60 @@ Phases 1–7 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## Phase 8 — Preemptive Scheduler
+## ✅ Phase 8 — Preemptive Scheduler
 
 **Goal:** Multiple concurrent execution contexts sharing the CPU via timer-driven
 preemption. This is the hardest single phase and everything from Phase 9 onwards
 depends on it.
 
-- [ ] Define a `Task` struct: kernel stack, saved register state (all GP registers +
+- [x] Define a `Task` struct: kernel stack, saved register state (all GP registers +
       `rflags`, `rsp`, `rip`), task ID, status (`Ready` / `Running` / `Blocked`).
-- [ ] Allocate a fixed kernel stack per task (e.g. 64 KB from the heap).
-- [ ] Implement context switching — a naked `switch_context(prev: *mut Task, next: *mut Task)`
-      function in inline assembly that pushes callee-saved registers, saves `rsp`,
-      restores the next task's `rsp`, pops its registers, and returns into the next task.
-- [ ] Build a simple round-robin run-queue (`VecDeque<TaskId>`).
-- [ ] Hook the timer IRQ (IRQ0) to call the scheduler: save the interrupted task's
+- [x] Allocate a fixed kernel stack per task (e.g. 64 KB from the heap).
+- [x] Implement context switching — a naked timer ISR (`timer_naked` in
+      `src/interrupts.rs`) pushes all 15 GP registers, calls `timer_inner` to
+      get the next task's RSP, switches the stack pointer, pops the new task's
+      registers, and `iretq`s back into it.
+- [x] Build a simple round-robin run-queue (`Vec<Task>` in `src/scheduler.rs`).
+- [x] Hook the timer IRQ (IRQ0) to call the scheduler: save the interrupted task's
       full register frame, pick the next `Ready` task, switch context.
-- [ ] Add `block()` / `unblock(id)` primitives so tasks can sleep waiting for I/O.
-- [ ] Port the existing main loop (compositor tick + `hlt`) to run as the idle task.
-- [ ] Verify: two simultaneous kernel tasks (e.g. a counter + the existing WM loop)
-      both make progress without corrupting each other.
+- [x] `TaskStatus::Blocked` variant and structural support for `block()` / `unblock(id)`
+      exist; full wiring to I/O events deferred to Phase 9.
+- [x] Port the existing main loop (compositor tick + `hlt`) to run as the idle task
+      (task 0, uses the kernel boot stack — no separate allocation needed).
+- [x] Verify: `counter_task` (task 1) increments `BACKGROUND_COUNTER` in a tight
+      loop while the WM loop (idle task) runs the desktop; the System Monitor
+      displays the counter in cyan, confirming both tasks make progress.
 
 **Exit criteria:** at least two kernel tasks preempt each other correctly under the
 timer; no stack corruption; `hlt` in the idle task still fires when no other task is runnable.
+
+### Phase 8 implementation notes
+
+- Replaced the `extern "x86-interrupt"` timer handler with a `#[unsafe(naked)]`
+  function (`timer_naked`) that manually pushes all 15 GP registers, calls the
+  Rust helper `timer_inner` (which increments `TICKS`, requests a repaint, and
+  sends PIC EOI), then does `mov rsp, rax` to switch stacks before popping the
+  new task's registers and executing `iretq`. `sym timer_inner` in the
+  `naked_asm!` block is the correct way to call a Rust function from a naked ISR.
+- IDT timer entry set via `set_handler_addr(VirtAddr::new(timer_naked as *const () as u64))`
+  instead of `set_handler_fn` because the naked function does not conform to the
+  `extern "x86-interrupt"` ABI.
+- New `src/scheduler.rs` owns `Task` (64 KiB heap stack + saved `stack_ptr`),
+  `Scheduler` (round-robin `Vec<Task>`), and `pub static SCHEDULER: spin::Mutex<Scheduler>`.
+  `Scheduler::empty()` is `const fn` so the global can be initialised without a heap.
+- New-task stack initialisation writes a 20-word (160-byte) fake context block:
+  15 zeroed GP-register slots followed by a synthetic 5-word interrupt frame
+  (RIP = entry fn, CS/SS read live via inline asm, RFLAGS = 0x202, RSP = stack_top − 8).
+  On first restore the `iretq` jumps straight to the entry function with correct
+  System V AMD64 ABI stack alignment.
+- Idle task (index 0) is the kernel boot stack — `stack_ptr` starts as 0 and is
+  written on the very first timer preemption, before any switch-away can occur.
+- Scheduler initialisation is wrapped in `without_interrupts` to prevent a
+  deadlock if the timer fires while `SCHEDULER.lock()` is held during `spawn`.
+- `timer_schedule` returns `current_rsp` unchanged when the task list is empty,
+  making timer IRQs that fire before task initialisation completely harmless.
+- `#[unsafe(naked)]` / `naked_asm!` (stable since Rust 1.88 nightly) replaced
+  the old `#[naked]` + `asm!` + `options(noreturn)` spelling.
 
 ---
 

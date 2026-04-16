@@ -50,9 +50,16 @@ lazy_static! {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.double_fault.set_handler_fn(double_fault_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
-        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        idt.general_protection_fault
+            .set_handler_fn(general_protection_fault_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
+        // Use set_handler_addr for our naked context-switch handler — it does
+        // not conform to the `extern "x86-interrupt"` ABI because it manages
+        // the full register save/restore itself.
+        unsafe {
+            idt[InterruptIndex::Timer.as_usize()]
+                .set_handler_addr(x86_64::VirtAddr::new(timer_naked as *const () as usize as u64));
+        }
         idt[InterruptIndex::Keyboard.as_usize()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Mouse.as_usize()].set_handler_fn(mouse_interrupt_handler);
         idt
@@ -62,6 +69,8 @@ lazy_static! {
 pub fn init_idt() {
     IDT.load();
 }
+
+// ── Fault handlers ────────────────────────────────────────────────────────────
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
@@ -76,13 +85,15 @@ extern "x86-interrupt" fn page_fault_handler(
     err: x86_64::structures::idt::PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
-    panic!("PAGE FAULT\naddr={:?} err={:?}\n{:#?}", Cr2::read(), err, sf);
+    panic!(
+        "PAGE FAULT\naddr={:?} err={:?}\n{:#?}",
+        Cr2::read(),
+        err,
+        sf
+    );
 }
 
-extern "x86-interrupt" fn general_protection_fault_handler(
-    sf: InterruptStackFrame,
-    err: u64,
-) {
+extern "x86-interrupt" fn general_protection_fault_handler(sf: InterruptStackFrame, err: u64) {
     panic!("GENERAL PROTECTION FAULT err={:#x}\n{:#?}", err, sf);
 }
 
@@ -90,17 +101,84 @@ extern "x86-interrupt" fn invalid_opcode_handler(sf: InterruptStackFrame) {
     panic!("INVALID OPCODE\n{:#?}", sf);
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-    // Request a repaint at ~30 fps (timer fires at ~18.2 Hz × 2 ticks ≈ every ~55 ms).
-    // We repaint every tick to keep the cursor smooth; compose() is fast.
-    let _ = ticks;
+// ── Timer interrupt — naked context-switch handler ────────────────────────────
+//
+// The CPU pushes its 5-word interrupt frame (RIP, CS, RFLAGS, RSP, SS) before
+// jumping here.  We then push all 15 GP registers, giving a 20-word (160-byte)
+// context block whose base address (RSP after all pushes) is passed to
+// `timer_inner` as its first argument via rdi (System V AMD64 ABI).
+//
+// `timer_inner` returns the RSP of whichever task should run next.  We write
+// that value into rsp, pop the GP registers from the (possibly new) stack, and
+// iretq back into the winning task.
+
+/// Naked entry point for the timer IRQ.  Saves / restores all GP registers and
+/// delegates the scheduling decision to `timer_inner`.
+#[unsafe(naked)]
+unsafe extern "C" fn timer_naked() {
+    core::arch::naked_asm!(
+        // Push GP registers in this exact order so the layout matches the
+        // stack map documented in scheduler.rs.
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // Pass current RSP (= base of context block) as the first argument.
+        "mov rdi, rsp",
+        // Call the Rust helper; return value (new RSP) lands in rax.
+        "call {inner}",
+        // Switch to the returned stack (may be a different task's stack).
+        "mov rsp, rax",
+        // Restore GP registers from whichever stack we are now on.
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        // Return from interrupt — restores RIP, CS, RFLAGS, RSP, SS.
+        "iretq",
+        inner = sym timer_inner,
+    );
+}
+
+/// Rust body of the timer handler.  Called from `timer_naked` with interrupts
+/// disabled (the CPU clears IF on interrupt entry through an interrupt gate).
+///
+/// Returns the RSP of the task that should run next (may equal `current_rsp`
+/// if no context switch is needed).
+#[inline(never)]
+extern "C" fn timer_inner(current_rsp: usize) -> usize {
+    TICKS.fetch_add(1, Ordering::Relaxed);
     crate::wm::request_repaint();
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+    unsafe { crate::scheduler::timer_schedule(current_rsp) }
 }
+
+// ── Keyboard interrupt (IRQ1, vector 33) ─────────────────────────────────────
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};

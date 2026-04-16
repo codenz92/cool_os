@@ -1,8 +1,9 @@
-/// System Monitor — shows CPU vendor, heap usage, and uptime.
-
-use font8x8::UnicodeFonts;
-use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, BLACK, WHITE, GREEN, YELLOW, LIGHT_GRAY};
+use crate::framebuffer::{
+    BLACK, CHAR_H, CHAR_W, FONT_SCALE, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
+};
 use crate::wm::window::Window;
+/// System Monitor — shows CPU vendor, heap usage, and uptime.
+use font8x8::UnicodeFonts;
 
 pub const SYSMON_W: i32 = 520;
 pub const SYSMON_H: i32 = 300;
@@ -13,13 +14,17 @@ pub struct SysMonApp {
 
 impl SysMonApp {
     pub fn new(x: i32, y: i32) -> Self {
-        let mut app = SysMonApp { window: Window::new(x, y, SYSMON_W, SYSMON_H, "System Monitor") };
+        let mut app = SysMonApp {
+            window: Window::new(x, y, SYSMON_W, SYSMON_H, "System Monitor"),
+        };
         app.update();
         app
     }
 
     pub fn update(&mut self) {
-        for b in self.window.buf.iter_mut() { *b = BLACK; }
+        for b in self.window.buf.iter_mut() {
+            *b = BLACK;
+        }
 
         let stride = SYSMON_W as usize;
         let mut row = 0usize;
@@ -54,13 +59,24 @@ impl SysMonApp {
         line.push_u64(ticks / 18);
         line.push_str("s)");
         self.put_str(stride, row, line.as_str(), YELLOW);
+        row += 2;
+
+        self.put_str(stride, row, "Scheduler:", WHITE);
+        row += 1;
+        let counter =
+            crate::scheduler::BACKGROUND_COUNTER.load(core::sync::atomic::Ordering::Relaxed);
+        let mut line = NumberLine::new();
+        line.push_u64(counter);
+        self.put_str(stride, row, line.as_str(), LIGHT_CYAN);
     }
 
     fn put_str(&mut self, stride: usize, text_row: usize, s: &str, color: u32) {
         let py = text_row * CHAR_H;
         for (ci, c) in s.chars().enumerate() {
             let px = ci * CHAR_W;
-            if px + CHAR_W > stride { break; }
+            if px + CHAR_W > stride {
+                break;
+            }
             put_char_buf(&mut self.window.buf, stride, px, py, c, color, BLACK);
         }
     }
@@ -68,28 +84,56 @@ impl SysMonApp {
 
 // ── Number formatting helper ──────────────────────────────────────────────────
 
-struct NumberLine { buf: [u8; 64], len: usize }
+struct NumberLine {
+    buf: [u8; 64],
+    len: usize,
+}
 
 impl NumberLine {
-    fn new() -> Self { NumberLine { buf: [b' '; 64], len: 0 } }
+    fn new() -> Self {
+        NumberLine {
+            buf: [b' '; 64],
+            len: 0,
+        }
+    }
     fn push_str(&mut self, s: &str) {
-        for b in s.bytes() { if self.len < 64 { self.buf[self.len] = b; self.len += 1; } }
+        for b in s.bytes() {
+            if self.len < 64 {
+                self.buf[self.len] = b;
+                self.len += 1;
+            }
+        }
     }
     fn push_u64(&mut self, mut n: u64) {
-        if n == 0 { self.push_str("0"); return; }
-        let mut tmp = [0u8; 20]; let mut i = 20usize;
-        while n > 0 { i -= 1; tmp[i] = b'0' + (n % 10) as u8; n /= 10; }
-        for &b in &tmp[i..] { if self.len < 64 { self.buf[self.len] = b; self.len += 1; } }
+        if n == 0 {
+            self.push_str("0");
+            return;
+        }
+        let mut tmp = [0u8; 20];
+        let mut i = 20usize;
+        while n > 0 {
+            i -= 1;
+            tmp[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        for &b in &tmp[i..] {
+            if self.len < 64 {
+                self.buf[self.len] = b;
+                self.len += 1;
+            }
+        }
     }
-    fn push_usize(&mut self, n: usize) { self.push_u64(n as u64); }
-    fn as_str(&self) -> &str { core::str::from_utf8(&self.buf[..self.len]).unwrap_or("") }
+    fn push_usize(&mut self, n: usize) {
+        self.push_u64(n as u64);
+    }
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
 }
 
 // ── Shared glyph helper ───────────────────────────────────────────────────────
 
-fn put_char_buf(buf: &mut [u32], stride: usize, px0: usize, py0: usize,
-                c: char, fg: u32, bg: u32)
-{
+fn put_char_buf(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32, bg: u32) {
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
@@ -99,9 +143,11 @@ fn put_char_buf(buf: &mut [u32], stride: usize, px0: usize, py0: usize,
             for sy in 0..FONT_SCALE {
                 for sx in 0..FONT_SCALE {
                     let px = px0 + bit * FONT_SCALE + sx;
-                    let py = py0 + gy  * FONT_SCALE + sy;
+                    let py = py0 + gy * FONT_SCALE + sy;
                     let idx = py * stride + px;
-                    if idx < buf.len() { buf[idx] = color; }
+                    if idx < buf.len() {
+                        buf[idx] = color;
+                    }
                 }
             }
         }

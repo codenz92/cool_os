@@ -11,10 +11,11 @@ mod interrupts;
 mod keyboard;
 mod memory;
 mod mouse;
+mod scheduler;
 mod vga_buffer;
 mod wm;
 
-use bootloader_api::{entry_point, BootInfo, BootloaderConfig, config::Mapping};
+use bootloader_api::{config::Mapping, entry_point, BootInfo, BootloaderConfig};
 use core::panic::PanicInfo;
 
 /// Tell the bootloader to map all physical memory at a dynamic virtual
@@ -36,13 +37,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let base = fb.buffer_mut().as_mut_ptr() as u64;
         let fmt = match info.pixel_format {
             bootloader_api::info::PixelFormat::Rgb => framebuffer::PixFmt::Rgb,
-            _                                       => framebuffer::PixFmt::Bgr,
+            _ => framebuffer::PixFmt::Bgr,
         };
-        framebuffer::init(base, info.width, info.height, info.stride,
-                          info.bytes_per_pixel, fmt);
-        println!("FB {}x{} stride={} bpp={} base={:#x}",
-            info.width, info.height, info.stride,
-            info.bytes_per_pixel, base);
+        framebuffer::init(
+            base,
+            info.width,
+            info.height,
+            info.stride,
+            info.bytes_per_pixel,
+            fmt,
+        );
+        println!(
+            "FB {}x{} stride={} bpp={} base={:#x}",
+            info.width, info.height, info.stride, info.bytes_per_pixel, base
+        );
     } else {
         // No framebuffer — nothing will render but at least we don't crash silently.
         panic!("bootloader did not provide a framebuffer");
@@ -68,6 +76,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap init failed");
 
+    // ── Scheduler ─────────────────────────────────────────────────────────────
+    // Disable interrupts while holding the scheduler lock to avoid a deadlock
+    // if the timer ISR fires while we are mid-initialisation.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = scheduler::SCHEDULER.lock();
+        sched.add_idle();
+        sched.spawn("counter", counter_task);
+    });
+
     // ── Desktop ───────────────────────────────────────────────────────────────
     let term = apps::TerminalApp::new(20, 20);
     wm::add_window(wm::AppWindow::Terminal(term));
@@ -82,6 +99,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // block mouse and keyboard for tens of milliseconds per frame.
         wm::compose_if_needed();
         x86_64::instructions::hlt();
+    }
+}
+
+/// Background task: increments BACKGROUND_COUNTER as fast as possible.
+/// The sysmon window displays this counter, proving that preemption works —
+/// the counter advances even while the WM (idle task) is compositing.
+fn counter_task() -> ! {
+    loop {
+        scheduler::BACKGROUND_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
