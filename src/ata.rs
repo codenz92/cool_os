@@ -23,9 +23,10 @@ const DEV_CTRL:  u16 = 0x3F6; // Device Control Register: nIEN (bit 1) disables 
 
 // ── Drive / status constants ──────────────────────────────────────────────────
 
-const DRIVE_SLAVE: u8 = 0xB0; // LBA mode (bit 6) + drive 1 (bit 4)
+const DRIVE_SLAVE: u8 = 0xF0; // bits 7/5 set, LBA mode (bit 6), drive 1 (bit 4)
 const CMD_READ:    u8 = 0x20; // READ SECTORS (LBA28, PIO)
 const STATUS_BSY:  u8 = 0x80;
+const STATUS_DF:   u8 = 0x20;
 const STATUS_DRQ:  u8 = 0x08;
 const STATUS_ERR:  u8 = 0x01;
 
@@ -77,7 +78,14 @@ fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
         let mut drq_iters: u32 = 0;
         loop {
             let s = status.read();
-            if s & STATUS_ERR != 0 { return false; }
+            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+                let err = Port::<u8>::new(FEATURES).read();
+                crate::println!(
+                    "[ata] read error lba={} status={:#x} err={:#x}",
+                    lba, s, err
+                );
+                return false;
+            }
             if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 { break; }
             drq_iters += 1;
             if drq_iters > 10_000_000 {

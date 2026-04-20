@@ -84,7 +84,8 @@ pub fn alloc_zeroed_frame() -> Option<PhysFrame> {
 pub fn new_process_pml4() -> Option<PhysFrame> {
     let frame = alloc_zeroed_frame()?;
 
-    let (boot_l4_frame, _) = Cr3::read();
+    let boot_phys = PhysAddr::new(*BOOT_PML4.lock());
+    let boot_l4_frame: PhysFrame = PhysFrame::containing_address(boot_phys);
     let src = unsafe { table_at(boot_l4_frame.start_address()) };
     let dst = unsafe { table_at(frame.start_address()) };
 

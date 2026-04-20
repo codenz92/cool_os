@@ -68,7 +68,7 @@ impl TerminalApp {
         let mut words = input.split_whitespace();
         match words.next() {
             Some("help") => {
-                self.print_str("Commands: help clear reboot echo info uptime\n");
+                self.print_str("Commands: help clear reboot echo exec info uptime\n");
             }
             Some("clear") => {
                 for b in self.window.buf.iter_mut() { *b = BG; }
@@ -79,6 +79,23 @@ impl TerminalApp {
             Some("echo") => {
                 for word in words { self.print_str(word); self.print_char(' '); }
                 self.print_char('\n');
+            }
+            Some("exec") => {
+                match words.next() {
+                    Some(path) => match crate::elf::spawn_elf_process(path) {
+                        Ok(()) => {
+                            self.print_str("Spawned ");
+                            self.print_str(path);
+                            self.print_char('\n');
+                        }
+                        Err(err) => {
+                            self.print_str("exec failed: ");
+                            self.print_str(err.as_str());
+                            self.print_char('\n');
+                        }
+                    },
+                    None => self.print_str("usage: exec /bin/hello\n"),
+                }
             }
             Some("uptime") => {
                 self.print_str("Uptime: ");

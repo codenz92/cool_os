@@ -271,22 +271,42 @@ FAT32 image on boot and prints its contents to the console.
 **Goal:** The kernel can load a compiled ELF binary from disk, map it into a new
 address space, and jump to its entry point.
 
-- [ ] Parse ELF64 headers — validate magic, machine type (`x86_64`), entry point.
-- [ ] Walk `PT_LOAD` segments: allocate virtual pages in the process's address space,
+- [x] Parse ELF64 headers — validate magic, machine type (`x86_64`), entry point.
+- [x] Walk `PT_LOAD` segments: allocate virtual pages in the process's address space,
       read segment data from the file into those pages, set PTE flags from segment
       flags (`R`, `W`, `X`).
-- [ ] Allocate a user stack (e.g. 1 MB starting at `0x7fff_0000_0000`) and map it.
-- [ ] Build an `argv`/`envp` array on the user stack in the System V AMD64 ABI layout.
-- [ ] Create a new `Task`, set its `rip` to the ELF entry point and `rsp` to the top
+- [x] Allocate a user stack and map it.
+- [x] Build an `argv`/`envp` array on the user stack in the System V AMD64 ABI layout.
+- [x] Create a new `Task`, set its `rip` to the ELF entry point and `rsp` to the top
       of the user stack, add it to the run-queue.
-- [ ] Add a `sys_exec(path)` syscall that calls the ELF loader and replaces the
+- [x] Add a `sys_exec(path)` syscall that calls the ELF loader and replaces the
       calling process's address space.
-- [ ] Compile a minimal `hello` binary (Rust `#![no_std]` + syscall shim) and
+- [x] Compile a minimal `hello` binary (Rust `#![no_std]` + syscall shim) and
       ship it in `/bin/hello` on the disk image.
-- [ ] Add an `exec <path>` command to the terminal app.
+- [x] Add an `exec <path>` command to the terminal app.
 
 **Exit criteria:** typing `exec /bin/hello` in the terminal spawns a real
 userspace process that prints to the screen and exits cleanly.
+
+**Current status:** complete.
+
+### Phase 12 implementation notes
+
+- `src/elf.rs` now validates ELF64 headers, walks `PT_LOAD` segments, allocates
+  a fresh per-process PML4, maps a private user stack, builds a minimal
+  `argc=1` / `argv[0]=path` / empty-`envp` startup frame, and can either spawn
+  a new task or prepare a loaded image for `sys_exec`.
+- `scheduler.rs` gained `spawn_user`, which builds an initial ring-3 interrupt
+  frame directly instead of going through a trampoline stub.
+- `syscall.rs` now exposes syscall 8, `exec(path, len)`. It loads a new ELF
+  image, updates the current task's `pml4`, switches CR3 immediately, and
+  rewrites the saved syscall return frame so `sysretq` enters the new image.
+- `vmm::new_process_pml4()` now clones from the boot/kernel PML4 rather than
+  the currently active user CR3. Without that fix, `sys_exec` inherited stale
+  user mappings and collided while remapping the new stack/segments.
+- The host-side build now produces two user binaries: `/bin/hello` prints a
+  line and exits; `/bin/exec` demonstrates true in-place `sys_exec` by replacing
+  itself with `/bin/hello`.
 
 ---
 
@@ -387,7 +407,7 @@ real machines. Everything in between can be developed entirely in QEMU.
 
 | Tag | Milestone |
 | :-- | :-------- |
-| v1.7 | Current — high-res framebuffer, fluid input, release build |
+| v1.12 | Current — Phase 12 complete: ELF loader, terminal `exec`, working `sys_exec` |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete — network-capable |

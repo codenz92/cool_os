@@ -4,18 +4,19 @@ https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable windows, a taskbar, a PS/2 mouse cursor,
 and four built-in applications — now with a preemptive scheduler, ring-3
-userspace, per-process virtual memory, process isolation, and a FAT32
-filesystem with VFS and syscall interface.
+userspace, per-process virtual memory, process isolation, a FAT32
+filesystem with VFS/syscalls, and a minimal ELF loader with `exec`.
 
 ---
 
-# Current state — v1.11
+# Current state — v1.12
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps. A preemptive round-robin scheduler runs five kernel/user tasks driven by
-the PIT timer at **100 Hz**:
+apps. A preemptive round-robin scheduler runs five boot tasks driven by the PIT
+timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
+from disk with `exec`:
 
 | Task | Ring | Description |
 | :--- | :--- | :---------- |
@@ -27,7 +28,10 @@ the PIT timer at **100 Hz**:
 
 On boot, the contents of `/bin/hello.txt` are printed to the console by the
 `fs-test` task. Both `[ring3 pid=1] sentinel ok` and `[ring3 pid=2] sentinel ok`
-appear in the terminal, proving process isolation: same virtual address, different physical frames.
+appear in the terminal, proving process isolation: same virtual address,
+different physical frames. Typing `exec /bin/hello` launches a real userspace
+ELF from disk, and `exec /bin/exec` demonstrates `sys_exec` by replacing a
+running userspace image with `/bin/hello`.
 
 ### What's working
 
@@ -45,12 +49,13 @@ appear in the terminal, proving process isolation: same virtual address, differe
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to a dedicated 64 KiB kernel syscall stack, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`. `sys_write` pushes bytes into a lock-free ring buffer; the compositor drains it into the terminal each frame. |
-| **Userspace** | Ring-3 code executes via `jump_to_userspace` (iretq with user CS/SS). Two isolated processes each write a sentinel to their private stack and read it back. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`. `sys_write` pushes bytes into a lock-free ring buffer; the compositor drains it into the terminal each frame. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. |
+| **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 parser** | Read-only. BPB parsing, FAT chain walking, 8.3 filename lookup, directory traversal, cluster→sector mapping. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | FD table (16 slots, fds 0–2 reserved). `vfs_open` reads the whole file into a heap buffer; `vfs_read` slices it with an offset cursor; `vfs_close` drops the buffer. |
-| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt` using the `fatfs` crate. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, and `/bin/exec`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -67,6 +72,7 @@ appear in the terminal, proving process isolation: same virtual address, differe
 | :------ | :---------- |
 | `help` | List available commands |
 | `echo <text>` | Print text |
+| `exec <path>` | Load a userspace ELF from disk and spawn it |
 | `info` | CPU vendor and heap usage |
 | `uptime` | Timer ticks and seconds since boot |
 | `clear` | Clear the terminal |
@@ -91,9 +97,9 @@ brew install qemu
 make run
 ```
 
-The build is a two-step process: `cargo build` compiles the kernel ELF, then
-`cargo run -p disk-image` wraps it into a BIOS-bootable `bios.img` using
-`bootloader 0.11`'s `BiosBoot` builder.
+The build process compiles the kernel ELF, compiles the userspace ELF binaries
+in `userspace/hello/`, wraps the kernel into a BIOS-bootable `bios.img`, and
+builds `fs.img` with the userspace binaries embedded into `/bin`.
 
 Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to
 release it.
@@ -105,13 +111,15 @@ release it.
 ```
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
-  src/fs-image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt
+  src/fs-image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt,
+                   /bin/hello, and /bin/exec
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
   interrupts.rs    IDT, PIC, PIT (100 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
   syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
-                   jump_to_userspace (iretq trampoline); sys_open/read/close (nr 5–7)
+                   jump_to_userspace (iretq trampoline); sys_open/read/close/exec
+  elf.rs           ELF64 loader — parse headers, map PT_LOAD segments, build user images
   userspace.rs     Two isolated ring-3 processes — spawn_user_process(pid), user_stub
   memory.rs        Page table init, BootInfoFrameAllocator (with next/init_from),
                    mark_all_user_accessible
@@ -137,6 +145,11 @@ src/
     sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler display
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
+userspace/
+  hello/
+    src/main.rs    `/bin/hello` — minimal userspace ELF that writes and exits
+    src/bin/exec.rs `/bin/exec` — userspace `sys_exec` demo that replaces itself with `/bin/hello`
+    linker.ld      Fixed-address linker script for the userspace ELF binaries
 ```
 
 ---
@@ -227,7 +240,7 @@ faults still panic.
 | 9 | Ring-3 userspace + SYSCALL/SYSRET interface | **Done** |
 | 10 | Per-process virtual memory + isolation | **Done** |
 | 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
-| 12 | ELF loader — real programs run from disk | Planned |
+| 12 | ELF loader — real programs run from disk | **Done** |
 | 13 | Pipes + shared memory + IPC | Planned |
 | 14 | USB HID — real hardware input | Planned |
 | 15 | Networking — virtio-net, TCP/IP | Planned |

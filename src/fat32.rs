@@ -22,10 +22,21 @@ pub struct Bpb {
 impl Bpb {
     pub fn load() -> Option<Self> {
         let mut sec = [0u8; 512];
-        if !crate::ata::read_sector(0, &mut sec) { return None; }
+        if !crate::ata::read_sector(0, &mut sec) {
+            crate::println!("[fat32] BPB read_sector failed");
+            return None;
+        }
 
         // Validate FAT boot-sector signature.
-        if sec[510] != 0x55 || sec[511] != 0xAA { return None; }
+        if sec[510] != 0x55 || sec[511] != 0xAA {
+            crate::println!(
+                "[fat32] bad BPB sig: {:02x} {:02x}; first16={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                sec[510], sec[511],
+                sec[0], sec[1], sec[2], sec[3], sec[4], sec[5], sec[6], sec[7],
+                sec[8], sec[9], sec[10], sec[11], sec[12], sec[13], sec[14], sec[15],
+            );
+            return None;
+        }
 
         let bytes_per_sector   = u16::from_le_bytes([sec[11], sec[12]]);
         let sectors_per_cluster = sec[13];

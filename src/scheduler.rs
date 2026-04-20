@@ -103,17 +103,15 @@ impl Scheduler {
         });
     }
 
-    /// Allocate a 64 KiB kernel stack for a new task, pre-populate its saved
-    /// context so that the first `iretq` begins execution at `entry`, and
-    /// add the task to the run queue as `Ready`.
-    /// Spawn a kernel-mode task (shares the boot PML4, ring 0).
-    pub fn spawn(&mut self, name: &'static str, entry: fn() -> !) {
-        self.spawn_with_pml4(name, entry, None);
-    }
-
-    /// Spawn a task with an optional private PML4.  When `pml4` is `Some`,
-    /// the scheduler loads it into CR3 whenever this task is scheduled.
-    pub fn spawn_with_pml4(&mut self, name: &'static str, entry: fn() -> !, pml4: Option<PhysFrame>) {
+    fn spawn_context(
+        &mut self,
+        name: &'static str,
+        rip: u64,
+        cs: u64,
+        rsp: Option<u64>,
+        ss: u64,
+        pml4: Option<PhysFrame>,
+    ) {
         // Allocate and zero-initialise the stack buffer.
         let mut stack: Vec<u8> = Vec::new();
         stack.resize(STACK_SIZE, 0u8);
@@ -125,22 +123,13 @@ impl Scheduler {
         // The saved RSP is the bottom of the 20-word (160-byte) context block.
         let stack_ptr_addr = stack_top - 20 * 8; // stack_top - 160
 
-        // Read the current code-segment and stack-segment selectors.  These
-        // must match exactly what the CPU expects for kernel-mode iretq.
-        let cs: u64;
-        let ss: u64;
-        unsafe {
-            core::arch::asm!("mov {0:x}, cs", out(reg) cs);
-            core::arch::asm!("mov {0:x}, ss", out(reg) ss);
-        }
-
         // Populate the context block.
         //
         // frame[0..15]  → GP registers (r15 first, rax last) — all 0
         // frame[15]     → RIP  (task entry point)
         // frame[16]     → CS
         // frame[17]     → RFLAGS: IF=1 (bit 9) + reserved bit 1 = 0x202
-        // frame[18]     → RSP  (initial stack pointer; 16n+8 = ABI entry RSP)
+        // frame[18]     → RSP
         // frame[19]     → SS
         //
         // SAFETY: stack_ptr_addr is 16-byte aligned (stack_top is 16-byte
@@ -151,10 +140,10 @@ impl Scheduler {
         for slot in frame[0..15].iter_mut() {
             *slot = 0;
         }
-        frame[15] = entry as usize as u64; // RIP
+        frame[15] = rip;
         frame[16] = cs; // CS
         frame[17] = 0x202; // RFLAGS: IF=1, reserved bit 1
-        frame[18] = (stack_top - 8) as u64; // RSP  (16n+8 — correct ABI entry)
+        frame[18] = rsp.unwrap_or((stack_top - 8) as u64);
         frame[19] = ss; // SS
 
         self.tasks.push(Task {
@@ -164,6 +153,35 @@ impl Scheduler {
             status: TaskStatus::Ready,
             pml4,
         });
+    }
+
+    /// Allocate a 64 KiB kernel stack for a new task, pre-populate its saved
+    /// context so that the first `iretq` begins execution at `entry`, and
+    /// add the task to the run queue as `Ready`.
+    /// Spawn a kernel-mode task (shares the boot PML4, ring 0).
+    pub fn spawn(&mut self, name: &'static str, entry: fn() -> !) {
+        self.spawn_with_pml4(name, entry, None);
+    }
+
+    /// Spawn a task with an optional private PML4.  When `pml4` is `Some`,
+    /// the scheduler loads it into CR3 whenever this task is scheduled.
+    pub fn spawn_with_pml4(&mut self, name: &'static str, entry: fn() -> !, pml4: Option<PhysFrame>) {
+        // Read the current kernel selectors. These must match exactly what the
+        // CPU expects for a ring-0 iretq frame.
+        let cs: u64;
+        let ss: u64;
+        unsafe {
+            core::arch::asm!("mov {0:x}, cs", out(reg) cs);
+            core::arch::asm!("mov {0:x}, ss", out(reg) ss);
+        }
+        self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4);
+    }
+
+    /// Spawn a ring-3 task that will enter at `entry` with the given user stack.
+    pub fn spawn_user(&mut self, name: &'static str, entry: u64, user_rsp: u64, pml4: PhysFrame) {
+        let user_cs = crate::gdt::user_code_selector().0 as u64;
+        let user_ss = crate::gdt::user_data_selector().0 as u64;
+        self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4));
     }
 
     /// Core round-robin scheduling decision.

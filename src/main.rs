@@ -7,6 +7,7 @@ extern crate alloc;
 mod allocator;
 mod apps;
 mod ata;
+mod elf;
 mod fat32;
 mod framebuffer;
 mod gdt;

@@ -15,6 +15,7 @@
 ///   5  open(path_ptr, path_len) → fd on success, u64::MAX on failure
 ///   6  read(fd, buf_ptr, len) → bytes read, u64::MAX on error
 ///   7  close(fd) → 0
+///   8  exec(path_ptr, path_len) → 0 on success, u64::MAX on error
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -100,6 +101,19 @@ pub fn init() {
 //   [rsp+ 8]  r14
 //   [rsp+ 0]  r15        (top of frame — pushed last)
 
+#[repr(C)]
+struct SyscallFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbx: u64,
+    rbp: u64,
+    user_rflags: u64,
+    user_rip: u64,
+    user_rsp: u64,
+}
+
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
@@ -117,13 +131,14 @@ unsafe extern "C" fn syscall_entry() {
         "push r13",
         "push r14",
         "push r15",
-        // Shuffle registers for dispatch(nr, a1, a2, a3) using SysV AMD64 ABI:
-        //   rdi=nr  rsi=a1  rdx=a2  rcx=a3
+        // Shuffle registers for dispatch(frame, nr, a1, a2, a3) using SysV:
+        //   rdi=frame  rsi=nr  rdx=a1  rcx=a2  r8=a3
         // Input: rax=nr  rdi=a1  rsi=a2  rdx=a3
-        "mov rcx, rdx",
-        "mov rdx, rsi",
-        "mov rsi, rdi",
-        "mov rdi, rax",
+        "mov r8, rdx",
+        "mov rcx, rsi",
+        "mov rdx, rdi",
+        "mov rsi, rax",
+        "mov rdi, rsp",
         "call {dispatch}",
         // Return value in rax.  Restore saved registers.
         "pop r15",
@@ -143,7 +158,7 @@ unsafe extern "C" fn syscall_entry() {
 
 // ── Dispatcher and handlers ───────────────────────────────────────────────────
 
-extern "C" fn syscall_dispatch(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+extern "C" fn syscall_dispatch(frame: &mut SyscallFrame, nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     match nr {
         0 => { sys_exit(a1); 0 }
         1 => sys_write(a1, a2 as *const u8, a3),
@@ -153,6 +168,7 @@ extern "C" fn syscall_dispatch(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         5 => sys_open(a1 as *const u8, a2),
         6 => sys_read(a1, a2 as *mut u8, a3),
         7 => { sys_close(a1); 0 }
+        8 => sys_exec(frame, a1 as *const u8, a2),
         _ => u64::MAX,
     }
 }
@@ -229,6 +245,41 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
 
 fn sys_close(fd: u64) {
     crate::vfs::vfs_close(fd as usize);
+}
+
+fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let path = match core::str::from_utf8(bytes) {
+        Ok(path) => path,
+        Err(_) => return u64::MAX,
+    };
+
+    let image = match crate::elf::load_elf_image(path) {
+        Ok(image) => image,
+        Err(_) => return u64::MAX,
+    };
+
+    {
+        let mut sched = crate::scheduler::SCHEDULER.lock();
+        let cur = sched.current;
+        sched.tasks[cur].pml4 = Some(image.pml4);
+    }
+
+    unsafe { crate::vmm::switch_to(image.pml4) };
+
+    // Replace the return frame so sysretq enters the new program instead of
+    // resuming the old one.
+    frame.r15 = 0;
+    frame.r14 = 0;
+    frame.r13 = 0;
+    frame.r12 = 0;
+    frame.rbx = 0;
+    frame.rbp = 0;
+    frame.user_rflags = 0x202;
+    frame.user_rip = image.entry;
+    frame.user_rsp = image.user_rsp;
+
+    0
 }
 
 fn sys_yield() {
