@@ -2,6 +2,7 @@
 
 extern crate alloc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use font8x8::UnicodeFonts;
 
 use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, BLACK, LIGHT_GRAY};
@@ -12,10 +13,10 @@ pub const TERM_H: i32 = 440;
 
 const FG: u32 = LIGHT_GRAY;
 const BG: u32 = BLACK;
-
 pub struct TerminalApp {
     pub window: Window,
     cmd_buf:    String,
+    pending_key_sink_fd: Option<usize>,
     col:        usize,
     row:        usize,
     cols:       usize,
@@ -32,6 +33,7 @@ impl TerminalApp {
         let mut t = TerminalApp {
             window,
             cmd_buf: String::new(),
+            pending_key_sink_fd: None,
             col: 0,
             row: 0,
             cols,
@@ -62,13 +64,17 @@ impl TerminalApp {
         }
     }
 
+    pub fn take_pending_key_sink(&mut self) -> Option<usize> {
+        self.pending_key_sink_fd.take()
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     fn run_command(&mut self, input: &str) {
         let mut words = input.split_whitespace();
         match words.next() {
             Some("help") => {
-                self.print_str("Commands: help clear reboot echo exec info uptime\n");
+                self.print_str("Commands: help clear reboot echo exec ipc keydemo term info uptime\n");
             }
             Some("clear") => {
                 for b in self.window.buf.iter_mut() { *b = BG; }
@@ -82,19 +88,109 @@ impl TerminalApp {
             }
             Some("exec") => {
                 match words.next() {
-                    Some(path) => match crate::elf::spawn_elf_process(path) {
-                        Ok(()) => {
-                            self.print_str("Spawned ");
-                            self.print_str(path);
-                            self.print_char('\n');
+                    Some(path) => {
+                        let args: Vec<&str> = words.collect();
+                        match crate::elf::spawn_elf_process_with_args(path, &args) {
+                            Ok(()) => {
+                                self.print_str("Spawned ");
+                                self.print_str(path);
+                                if !args.is_empty() {
+                                    self.print_str(" with args");
+                                }
+                                self.print_char('\n');
+                            }
+                            Err(err) => {
+                                self.print_str("exec failed: ");
+                                self.print_str(err.as_str());
+                                self.print_char('\n');
+                            }
                         }
-                        Err(err) => {
-                            self.print_str("exec failed: ");
-                            self.print_str(err.as_str());
-                            self.print_char('\n');
+                    }
+                    None => self.print_str("usage: exec /bin/hello [args...]\n"),
+                }
+            }
+            Some("ipc") => {
+                match crate::vfs::vfs_pipe() {
+                    Some((read_fd, write_fd)) => {
+                        let reader = crate::elf::spawn_elf_process_with_fds(
+                            "/bin/piperd",
+                            &[],
+                            &[(read_fd, 3)],
+                        );
+                        let writer = crate::elf::spawn_elf_process_with_fds(
+                            "/bin/pipewr",
+                            &[],
+                            &[(write_fd, 3)],
+                        );
+                        crate::vfs::vfs_close(read_fd);
+                        crate::vfs::vfs_close(write_fd);
+
+                        match (reader, writer) {
+                            (Ok(()), Ok(())) => {
+                                self.print_str("Spawned shared pipe demo\n");
+                            }
+                            (Err(err), _) => {
+                                self.print_str("ipc failed: ");
+                                self.print_str(err.as_str());
+                                self.print_char('\n');
+                            }
+                            (_, Err(err)) => {
+                                self.print_str("ipc failed: ");
+                                self.print_str(err.as_str());
+                                self.print_char('\n');
+                            }
                         }
-                    },
-                    None => self.print_str("usage: exec /bin/hello\n"),
+                    }
+                    None => self.print_str("ipc unavailable: no pipe slots\n"),
+                }
+            }
+            Some("keydemo") => {
+                match crate::vfs::vfs_pipe() {
+                    Some((read_fd, write_fd)) => {
+                        match crate::elf::spawn_elf_process_with_fds(
+                            "/bin/keyecho",
+                            &[],
+                            &[(read_fd, 3)],
+                        ) {
+                            Ok(()) => {
+                                crate::vfs::vfs_close(read_fd);
+                                self.pending_key_sink_fd = Some(write_fd);
+                                self.print_str("keydemo active; type into the terminal, `~` ends input\n");
+                            }
+                            Err(err) => {
+                                crate::vfs::vfs_close(read_fd);
+                                crate::vfs::vfs_close(write_fd);
+                                self.print_str("keydemo failed: ");
+                                self.print_str(err.as_str());
+                                self.print_char('\n');
+                            }
+                        }
+                    }
+                    None => self.print_str("keydemo unavailable: no pipe slots\n"),
+                }
+            }
+            Some("term") => {
+                match crate::vfs::vfs_pipe() {
+                    Some((read_fd, write_fd)) => {
+                        match crate::elf::spawn_elf_process_with_stdin(
+                            "/bin/terminal",
+                            &[],
+                            read_fd,
+                        ) {
+                            Ok(()) => {
+                                self.pending_key_sink_fd = Some(write_fd);
+                                self.print_str("userspace terminal started; type commands, Ctrl+D ends\n");
+                            }
+                            Err(err) => {
+                                crate::vfs::vfs_close(read_fd);
+                                crate::vfs::vfs_close(write_fd);
+                                self.print_str("term failed: ");
+                                self.print_str(err.as_str());
+                                self.print_char('\n');
+                            }
+                        }
+                    }
+                    None => self.print_str("term unavailable: no pipe slots\n"),
                 }
             }
             Some("uptime") => {

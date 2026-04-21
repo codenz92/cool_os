@@ -4,6 +4,8 @@
 /// in the lower canonical half. The loader can either spawn a fresh task or
 /// prepare an image for `sys_exec` to install into the current task.
 
+extern crate alloc;
+use alloc::vec::Vec;
 use core::{cmp, mem, ptr};
 
 use x86_64::{
@@ -59,6 +61,7 @@ pub enum ExecError {
     InvalidElf(&'static str),
     OutOfMemory,
     MapFailed(&'static str),
+    FdInstallFailed,
 }
 
 impl ExecError {
@@ -68,6 +71,7 @@ impl ExecError {
             ExecError::InvalidElf(msg) => msg,
             ExecError::OutOfMemory => "out of memory",
             ExecError::MapFailed(msg) => msg,
+            ExecError::FdInstallFailed => "fd install failed",
         }
     }
 }
@@ -78,23 +82,53 @@ pub struct LoadedImage {
     pub user_rsp: u64,
 }
 
+#[allow(dead_code)]
 pub fn spawn_elf_process(path: &str) -> Result<(), ExecError> {
-    let image = load_elf_image(path)?;
+    spawn_elf_process_with_args(path, &[])
+}
 
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        crate::scheduler::SCHEDULER
-            .lock()
-            .spawn_user("user-elf", image.entry, image.user_rsp, image.pml4);
+pub fn spawn_elf_process_with_args(path: &str, args: &[&str]) -> Result<(), ExecError> {
+    spawn_elf_process_with_fds(path, args, &[])
+}
+
+pub fn spawn_elf_process_with_fds(
+    path: &str,
+    args: &[&str],
+    inherited_fds: &[(usize, usize)],
+) -> Result<(), ExecError> {
+    let image = load_elf_image_with_args(path, args)?;
+
+    let ok = x86_64::instructions::interrupts::without_interrupts(|| {
+        crate::scheduler::SCHEDULER.lock().spawn_user_with_fds(
+            "user-elf",
+            image.entry,
+            image.user_rsp,
+            image.pml4,
+            inherited_fds,
+        )
     });
-    Ok(())
+
+    if ok { Ok(()) } else { Err(ExecError::FdInstallFailed) }
+}
+
+pub fn spawn_elf_process_with_stdin(
+    path: &str,
+    args: &[&str],
+    stdin_fd: usize,
+) -> Result<(), ExecError> {
+    spawn_elf_process_with_fds(path, args, &[(stdin_fd, 3)])
 }
 
 pub fn load_elf_image(path: &str) -> Result<LoadedImage, ExecError> {
+    load_elf_image_with_args(path, &[])
+}
+
+pub fn load_elf_image_with_args(path: &str, args: &[&str]) -> Result<LoadedImage, ExecError> {
     let image = crate::fat32::read_file(path).ok_or(ExecError::NotFound)?;
     let header = parse_header(&image)?;
     let pml4 = crate::vmm::new_process_pml4().ok_or(ExecError::OutOfMemory)?;
 
-    let user_rsp = map_user_stack(pml4, path)?;
+    let user_rsp = map_user_stack(pml4, path, args)?;
     load_segments(&image, &header, pml4)?;
 
     Ok(LoadedImage {
@@ -144,7 +178,7 @@ fn parse_header(image: &[u8]) -> Result<Elf64Header, ExecError> {
     Ok(header)
 }
 
-fn map_user_stack(pml4: PhysFrame, argv0: &str) -> Result<u64, ExecError> {
+fn map_user_stack(pml4: PhysFrame, argv0: &str, args: &[&str]) -> Result<u64, ExecError> {
     let stack_flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE;
@@ -166,34 +200,48 @@ fn map_user_stack(pml4: PhysFrame, argv0: &str) -> Result<u64, ExecError> {
         .map_err(ExecError::MapFailed)?;
 
     let top_frame = top_frame.ok_or(ExecError::OutOfMemory)?;
-    build_initial_stack(top_frame, argv0)
+    build_initial_stack(top_frame, argv0, args)
 }
 
-fn build_initial_stack(top_frame: PhysFrame, argv0: &str) -> Result<u64, ExecError> {
+fn build_initial_stack(top_frame: PhysFrame, argv0: &str, args: &[&str]) -> Result<u64, ExecError> {
     let stack_page_base = crate::vmm::USER_STACK_TOP - PAGE_SIZE;
     let page = crate::vmm::phys_to_virt(top_frame.start_address()).as_mut_ptr::<u8>();
 
-    let path = argv0.as_bytes();
-    let path_len = path.len() + 1; // nul terminator
-    if path_len + 4 * 8 > PAGE_SIZE as usize {
+    let mut argv: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    argv.push(argv0);
+    argv.extend_from_slice(args);
+
+    let strings_bytes = argv.iter().map(|arg| arg.len() + 1).sum::<usize>();
+    let pointer_bytes = (argv.len() + 3) * 8; // argc + argv[] + null + envp null
+    if strings_bytes + pointer_bytes > PAGE_SIZE as usize {
         return Err(ExecError::InvalidElf("argv too large for initial stack page"));
     }
 
     let mut rsp = crate::vmm::USER_STACK_TOP;
-    rsp -= path_len as u64;
-    let argv0_ptr = rsp;
-    write_bytes(page, stack_page_base, rsp, path);
-    write_byte(page, stack_page_base, rsp + path.len() as u64, 0);
+    let mut argv_ptrs = [0u64; 8];
+    if argv.len() > argv_ptrs.len() {
+        return Err(ExecError::InvalidElf("too many argv entries"));
+    }
+
+    for (idx, arg) in argv.iter().enumerate().rev() {
+        let bytes = arg.as_bytes();
+        rsp -= (bytes.len() + 1) as u64;
+        argv_ptrs[idx] = rsp;
+        write_bytes(page, stack_page_base, rsp, bytes);
+        write_byte(page, stack_page_base, rsp + bytes.len() as u64, 0);
+    }
 
     rsp &= !0xf;
     rsp -= 8;
     write_u64(page, stack_page_base, rsp, 0); // envp[0] = NULL
     rsp -= 8;
-    write_u64(page, stack_page_base, rsp, 0); // argv[1] = NULL
+    write_u64(page, stack_page_base, rsp, 0); // argv[argc] = NULL
+    for idx in (0..argv.len()).rev() {
+        rsp -= 8;
+        write_u64(page, stack_page_base, rsp, argv_ptrs[idx]);
+    }
     rsp -= 8;
-    write_u64(page, stack_page_base, rsp, argv0_ptr); // argv[0]
-    rsp -= 8;
-    write_u64(page, stack_page_base, rsp, 1); // argc
+    write_u64(page, stack_page_base, rsp, argv.len() as u64); // argc
 
     Ok(rsp)
 }

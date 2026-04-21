@@ -17,6 +17,9 @@ use crate::wm::window::{Window, TITLE_H, CLOSE_W};
 const TASKBAR_H: i32 = 24;
 // TASKBAR_Y is computed at runtime from screen height.
 const BUTTON_W:  i32 = 160;
+const EVENT_PACKET_SIZE: usize = 8;
+const EVENT_KIND_KEY_CHAR: u8 = 1;
+const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +94,8 @@ pub struct WindowManager {
     pub windows:   Vec<AppWindow>,
     z_order:       Vec<usize>,
     focused:       Option<usize>,
+    key_sink_fd:   Option<usize>,
+    key_sink_window: Option<usize>,
     drag:          Option<DragState>,
     prev_left:     bool,
     prev_right:    bool,
@@ -109,6 +114,8 @@ impl WindowManager {
             windows:       Vec::new(),
             z_order:       Vec::new(),
             focused:       None,
+            key_sink_fd:   None,
+            key_sink_window: None,
             drag:          None,
             prev_left:     false,
             prev_right:    false,
@@ -126,7 +133,50 @@ impl WindowManager {
         self.focused = Some(idx);
     }
 
+    pub fn stop_key_sink(&mut self) {
+        if let Some(fd) = self.key_sink_fd.take() {
+            crate::vfs::vfs_close(fd);
+        }
+        self.key_sink_window = None;
+    }
+
     pub fn handle_key(&mut self, c: char) {
+        if let (Some(fd), Some(target)) = (self.key_sink_fd, self.key_sink_window) {
+            if self.focused != Some(target) {
+                if let Some(idx) = self.focused {
+                    if idx < self.windows.len() {
+                        self.windows[idx].handle_key(c);
+                        crate::wm::request_repaint();
+                    }
+                }
+                return;
+            }
+
+            if c == '~' {
+                self.stop_key_sink();
+                if target < self.windows.len() {
+                    if let AppWindow::Terminal(ref mut t) = self.windows[target] {
+                        t.print_str("\n[keydemo closed]\n> ");
+                    }
+                }
+                crate::wm::request_repaint();
+                return;
+            }
+
+            let packet = key_event_packet(c);
+            let n = crate::vfs::vfs_write(fd, &packet);
+            if n != EVENT_PACKET_SIZE {
+                self.stop_key_sink();
+                if target < self.windows.len() {
+                    if let AppWindow::Terminal(ref mut t) = self.windows[target] {
+                        t.print_str("\n[keydemo pipe error]\n> ");
+                    }
+                }
+                crate::wm::request_repaint();
+            }
+            return;
+        }
+
         if let Some(idx) = self.focused {
             if idx < self.windows.len() {
                 self.windows[idx].handle_key(c);
@@ -139,11 +189,7 @@ impl WindowManager {
     pub fn compose(&mut self) {
         // Drain buffered keystrokes.
         while let Some(c) = crate::keyboard::pop() {
-            if let Some(idx) = self.focused {
-                if idx < self.windows.len() {
-                    self.windows[idx].handle_key(c);
-                }
-            }
+            self.handle_key(c);
         }
 
         // Drain syscall write() output into the first terminal window.
@@ -154,6 +200,22 @@ impl WindowManager {
                 if let AppWindow::Terminal(ref mut t) = w {
                     t.print_char(b as char);
                     break;
+                }
+            }
+        }
+
+        // Consume deferred terminal requests to install a compositor-owned key
+        // sink without recursively locking the WM from inside command handling.
+        for (idx, w) in self.windows.iter_mut().enumerate() {
+            if let AppWindow::Terminal(t) = w {
+                if let Some(fd) = t.take_pending_key_sink() {
+                    if self.key_sink_fd.is_none() {
+                        self.key_sink_fd = Some(fd);
+                        self.key_sink_window = Some(idx);
+                    } else {
+                        crate::vfs::vfs_close(fd);
+                        t.print_str("keydemo unavailable: input sink busy\n> ");
+                    }
                 }
             }
         }
@@ -211,6 +273,13 @@ impl WindowManager {
 
                     let w = self.windows[win_idx].window();
                     if w.hit_close(mx_i, my_i) {
+                        if self.key_sink_window == Some(win_idx) {
+                            self.stop_key_sink();
+                        } else if let Some(target) = self.key_sink_window {
+                            if target > win_idx {
+                                self.key_sink_window = Some(target - 1);
+                            }
+                        }
                         self.windows.remove(win_idx);
                         self.z_order.retain(|&i| i != win_idx);
                         for z in self.z_order.iter_mut() {
@@ -227,6 +296,18 @@ impl WindowManager {
                     } else {
                         let lx = mx_i - self.windows[win_idx].window().x;
                         let ly = my_i - (self.windows[win_idx].window().y + TITLE_H);
+                        if self.key_sink_fd.is_some() && self.key_sink_window == Some(win_idx) {
+                            let fd = self.key_sink_fd.unwrap();
+                            let packet = mouse_event_packet(1, lx, ly);
+                            if crate::vfs::vfs_write(fd, &packet) != EVENT_PACKET_SIZE {
+                                self.stop_key_sink();
+                                if win_idx < self.windows.len() {
+                                    if let AppWindow::Terminal(ref mut t) = self.windows[win_idx] {
+                                        t.print_str("\n[keydemo pipe error]\n> ");
+                                    }
+                                }
+                            }
+                        }
                         self.windows[win_idx].handle_click(lx, ly);
                     }
                 }
@@ -432,6 +513,27 @@ impl WindowManager {
             }
         }
     }
+}
+
+fn key_event_packet(c: char) -> [u8; EVENT_PACKET_SIZE] {
+    let mut packet = [0u8; EVENT_PACKET_SIZE];
+    let mut utf8 = [0u8; 4];
+    let encoded = c.encode_utf8(&mut utf8);
+    packet[0] = EVENT_KIND_KEY_CHAR;
+    packet[1] = encoded.len() as u8;
+    packet[2..2 + encoded.len()].copy_from_slice(encoded.as_bytes());
+    packet
+}
+
+fn mouse_event_packet(buttons: u8, lx: i32, ly: i32) -> [u8; EVENT_PACKET_SIZE] {
+    let mut packet = [0u8; EVENT_PACKET_SIZE];
+    let x = lx.clamp(0, u16::MAX as i32) as u16;
+    let y = ly.clamp(0, u16::MAX as i32) as u16;
+    packet[0] = EVENT_KIND_MOUSE_DOWN;
+    packet[1] = buttons;
+    packet[2..4].copy_from_slice(&x.to_le_bytes());
+    packet[4..6].copy_from_slice(&y.to_le_bytes());
+    packet
 }
 
 lazy_static! {

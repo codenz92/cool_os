@@ -16,6 +16,10 @@
 ///   6  read(fd, buf_ptr, len) → bytes read, u64::MAX on error
 ///   7  close(fd) → 0
 ///   8  exec(path_ptr, path_len) → 0 on success, u64::MAX on error
+///   9  pipe(fds_ptr) → 0 on success, u64::MAX on failure
+///   10 dup(fd) → new fd on success, u64::MAX on failure
+///   11 shmem_create(len) → id on success, u64::MAX on failure
+///   12 shmem_map(id) → virtual address on success, u64::MAX on failure
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -51,19 +55,22 @@ pub fn pop_output_byte() -> Option<u8> {
     Some(b)
 }
 
-// ── Kernel syscall stack ──────────────────────────────────────────────────────
+// ── Bootstrap syscall stack ───────────────────────────────────────────────────
+//
+// Normal syscall entry now switches to the currently running task's private
+// kernel stack top (tracked by the scheduler). This fallback exists only for
+// early/bootstrap edge cases where no per-task stack top is available yet.
 
-const SYSCALL_STACK_SIZE: usize = 64 * 1024;
-static mut SYSCALL_KERNEL_STACK: [u8; SYSCALL_STACK_SIZE] = [0; SYSCALL_STACK_SIZE];
-// Absolute address of the top of the syscall kernel stack, written at init.
-static SYSCALL_KERNEL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+const BOOTSTRAP_SYSCALL_STACK_SIZE: usize = 64 * 1024;
+static mut BOOTSTRAP_SYSCALL_STACK: [u8; BOOTSTRAP_SYSCALL_STACK_SIZE] = [0; BOOTSTRAP_SYSCALL_STACK_SIZE];
+static BOOTSTRAP_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 // ── MSR init ─────────────────────────────────────────────────────────────────
 
 pub fn init() {
     unsafe {
-        SYSCALL_KERNEL_STACK_TOP.store(
-            core::ptr::addr_of!(SYSCALL_KERNEL_STACK) as u64 + SYSCALL_STACK_SIZE as u64,
+        BOOTSTRAP_SYSCALL_STACK_TOP.store(
+            core::ptr::addr_of!(BOOTSTRAP_SYSCALL_STACK) as u64 + BOOTSTRAP_SYSCALL_STACK_SIZE as u64,
             Ordering::Relaxed,
         );
 
@@ -119,8 +126,13 @@ unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
         // Save user RSP in r10 (clobbers arg4 which our table doesn't use).
         "mov r10, rsp",
-        // Switch to the dedicated kernel syscall stack.
-        "mov rsp, qword ptr [rip + {kstack}]",
+        // Switch to the current task's private kernel stack.
+        "mov r9, qword ptr [rip + {stack_top}]",
+        "test r9, r9",
+        "jnz 2f",
+        "mov r9, qword ptr [rip + {bootstrap}]",
+        "2:",
+        "mov rsp, r9",
         // Build stack frame.
         "push r10",      // user RSP  — restored by `pop rsp` before sysretq
         "push rcx",      // user RIP  — must be in rcx for sysretq
@@ -151,7 +163,8 @@ unsafe extern "C" fn syscall_entry() {
         "pop rcx",       // user RIP   → rcx
         "pop rsp",       // restore user RSP
         "sysretq",
-        kstack   = sym SYSCALL_KERNEL_STACK_TOP,
+        stack_top = sym crate::scheduler::CURRENT_SYSCALL_STACK_TOP,
+        bootstrap = sym BOOTSTRAP_SYSCALL_STACK_TOP,
         dispatch = sym syscall_dispatch,
     );
 }
@@ -169,19 +182,40 @@ extern "C" fn syscall_dispatch(frame: &mut SyscallFrame, nr: u64, a1: u64, a2: u
         6 => sys_read(a1, a2 as *mut u8, a3),
         7 => { sys_close(a1); 0 }
         8 => sys_exec(frame, a1 as *const u8, a2),
+        9 => sys_pipe(a1 as *mut u64),
+        10 => sys_dup(a1),
+        11 => sys_shmem_create(a1),
+        12 => sys_shmem_map(a1),
         _ => u64::MAX,
     }
 }
 
-fn sys_write(_fd: u64, buf: *const u8, len: u64) -> u64 {
-    for i in 0..len as usize {
-        let b = unsafe { *buf.add(i) };
-        push_output_byte(b);
-        // Mirror to QEMU debugcon (port 0xE9) for headless verification.
-        unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(b) };
+fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(buf, len as usize) };
+
+    if fd == 1 || fd == 2 {
+        for &b in bytes {
+            push_output_byte(b);
+            // Mirror to QEMU debugcon (port 0xE9) for headless verification.
+            unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(b) };
+        }
+        crate::wm::request_repaint();
+        return len;
     }
-    crate::wm::request_repaint();
-    len
+
+    let n = crate::vfs::vfs_write(fd as usize, bytes);
+    if n == usize::MAX { u64::MAX } else { n as u64 }
+}
+
+fn sys_pipe(fds_ptr: *mut u64) -> u64 {
+    match crate::vfs::vfs_pipe() {
+        Some((read_fd, write_fd)) => unsafe {
+            *fds_ptr.add(0) = read_fd as u64;
+            *fds_ptr.add(1) = write_fd as u64;
+            0
+        },
+        None => u64::MAX,
+    }
 }
 
 fn sys_getpid() -> u64 {
@@ -214,6 +248,7 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
 }
 
 fn sys_exit(_code: u64) {
+    crate::vfs::drop_task(crate::scheduler::current_task_id());
     let mut sched = crate::scheduler::SCHEDULER.lock();
     let cur = sched.current;
     sched.tasks[cur].status = crate::scheduler::TaskStatus::Blocked;
@@ -239,7 +274,7 @@ fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
 /// Read up to `len` bytes from `fd` into the user buffer at `buf_ptr`.
 fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
-    let n = crate::vfs::vfs_read(fd as usize, buf, len as usize);
+    let n = crate::vfs::vfs_read_blocking(fd as usize, buf, len as usize);
     if n == usize::MAX { u64::MAX } else { n as u64 }
 }
 
@@ -280,6 +315,22 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
     frame.user_rsp = image.user_rsp;
 
     0
+}
+
+fn sys_dup(fd: u64) -> u64 {
+    let new_fd = crate::vfs::vfs_dup(fd as usize);
+    if new_fd == usize::MAX { u64::MAX } else { new_fd as u64 }
+}
+
+fn sys_shmem_create(len: u64) -> u64 {
+    if len == 0 { return u64::MAX; }
+    let id = crate::vfs::vfs_shmem_create(len as usize);
+    if id == usize::MAX { u64::MAX } else { id as u64 }
+}
+
+fn sys_shmem_map(id: u64) -> u64 {
+    let pml4 = crate::vmm::current_pml4();
+    crate::vfs::vfs_shmem_map(id as usize, pml4)
 }
 
 fn sys_yield() {

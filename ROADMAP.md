@@ -310,26 +310,36 @@ userspace process that prints to the screen and exits cleanly.
 
 ---
 
-## Phase 13 — Inter-Process Communication
+## ✅ Phase 13 — Inter-Process Communication
 
 **Goal:** Processes can send data to each other and to the GUI without going through
 the kernel's internal Rust data structures.
 
-- [ ] Implement anonymous pipes — a fixed-size ring buffer in kernel memory; `sys_pipe`
+- [x] Implement anonymous pipes — a fixed-size ring buffer in kernel memory; `sys_pipe`
       returns two file descriptors (read end, write end).
-- [ ] Block a reader when the pipe is empty; unblock it when the writer produces data.
-- [ ] Implement shared memory — `sys_shmem_create(len)` allocates physical frames and
+- [x] Block a reader when the pipe is empty; unblock it when the writer produces data.
+- [x] Implement shared memory — `sys_shmem_create(len)` allocates physical frames and
       maps them into the caller's address space; `sys_shmem_map(id)` maps the same
       frames into another process.
-- [ ] Design a simple message-passing protocol so GUI apps can send window events
+- [x] Design a simple message-passing protocol so GUI apps can send window events
       (key presses, mouse clicks) to user processes via a pipe rather than via the
       kernel's internal WM dispatch.
-- [ ] Port one existing built-in app (e.g. Terminal) to run as a real userspace
+- [x] Port one existing built-in app (e.g. Terminal) to run as a real userspace
       process communicating with the WM over a pipe.
 
 **Exit criteria:** a userspace terminal process receives keyboard events from the
 WM via a pipe and writes output back via `sys_write`; the WM renders it without
 any shared Rust state.
+
+**Current status:** complete. Terminal ported: `term` command in kernel TerminalApp
+spawns `/bin/terminal` as a ring-3 process with a pipe for stdin; the
+userspace terminal reads keyboard event packets (same format as keydemo), echoes
+input locally, processes commands (help/clear/echo/exec/info/uptime), and writes
+output via `sys_write` which the compositor drains into the kernel TerminalApp
+window. The `keydemo` command still works for event-packet streaming to
+keyecho.
+
+All Phase 13 items done.
 
 ---
 
@@ -407,7 +417,7 @@ real machines. Everything in between can be developed entirely in QEMU.
 
 | Tag | Milestone |
 | :-- | :-------- |
-| v1.12 | Current — Phase 12 complete: ELF loader, terminal `exec`, working `sys_exec` |
+| v1.14 | Current — Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete — network-capable |

@@ -28,7 +28,7 @@
 ///   [stack_ptr + 144]  RSP   (task's stack pointer restored by iretq)
 ///   [stack_ptr + 152]  SS
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::paging::PhysFrame;
 
 extern crate alloc;
@@ -61,6 +61,8 @@ pub struct Task {
     /// Heap-allocated kernel stack.  Empty for the idle task (uses boot stack).
     #[allow(dead_code)]
     stack: Vec<u8>,
+    /// Top of the private kernel stack used for syscall entry on this task.
+    pub syscall_stack_top: usize,
     /// Saved RSP — the address of the bottom of the 20-word context block.
     /// For the idle task this starts as 0 and is filled in on the first timer
     /// preemption.
@@ -97,10 +99,13 @@ impl Scheduler {
         self.tasks.push(Task {
             name: "idle",
             stack: Vec::new(),
+            syscall_stack_top: 0,
             stack_ptr: 0,
             status: TaskStatus::Running,
             pml4: None,
         });
+        crate::vfs::init_task(0);
+        CURRENT_SYSCALL_STACK_TOP.store(0, Ordering::Relaxed);
     }
 
     fn spawn_context(
@@ -111,7 +116,7 @@ impl Scheduler {
         rsp: Option<u64>,
         ss: u64,
         pml4: Option<PhysFrame>,
-    ) {
+    ) -> usize {
         // Allocate and zero-initialise the stack buffer.
         let mut stack: Vec<u8> = Vec::new();
         stack.resize(STACK_SIZE, 0u8);
@@ -149,10 +154,14 @@ impl Scheduler {
         self.tasks.push(Task {
             name,
             stack,
+            syscall_stack_top: stack_top,
             stack_ptr: stack_ptr_addr,
             status: TaskStatus::Ready,
             pml4,
         });
+        let task_id = self.tasks.len() - 1;
+        crate::vfs::init_task(task_id);
+        task_id
     }
 
     /// Allocate a 64 KiB kernel stack for a new task, pre-populate its saved
@@ -178,10 +187,32 @@ impl Scheduler {
     }
 
     /// Spawn a ring-3 task that will enter at `entry` with the given user stack.
+    #[allow(dead_code)]
     pub fn spawn_user(&mut self, name: &'static str, entry: u64, user_rsp: u64, pml4: PhysFrame) {
+        self.spawn_user_with_fds(name, entry, user_rsp, pml4, &[]);
+    }
+
+    /// Spawn a ring-3 task and selectively inherit fd mappings from the
+    /// currently running task.
+    pub fn spawn_user_with_fds(
+        &mut self,
+        name: &'static str,
+        entry: u64,
+        user_rsp: u64,
+        pml4: PhysFrame,
+        inherited_fds: &[(usize, usize)],
+    ) -> bool {
         let user_cs = crate::gdt::user_code_selector().0 as u64;
         let user_ss = crate::gdt::user_data_selector().0 as u64;
-        self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4));
+        let parent = self.current;
+        let task_id = self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4));
+        if crate::vfs::inherit_fds(parent, task_id, inherited_fds) {
+            true
+        } else {
+            crate::vfs::drop_task(task_id);
+            self.tasks.pop();
+            false
+        }
     }
 
     /// Core round-robin scheduling decision.
@@ -223,6 +254,7 @@ impl Scheduler {
         // ── Activate the winner ──────────────────────────────────────────────
         self.tasks[next].status = TaskStatus::Running;
         self.current = next;
+        CURRENT_SYSCALL_STACK_TOP.store(self.tasks[next].syscall_stack_top as u64, Ordering::Relaxed);
 
         // Switch address space: load the winning task's PML4, or restore the
         // boot PML4 for kernel tasks (pml4=None) so they never run with a
@@ -239,6 +271,38 @@ impl Scheduler {
 // ── Global scheduler instance ─────────────────────────────────────────────────
 
 pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty());
+pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+
+// ── Blocking helpers ─────────────────────────────────────────────────────────
+
+pub fn current_task_id() -> usize {
+    SCHEDULER.lock().current
+}
+
+pub fn current_task_blocked() -> bool {
+    let sched = SCHEDULER.lock();
+    sched.tasks
+        .get(sched.current)
+        .map(|task| task.status == TaskStatus::Blocked)
+        .unwrap_or(false)
+}
+
+pub fn block_current() {
+    let mut sched = SCHEDULER.lock();
+    let cur = sched.current;
+    if let Some(task) = sched.tasks.get_mut(cur) {
+        task.status = TaskStatus::Blocked;
+    }
+}
+
+pub fn unblock(task_id: usize) {
+    let mut sched = SCHEDULER.lock();
+    if let Some(task) = sched.tasks.get_mut(task_id) {
+        if task.status == TaskStatus::Blocked {
+            task.status = TaskStatus::Ready;
+        }
+    }
+}
 
 // ── Timer ISR entry point (called from timer_naked in interrupts.rs) ──────────
 
