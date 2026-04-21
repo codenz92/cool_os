@@ -263,5 +263,6 @@ faults still panic.
 | 13 | Pipes + shared memory + IPC + userspace terminal | **Done** |
 | 14 | USB HID — real hardware input | Planned |
 | 15 | Networking — virtio-net, TCP/IP | Planned |
+| 16 | UI Polish — desktop icons, start menu, wallpaper | Planned |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

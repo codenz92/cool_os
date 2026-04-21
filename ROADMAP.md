@@ -391,6 +391,24 @@ response and writes it to a file on disk.
 | 13 | Pipes, shared memory, IPC | 12 |
 | 14 | USB HID — real hardware input | 9 |
 | 15 | Networking (virtio-net, TCP/IP) | 13 |
+| 16 | UI Polish — desktop icons, start menu, wallpaper, styling | 12 |
+
+---
+
+## Option: UI Polish Phase 16 (optional, no kernel changes needed)
+
+**Goal:** Make the desktop look more like a modern OS.
+
+- [ ] Desktop icons with positioning and selection
+- [ ] Start menu button and pop-up launcher with app list
+- [ ] Desktop wallpaper image rendering
+- [ ] Window minimize/maximize/restore
+- [ ] Better title bar styling (gradients, icons)
+- [ ] Taskbar improvements (system tray area, clock)
+- [ ] Desktop context menu improvements
+- [ ] Scrollbars for windows that overflow
+
+**Status:** Not started — purely UI/rendering work.
 
 ---
 
