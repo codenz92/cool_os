@@ -399,16 +399,18 @@ response and writes it to a file on disk.
 
 **Goal:** Make the desktop look more like a modern OS.
 
-- [ ] Desktop icons with positioning and selection
+- [x] Desktop icons with positioning and selection
 - [ ] Start menu button and pop-up launcher with app list
-- [ ] Desktop wallpaper image rendering
-- [ ] Window minimize/maximize/restore
-- [ ] Better title bar styling (gradients, icons)
-- [ ] Taskbar improvements (system tray area, clock)
+- [x] Desktop wallpaper gradient rendering
+- [x] Window minimize/maximize/restore
+- [x] Better title bar styling (colors, minimize/maximize buttons)
+- [x] Taskbar improvements (start button, clock area)
+- [x] Window border rendering
 - [ ] Desktop context menu improvements
 - [ ] Scrollbars for windows that overflow
 
-**Status:** Not started — purely UI/rendering work.
+**Status:** In progress. Desktop icons, gradient wallpaper, window min/max/restore,
+taskbar with start button, and styled title bars implemented.
 
 ---
 

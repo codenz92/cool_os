@@ -10,16 +10,29 @@ use crate::apps::{TerminalApp, SysMonApp, TextViewerApp, ColorPickerApp};
 use crate::framebuffer::{
     CHAR_W, WHITE, BLACK, LIGHT_GRAY, DARK_GRAY, BLUE, RED,
 };
-use crate::wm::window::{Window, TITLE_H, CLOSE_W};
+use crate::wm::window::{Window, TITLE_H};
 
 // ── Layout constants (scaled 4× from the original 320×200 design) ────────────
 
-const TASKBAR_H: i32 = 24;
+const TASKBAR_H: i32 = 28;
+const START_BTN_W: i32 = 36;
+const TASKBAR_CLOCK_W: i32 = 80;
 // TASKBAR_Y is computed at runtime from screen height.
 const BUTTON_W:  i32 = 160;
+const WIN_BTN_W: i32 = crate::wm::window::WIN_BTN_W;
 const EVENT_PACKET_SIZE: usize = 8;
 const EVENT_KIND_KEY_CHAR: u8 = 1;
 const EVENT_KIND_MOUSE_DOWN: u8 = 2;
+
+// ── Colors ──────────────────────────────────────────────────────────────────
+
+const TASKBAR_BG: u32 = 0x00_1A_1A_2E;
+const START_BTN:  u32 = 0x00_CC_33_00;
+const WIN_TITLE:   u32 = 0x00_3C_57_B5;
+const WIN_TITLE_F: u32 = 0x00_2B_3F_5C;
+const DESKTOP_1: u32 = 0x00_0D_1B_2D;
+const DESKTOP_2: u32 = 0x00_12_23_3A;
+const ICON_SEL:   u32 = 0x00_2A_3C_55;
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +55,35 @@ const CTX_ITEM_H: i32 = 24;
 const CTX_ITEMS:  &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick"];
 
 struct ContextMenu { x: i32, y: i32 }
+
+// ── Desktop icons ──────────────────────────────────────────────────────────────
+
+const ICON_SIZE: i32 = 48;
+const ICON_LABEL_H: i32 = 12;
+const ICON_COLS: usize = 5;
+
+struct DesktopIcon {
+    x: i32,
+    y: i32,
+    label: &'static str,
+    app: &'static str,
+}
+
+impl DesktopIcon {
+    fn hit(&self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + ICON_SIZE
+            && py >= self.y && py < self.y + ICON_SIZE + ICON_LABEL_H
+    }
+}
+
+fn desktop_icons() -> [DesktopIcon; 4] {
+    [
+        DesktopIcon { x: 20, y: 20, label: "Terminal",   app: "Terminal" },
+        DesktopIcon { x: 80, y: 20, label: "System Mon",  app: "System Mon" },
+        DesktopIcon { x: 20, y: 80, label: "Text Viewer", app: "Text Viewer" },
+        DesktopIcon { x: 80, y: 80, label: "Color Pick",  app: "Color Pick" },
+    ]
+}
 
 // ── Drag state ────────────────────────────────────────────────────────────────
 
@@ -86,6 +128,14 @@ impl AppWindow {
     pub fn update(&mut self) {
         if let AppWindow::SysMon(s) = self { s.update(); }
     }
+    pub fn is_minimized(&self) -> bool {
+        match self {
+            AppWindow::Terminal(t) => t.window.minimized,
+            AppWindow::SysMon(s) => s.window.minimized,
+            AppWindow::TextViewer(v) => v.window.minimized,
+            AppWindow::ColorPicker(c) => c.window.minimized,
+        }
+    }
 }
 
 // ── Window manager ────────────────────────────────────────────────────────────
@@ -100,6 +150,7 @@ pub struct WindowManager {
     prev_left:     bool,
     prev_right:    bool,
     context_menu:  Option<ContextMenu>,
+    icon_selected: Option<usize>,
     /// Shadow buffer — screen_width × screen_height u32 pixels (no row padding).
     shadow:        Vec<u32>,
     shadow_width:  usize,
@@ -120,6 +171,7 @@ impl WindowManager {
             prev_left:     false,
             prev_right:    false,
             context_menu:  None,
+            icon_selected: None,
             shadow:        alloc::vec![0u32; w * h],
             shadow_width:  w,
             shadow_height: h,
@@ -287,6 +339,14 @@ impl WindowManager {
                         }
                         self.focused = self.z_order.last().copied();
                         self.drag = None;
+                    } else if w.hit_minimize(mx_i, my_i) {
+                        self.windows[win_idx].window_mut().minimize();
+                        crate::wm::request_repaint();
+                    } else if w.hit_maximize(mx_i, my_i) {
+                        let sw = self.shadow_width as i32;
+                        let sh = self.shadow_height as i32;
+                        self.windows[win_idx].window_mut().maximize(sw, sh);
+                        crate::wm::request_repaint();
                     } else if self.windows[win_idx].window().hit_title(mx_i, my_i) {
                         self.drag = Some(DragState {
                             window: win_idx,
@@ -317,11 +377,15 @@ impl WindowManager {
                     if btn_x >= 0 {
                         let btn_x = btn_x as usize;
                         if btn_x < self.windows.len() {
+                            if self.windows[btn_x].is_minimized() {
+                                self.windows[btn_x].window_mut().restore();
+                            }
                             if let Some(z_pos) = self.z_order.iter().position(|&i| i == btn_x) {
                                 self.z_order.remove(z_pos);
                                 self.z_order.push(btn_x);
                                 self.focused = Some(btn_x);
                             }
+                            crate::wm::request_repaint();
                         }
                     }
                 }
@@ -344,38 +408,108 @@ impl WindowManager {
         self.prev_left  = left;
         self.prev_right = right;
 
+        // Desktop icon click.
+        if left_pressed {
+            let icons = desktop_icons();
+            for (i, icon) in icons.iter().enumerate() {
+                if icon.hit(mx_i, my_i) {
+                    self.icon_selected = Some(i);
+                    self.context_menu = None;
+                    crate::wm::request_repaint();
+                }
+            }
+        }
+
+        if left_released {
+            let icons = desktop_icons();
+            for (i, icon) in icons.iter().enumerate() {
+                if icon.hit(mx_i, my_i) {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (10 + off).min(sw as i32 - 200);
+                    let wy = (10 + off).min(taskbar_y - 80);
+                    match icon.app {
+                        "Terminal"    => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
+                        "System Mon"  => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
+                        "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
+                        "Color Pick"  => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
+                        _ => {}
+                    }
+                    crate::wm::request_repaint();
+                }
+            }
+        }
+
         // ── Render ────────────────────────────────────────────────────────────
-        // Scope the mutable shadow borrow so it ends before the blit section,
-        // which needs to access self.shadow immutably alongside a scratch buffer.
         {
         let s = &mut self.shadow;
 
-        // Desktop.
-        s_fill(s, sw, 0, 0, sw as i32, taskbar_y, DARK_GRAY);
+        // Desktop background with subtle gradient effect.
+        for y in 0..taskbar_y as usize {
+            let t = (y as f32 / taskbar_y as f32);
+            let r = ((0x0D as f32) + t * (0x05 as f32)) as u8;
+            let g = ((0x1B as f32) + t * (0x05 as f32)) as u8;
+            let b = ((0x2D as f32) + t * (0x05 as f32)) as u8;
+            let color = 0x00_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+            for x in 0..sw {
+                s[y * sw + x] = color;
+            }
+        }
 
         for w in self.windows.iter_mut() { w.update(); }
 
         let z: Vec<usize> = self.z_order.clone();
         for &wi in &z {
             if wi < self.windows.len() {
-                let focused = self.focused == Some(wi);
-                Self::draw_window(s, sw, self.windows[wi].window(), focused);
+                let win = self.windows[wi].window();
+                if !win.minimized {
+                    let focused = self.focused == Some(wi);
+                    Self::draw_window(s, sw, win, focused);
+                }
             }
         }
 
+        // Desktop icons.
+        for (i, icon) in desktop_icons().iter().enumerate() {
+            let selected = self.icon_selected == Some(i);
+            let icon_bg = if selected { ICON_SEL } else { 0x00_1A_1A_2E };
+            s_fill(s, sw, icon.x, icon.y, ICON_SIZE, ICON_SIZE, icon_bg);
+            s_fill(s, sw, icon.x + 2, icon.y + 2, ICON_SIZE - 4, ICON_SIZE - 4, 0x00_2B_3F_5C);
+            s_draw_str(s, sw, icon.x + 2, icon.y + ICON_SIZE - 8, icon.label, WHITE, icon_bg, icon.x + ICON_SIZE - 2);
+        }
+
         // Taskbar.
-        s_fill(s, sw, 0, taskbar_y, sw as i32, TASKBAR_H, BLACK);
-        s_fill(s, sw, 0, taskbar_y, sw as i32, 1, LIGHT_GRAY);
+        s_fill(s, sw, 0, taskbar_y, sw as i32, TASKBAR_H, TASKBAR_BG);
+
+        // Start button.
+        s_fill(s, sw, 2, taskbar_y + 3, START_BTN_W, TASKBAR_H - 6, START_BTN);
+        s_draw_str(s, sw, 5, taskbar_y + 6, "cool", WHITE, START_BTN, 2 + START_BTN_W - 2);
+
+        // Window buttons.
+        let taskbar_content_x = 2 + START_BTN_W + 4;
         for i in 0..self.windows.len() {
-            let bx = 2 + i as i32 * (BUTTON_W + 2);
-            if bx + BUTTON_W > sw as i32 { break; }
-            let focused    = self.focused == Some(i);
-            let btn_col    = if focused { BLUE } else { DARK_GRAY };
+            let bx = taskbar_content_x + i as i32 * (BUTTON_W + 2);
+            if bx + BUTTON_W > sw as i32 - TASKBAR_CLOCK_W - 4 { break; }
+            let focused = self.focused == Some(i);
+            let minimized = self.windows[i].is_minimized();
+            let btn_col = if minimized {
+                0x00_40_40_40
+            } else if focused {
+                0x00_3C_57_B5
+            } else {
+                0x00_2B_3F_5C
+            };
             s_fill(s, sw, bx, taskbar_y + 2, BUTTON_W, TASKBAR_H - 3, btn_col);
             let title = self.windows[i].window().title;
-            s_draw_str(s, sw, bx + 4, taskbar_y + 4, title, WHITE, btn_col,
+            let truncated = if title.len() > 9 { &title[..9] } else { title };
+            s_draw_str(s, sw, bx + 4, taskbar_y + 6, truncated, WHITE, btn_col,
                        bx + BUTTON_W - 1);
         }
+
+        // Clock area.
+        let clock_x = sw as i32 - TASKBAR_CLOCK_W - 2;
+        s_fill(s, sw, clock_x, taskbar_y + 2, TASKBAR_CLOCK_W, TASKBAR_H - 3, 0x00_1A_1A_2E);
+        s_draw_str(s, sw, clock_x + 4, taskbar_y + 6, "coolOS", LIGHT_GRAY, 0x00_1A_1A_2E,
+                   sw as i32 - 4);
 
         // Context menu.
         if let Some(ref cm) = self.context_menu {
@@ -489,18 +623,29 @@ impl WindowManager {
     }
 
     fn draw_window(s: &mut [u32], sw: usize, w: &Window, focused: bool) {
-        let title_color  = if focused { BLUE       } else { DARK_GRAY };
-        let border_color = if focused { LIGHT_GRAY } else { DARK_GRAY };
+        let title_bg = if focused { WIN_TITLE } else { WIN_TITLE_F };
 
-        s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, w.height + 2, border_color);
-        s_fill(s, sw, w.x,     w.y,     w.width,      TITLE_H,      title_color);
+        s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, 1, title_bg);
+        s_fill(s, sw, w.x - 1, w.y + w.height, w.width + 2, 1, title_bg);
+        s_fill(s, sw, w.x - 1, w.y, 1, w.height, title_bg);
+        s_fill(s, sw, w.x + w.width, w.y, 1, w.height, title_bg);
 
-        let max_title_x = w.x + w.width - CLOSE_W - 1;
-        s_draw_str(s, sw, w.x + 4, w.y + 2, w.title, WHITE, title_color, max_title_x);
+        s_fill(s, sw, w.x, w.y, w.width, TITLE_H, title_bg);
 
-        let cx = w.x + w.width - CLOSE_W;
-        s_fill(s, sw, cx, w.y, CLOSE_W, TITLE_H, RED);
-        s_draw_str(s, sw, cx + 4, w.y + 2, "x", WHITE, RED, cx + CLOSE_W);
+        let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 2;
+        s_draw_str(s, sw, w.x + 4, w.y + 2, w.title, WHITE, title_bg, max_title_x);
+
+        let bx3 = w.x + w.width - WIN_BTN_W * 3;
+        s_fill(s, sw, bx3, w.y + 2, WIN_BTN_W - 2, TITLE_H - 4, LIGHT_GRAY);
+        s_draw_str(s, sw, bx3 + 2, w.y + 2, "_", WHITE, LIGHT_GRAY, bx3 + WIN_BTN_W - 2);
+
+        let bx2 = w.x + w.width - WIN_BTN_W * 2;
+        s_fill(s, sw, bx2, w.y + 2, WIN_BTN_W - 2, TITLE_H - 4, LIGHT_GRAY);
+        s_draw_str(s, sw, bx2 + 2, w.y + 2, "+", WHITE, LIGHT_GRAY, bx2 + WIN_BTN_W - 2);
+
+        let cx = w.x + w.width - WIN_BTN_W;
+        s_fill(s, sw, cx, w.y + 2, WIN_BTN_W - 2, TITLE_H - 4, RED);
+        s_draw_str(s, sw, cx + 2, w.y + 2, "x", WHITE, RED, cx + WIN_BTN_W - 2);
 
         let content_y = w.y + TITLE_H;
         let content_h = (w.height - TITLE_H).max(0) as usize;
