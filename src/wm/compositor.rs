@@ -46,6 +46,11 @@ const CAP_HOV: u32 = 0x00_00_22_44; // slightly lighter navy
 const CLOSE_REST: u32 = 0x00_00_10_28; // close resting
 const CLOSE_HOV: u32 = 0x00_BB_11_11; // #BB1111  red-CRT close
 
+/// Sentinel stored in window content buffers to mean "render the window background here".
+/// Apps that genuinely need to paint pure black should write `0x00_00_00_01` instead
+/// (visually identical, but not intercepted by the compositor blit).
+const WIN_TRANSPARENT: u32 = 0x00_00_00_00;
+
 // Desktop wallpaper — deep space phosphor
 const DESK_TL: u32 = 0x00_00_02_08; // top-left  pitch black with blue ghost
 const DESK_TR: u32 = 0x00_00_03_0C; // top-right
@@ -104,8 +109,10 @@ const CURSOR_OUTLINE: [u16; CURSOR_H] = [
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
-const CTX_W: i32 = 210;
-const CTX_ITEM_H: i32 = 28;
+const CTX_W: i32 = 224;
+const CTX_ITEM_H: i32 = 32;
+const CTX_HEADER_H: i32 = 28; // non-clickable header strip
+const CTX_PAD: i32 = 4; // top/bottom padding inside menu body
 const CTX_ITEMS: &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick"];
 
 struct ContextMenu {
@@ -282,7 +289,7 @@ impl WindowManager {
                     ty,
                 );
                 let dx = tx - 0.50;
-                let dy = ty - 0.40;
+                let dy = ty - 0.45;
                 let dist_sq = dx * dx + dy * dy;
                 let t_b = 1.0f32 - (dist_sq / 0.3025f32).min(1.0f32);
                 let bloom = t_b * t_b * t_b;
@@ -290,8 +297,12 @@ impl WindowManager {
                 let bg = (g as f32 + bloom * ((BLOOM_1 >> 8) as u8 as f32)).min(255.0) as u32;
                 let bb = (b as f32 + bloom * (BLOOM_1 as u8 as f32)).min(255.0) as u32;
 
-                // ── CRT scanline — every even row dimmed ~18% ─────────────────────
-                let scan: u32 = if y % 2 == 0 { 210 } else { 255 };
+                // ── CRT scanline — 3-step soft falloff mimics phosphor edge roll-off ─
+                let scan: u32 = match y % 3 {
+                    0 => 255, // bright line
+                    1 => 232, // soft shoulder
+                    _ => 212, // dim valley
+                };
 
                 // ── Phosphor triad dot-mask — column 2 of every 3 gets blue boost ─
                 let dot_boost: u32 = if x % 3 == 2 { 10 } else { 0 };
@@ -444,7 +455,8 @@ impl WindowManager {
 
         if right_pressed && self.front_to_back_hit(mx_i, my_i).is_none() {
             let cx = mx_i.min(sw as i32 - CTX_W);
-            let cy = my_i.min(taskbar_y - CTX_ITEM_H * CTX_ITEMS.len() as i32);
+            let ctx_total_h = CTX_HEADER_H + CTX_PAD * 2 + CTX_ITEM_H * CTX_ITEMS.len() as i32;
+            let cy = my_i.min(taskbar_y - ctx_total_h);
             self.context_menu = Some(ContextMenu { x: cx, y: cy });
         }
 
@@ -453,7 +465,7 @@ impl WindowManager {
                 let clicked: Option<&str> = {
                     let cm = self.context_menu.as_ref().unwrap();
                     CTX_ITEMS.iter().enumerate().find_map(|(i, &label)| {
-                        let item_y = cm.y + i as i32 * CTX_ITEM_H;
+                        let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;
                         if mx_i >= cm.x
                             && mx_i < cm.x + CTX_W
                             && my_i >= item_y
@@ -582,37 +594,43 @@ impl WindowManager {
 
         // Start menu item click.
         if left_pressed && self.start_menu_open {
-            let menu_w = 280i32;
-            let menu_h = 240i32;
+            let menu_w = 460i32;
+            let menu_h = 320i32;
+            let left_w = 240i32;
+            let bottom_h = 36i32;
             let menu_x = 2i32;
             let menu_y = taskbar_y - menu_h;
+            let bar_y = menu_y + menu_h - bottom_h;
             if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
-                // Header region (40px) + search bar (36px) = 76px before items
-                let items_start_y = menu_y + 76;
-                if my_i >= items_start_y {
-                    let item_idx = ((my_i - items_start_y) / 40) as usize;
-                    let apps: [&str; 4] = ["Terminal", "System Mon", "Text Viewer", "Color Pick"];
-                    if item_idx < apps.len() {
-                        let off = self.windows.len() as i32 * 16;
-                        let wx = (10 + off).min(sw as i32 - 200);
-                        let wy = (10 + off).min(menu_y - 80);
-                        match apps[item_idx] {
-                            "Terminal" => {
-                                self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy)))
+                // Left column — app list rows
+                if mx_i < menu_x + left_w {
+                    let item_h = 44i32;
+                    let items_y = menu_y + 4;
+                    if my_i >= items_y && my_i < items_y + item_h * 4 {
+                        let item_idx = ((my_i - items_y) / item_h) as usize;
+                        let apps: [&str; 4] =
+                            ["Terminal", "System Mon", "Text Viewer", "Color Pick"];
+                        if item_idx < apps.len() {
+                            let off = self.windows.len() as i32 * 16;
+                            let wx = (10 + off).min(sw as i32 - 200);
+                            let wy = (10 + off).min(bar_y - 80);
+                            match apps[item_idx] {
+                                "Terminal" => {
+                                    self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy)))
+                                }
+                                "System Mon" => {
+                                    self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy)))
+                                }
+                                "Text Viewer" => self
+                                    .add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
+                                "Color Pick" => self.add_window(AppWindow::ColorPicker(
+                                    ColorPickerApp::new(wx, wy),
+                                )),
+                                _ => {}
                             }
-                            "System Mon" => {
-                                self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy)))
-                            }
-                            "Text Viewer" => {
-                                self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy)))
-                            }
-                            "Color Pick" => {
-                                self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy)))
-                            }
-                            _ => {}
+                            self.start_menu_open = false;
+                            crate::wm::request_repaint();
                         }
-                        self.start_menu_open = false;
-                        crate::wm::request_repaint();
                     }
                 }
             }
@@ -810,7 +828,7 @@ impl WindowManager {
                     let win = self.windows[wi].window();
                     if !win.minimized {
                         let focused = self.focused == Some(wi);
-                        Self::draw_window(s, sw, win, focused);
+                        Self::draw_window(s, sw, win, focused, mx_i, my_i);
                     }
                 }
             }
@@ -913,131 +931,327 @@ impl WindowManager {
             let sep_x = btn_w;
             s_fill(s, sw, sep_x, taskbar_y + 4, 1, TASKBAR_H - 8, 0x00_00_66_AA);
 
-            // ── Start menu — Win11 dark acrylic style ─────────────────────────────
+            // ── Start menu — Windows 7-style two-column layout ────────────────────
             if self.start_menu_open {
-                let menu_w = 280i32;
-                let menu_h = 240i32;
+                let menu_w = 460i32;
+                let menu_h = 320i32;
+                let left_w = 240i32;
+                let right_w = menu_w - left_w; // 220
+                let bottom_h = 36i32;
                 let menu_x = 2i32;
                 let menu_y = taskbar_y - menu_h;
+                let bar_y = menu_y + menu_h - bottom_h;
 
-                // Shadow
+                // ── Panel backgrounds ─────────────────────────────────────────────
+                s_fill(s, sw, menu_x, menu_y, left_w, menu_h, 0x00_00_07_18);
                 s_fill(
                     s,
                     sw,
-                    menu_x + 4,
+                    menu_x + left_w,
+                    menu_y,
+                    right_w,
+                    menu_h,
+                    0x00_00_05_12,
+                );
+
+                // Top accent stripe
+                s_fill(s, sw, menu_x, menu_y, menu_w, 2, ACCENT);
+                s_fill(
+                    s,
+                    sw,
+                    menu_x,
+                    menu_y + 2,
+                    menu_w,
+                    2,
+                    blend_color(ACCENT, 0x00_00_07_18, 160),
+                );
+
+                // Outer border + inner inset
+                draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_66_BB);
+                draw_rect_border(
+                    s,
+                    sw,
+                    menu_x + 1,
+                    menu_y + 1,
+                    menu_w - 2,
+                    menu_h - 2,
+                    0x00_00_22_44,
+                );
+
+                // Vertical divider between columns
+                s_fill(
+                    s,
+                    sw,
+                    menu_x + left_w,
                     menu_y + 4,
-                    menu_w + 4,
-                    menu_h + 4,
-                    0x00_00_02_06,
+                    1,
+                    menu_h - bottom_h - 4,
+                    0x00_00_22_44,
                 );
 
-                // Background — deep CRT navy
-                s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_08_1C);
+                // Bottom bar separator + background
+                s_fill(s, sw, menu_x + 1, bar_y, menu_w - 2, 1, 0x00_00_22_44);
+                let bar_bg = 0x00_00_04_10;
+                s_fill(
+                    s,
+                    sw,
+                    menu_x + 1,
+                    bar_y + 1,
+                    menu_w - 2,
+                    bottom_h - 2,
+                    bar_bg,
+                );
 
-                // Outer border — phosphor blue
-                draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_55_AA);
-
-                // Header: "coolOS" branding strip
-                s_fill(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, 36, 0x00_00_10_2C);
+                // ── Search box (bottom-left inside bar) ───────────────────────────
+                let srch_x = menu_x + 8;
+                let srch_y = bar_y + 7;
+                let srch_w = left_w - 16;
+                let srch_h = 20i32;
+                let srch_bg = 0x00_00_03_0C;
+                s_fill(s, sw, srch_x, srch_y, srch_w, srch_h, srch_bg);
+                draw_rect_border(s, sw, srch_x, srch_y, srch_w, srch_h, 0x00_00_44_88);
+                let sg_x = srch_x + 5;
+                let sg_y = srch_y + 6;
+                let sg_col = 0x00_00_44_77;
+                s_fill(s, sw, sg_x + 1, sg_y, 3, 1, sg_col);
+                s_fill(s, sw, sg_x, sg_y + 1, 1, 3, sg_col);
+                s_fill(s, sw, sg_x + 4, sg_y + 1, 1, 3, sg_col);
+                s_fill(s, sw, sg_x + 1, sg_y + 4, 3, 1, sg_col);
+                s_fill(s, sw, sg_x + 4, sg_y + 4, 1, 1, sg_col);
+                s_fill(s, sw, sg_x + 5, sg_y + 5, 1, 1, sg_col);
+                s_fill(s, sw, sg_x + 6, sg_y + 6, 1, 1, sg_col);
                 s_draw_str_small(
                     s,
                     sw,
-                    menu_x + 12,
-                    menu_y + (36 - 8) / 2,
-                    "coolOS",
-                    0x00_88_CC_FF,
-                    0x00_00_10_2C,
-                    menu_x + menu_w - 4,
+                    sg_x + 10,
+                    srch_y + 6,
+                    "Search programs and files",
+                    sg_col,
+                    srch_bg,
+                    srch_x + srch_w - 4,
                 );
-                // Small accent dot next to brand (6 chars × 8px = 48px → dot at +62)
-                s_fill(s, sw, menu_x + 62, menu_y + 14, 4, 4, ACCENT);
 
-                // Search bar
-                let srch_y = menu_y + 40;
-                s_fill(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_00_0C_22);
-                draw_rect_border(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_00_44_88);
+                // ── Shut down button (bottom-right inside bar) ────────────────────
+                let sd_w = 96i32;
+                let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
+                let sd_y = bar_y + 8;
+                let sd_h = 20i32;
+                let sd_hot =
+                    mx_i >= sd_x && mx_i < sd_x + sd_w && my_i >= sd_y && my_i < sd_y + sd_h;
+                let sd_bg = if sd_hot { 0x00_00_22_44 } else { 0x00_00_10_28 };
+                s_fill(s, sw, sd_x, sd_y, sd_w, sd_h, sd_bg);
+                draw_rect_border(s, sw, sd_x, sd_y, sd_w, sd_h, 0x00_00_44_88);
+                let pw_x = sd_x + 7;
+                let pw_y = sd_y + 5;
+                let pw_c = 0x00_00_66_99;
+                s_fill(s, sw, pw_x + 3, pw_y, 2, 4, pw_c);
+                s_fill(s, sw, pw_x + 1, pw_y + 3, 1, 1, pw_c);
+                s_fill(s, sw, pw_x + 6, pw_y + 3, 1, 1, pw_c);
+                s_fill(s, sw, pw_x, pw_y + 4, 1, 3, pw_c);
+                s_fill(s, sw, pw_x + 7, pw_y + 4, 1, 3, pw_c);
+                s_fill(s, sw, pw_x + 1, pw_y + 7, 6, 1, pw_c);
                 s_draw_str_small(
                     s,
                     sw,
-                    menu_x + 16,
-                    srch_y + (28 - 8) / 2,
-                    "Search",
-                    0x00_00_55_99,
-                    0x00_00_0C_22,
-                    menu_x + menu_w - 12,
+                    pw_x + 12,
+                    sd_y + 6,
+                    "Shut down",
+                    if sd_hot { WHITE } else { 0x00_88_CC_FF },
+                    sd_bg,
+                    sd_x + sd_w - 4,
                 );
 
-                // "Pinned" section header
-                s_draw_str_small(
-                    s,
-                    sw,
-                    menu_x + 12,
-                    menu_y + 74,
-                    "Pinned",
-                    0x00_00_77_BB,
-                    0x00_00_08_1C,
-                    menu_x + menu_w - 4,
-                );
-
-                // App entries
-                let apps: [(&str, u32, &str); 4] = [
+                // ── LEFT COLUMN: recently-pinned app list ─────────────────────────
+                const SM_APPS: [(&str, u32, &str); 4] = [
                     ("Terminal", ICON_TERM_ACC, "T>"),
                     ("System Mon", ICON_MON_ACC, "M#"),
-                    ("Text View", ICON_TXT_ACC, "E "),
+                    ("Text View", ICON_TXT_ACC, "E"),
                     ("Color Pick", ICON_COL_ACC, "CP"),
                 ];
+                let item_h = 44i32;
+                let items_y = menu_y + 4;
 
-                let mut hover_idx: Option<usize> = None;
-                let items_y = menu_y + 88;
-                if mx_i >= menu_x + 1
-                    && mx_i < menu_x + menu_w - 1
+                let mut left_hov: Option<usize> = None;
+                if mx_i > menu_x
+                    && mx_i < menu_x + left_w
                     && my_i >= items_y
-                    && my_i < items_y + 40 * 4
+                    && my_i < items_y + item_h * SM_APPS.len() as i32
                 {
-                    hover_idx = Some(((my_i - items_y) / 40) as usize);
+                    left_hov = Some(((my_i - items_y) / item_h) as usize);
                 }
 
-                for (i, (name, acc, glyph)) in apps.iter().enumerate() {
-                    let iy = items_y + i as i32 * 40;
-                    let is_hov = hover_idx == Some(i);
+                for (i, (name, acc, glyph)) in SM_APPS.iter().enumerate() {
+                    let iy = items_y + i as i32 * item_h;
+                    let is_hov = left_hov == Some(i);
+                    let row_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_07_18 };
 
-                    let row_bg = if is_hov { 0x00_00_18_38 } else { 0x00_00_08_1C };
-                    s_fill(s, sw, menu_x + 1, iy, menu_w - 2, 38, row_bg);
+                    if is_hov {
+                        s_fill(s, sw, menu_x + 1, iy, left_w - 1, item_h - 1, row_bg);
+                        s_fill(s, sw, menu_x + 1, iy + 8, 3, item_h - 17, ACCENT);
+                    }
 
-                    // Coloured app icon square: dim accent fill + bright accent top band + glyph
-                    let icon_sq_bg = blend_color(0x00_00_0C_22, *acc, 55); // ~22% accent tint
-                    s_fill(s, sw, menu_x + 10, iy + 7, 24, 24, icon_sq_bg);
-                    s_fill(s, sw, menu_x + 10, iy + 7, 24, 3, *acc); // accent top band
+                    // Small icon tile (24×24)
+                    let icon_x = menu_x + 10;
+                    let icon_y = iy + (item_h - 24) / 2;
+                    let icon_bg = blend_color(0x00_00_0B_20, *acc, 55);
+                    s_fill(s, sw, icon_x, icon_y, 24, 24, icon_bg);
+                    s_fill(s, sw, icon_x, icon_y, 24, 3, *acc);
                     s_draw_str_small(
                         s,
                         sw,
-                        menu_x + 12,
-                        iy + 14,
+                        icon_x + 5,
+                        icon_y + 9,
                         glyph,
                         *acc,
-                        icon_sq_bg,
-                        menu_x + 38,
+                        icon_bg,
+                        icon_x + 22,
                     );
 
                     // App name
+                    let name_col = if is_hov { WHITE } else { 0x00_AA_DD_FF };
                     s_draw_str_small(
                         s,
                         sw,
                         menu_x + 40,
-                        iy + (38 - 8) / 2,
+                        iy + (item_h - 8) / 2,
                         name,
-                        if is_hov { WHITE } else { 0x00_88_CC_FF },
+                        name_col,
                         row_bg,
-                        menu_x + menu_w - 8,
+                        menu_x + left_w - 8,
                     );
 
-                    // Hover accent bar on left edge
-                    if is_hov {
-                        s_fill(s, sw, menu_x + 1, iy + 4, 2, 30, ACCENT);
-                    }
-
                     // Row separator
-                    s_fill(s, sw, menu_x + 8, iy + 38, menu_w - 16, 1, 0x00_00_22_44);
+                    if i + 1 < SM_APPS.len() {
+                        s_fill(
+                            s,
+                            sw,
+                            menu_x + 8,
+                            iy + item_h - 1,
+                            left_w - 16,
+                            1,
+                            if is_hov { 0x00_00_10_24 } else { 0x00_00_1A_36 },
+                        );
+                    }
+                }
+
+                // "All Programs ›" — anchored just above the bottom bar
+                let all_y = bar_y - item_h;
+                let all_hot = mx_i > menu_x
+                    && mx_i < menu_x + left_w
+                    && my_i >= all_y
+                    && my_i < all_y + item_h;
+                s_fill(s, sw, menu_x + 8, all_y, left_w - 16, 1, 0x00_00_22_44);
+                if all_hot {
+                    s_fill(
+                        s,
+                        sw,
+                        menu_x + 1,
+                        all_y,
+                        left_w - 1,
+                        item_h - 1,
+                        0x00_00_14_30,
+                    );
+                }
+                let all_col = if all_hot { WHITE } else { 0x00_88_CC_FF };
+                let all_bg = if all_hot {
+                    0x00_00_14_30
+                } else {
+                    0x00_00_07_18
+                };
+                s_draw_str_small(
+                    s,
+                    sw,
+                    menu_x + 10,
+                    all_y + (item_h - 8) / 2,
+                    "All Programs",
+                    all_col,
+                    all_bg,
+                    menu_x + left_w - 20,
+                );
+                let chv_x = menu_x + left_w - 14;
+                let chv_mid = all_y + item_h / 2;
+                let chv_col = if all_hot { ACCENT } else { 0x00_00_33_55 };
+                s_fill(s, sw, chv_x, chv_mid - 3, 1, 4, chv_col);
+                s_fill(s, sw, chv_x + 1, chv_mid - 1, 1, 2, chv_col);
+
+                // ── RIGHT COLUMN: user avatar + system links ──────────────────────
+                let rc_x = menu_x + left_w + 1;
+                let rc_w = right_w - 2;
+
+                // User avatar (36×36) + name
+                let av_h = 56i32;
+                let av_x = rc_x + 8;
+                let av_y = menu_y + 10;
+                s_fill(s, sw, av_x, av_y, 36, 36, 0x00_00_10_28);
+                draw_rect_border(s, sw, av_x, av_y, 36, 36, ACCENT);
+                s_fill(s, sw, av_x + 13, av_y + 5, 10, 9, 0x00_00_55_88); // head
+                s_fill(s, sw, av_x + 8, av_y + 18, 20, 14, 0x00_00_44_77); // body
+                s_draw_str_small(
+                    s,
+                    sw,
+                    av_x + 42,
+                    av_y + 4,
+                    "user",
+                    0x00_CC_EE_FF,
+                    0x00_00_05_12,
+                    rc_x + rc_w - 4,
+                );
+                s_draw_str_small(
+                    s,
+                    sw,
+                    av_x + 42,
+                    av_y + 16,
+                    "coolOS",
+                    0x00_00_88_CC,
+                    0x00_00_05_12,
+                    rc_x + rc_w - 4,
+                );
+
+                // Divider under avatar
+                s_fill(
+                    s,
+                    sw,
+                    rc_x + 4,
+                    menu_y + 4 + av_h,
+                    rc_w - 8,
+                    1,
+                    0x00_00_22_44,
+                );
+
+                // System links
+                const SYS_LINKS: [&str; 7] = [
+                    "Documents",
+                    "Pictures",
+                    "Settings",
+                    "System",
+                    "Network",
+                    "Control Panel",
+                    "Help",
+                ];
+                let link_h = 26i32;
+                let links_y = menu_y + 4 + av_h + 4;
+                for (i, &link_name) in SYS_LINKS.iter().enumerate() {
+                    let ly = links_y + i as i32 * link_h;
+                    if ly + link_h > bar_y {
+                        break;
+                    }
+                    let is_hov =
+                        mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= ly && my_i < ly + link_h;
+                    let link_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_05_12 };
+                    if is_hov {
+                        s_fill(s, sw, rc_x, ly, rc_w, link_h - 1, link_bg);
+                        s_fill(s, sw, rc_x, ly + 6, 2, link_h - 13, ACCENT);
+                    }
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        rc_x + 10,
+                        ly + (link_h - 8) / 2,
+                        link_name,
+                        if is_hov { WHITE } else { 0x00_88_CC_FF },
+                        link_bg,
+                        rc_x + rc_w - 4,
+                    );
                 }
             }
 
@@ -1126,7 +1340,7 @@ impl WindowManager {
                 } else if hovered {
                     0x00_66_BB_EE
                 } else {
-                    0x00_00_66_99
+                    0x00_44_88_BB // was 0x00_00_66_99 — too dark to read on frosted glass
                 };
                 let text_w = trunc.len() as i32 * 8;
                 let text_x = bx + (BUTTON_W - text_w).max(0) / 2;
@@ -1228,73 +1442,100 @@ impl WindowManager {
                 );
             }
 
-            // ── Context menu — CRT phosphor blue ─────────────────────────────────
+            // ── Context menu ──────────────────────────────────────────────────────
             if let Some(ref cm) = self.context_menu {
-                let menu_h = CTX_ITEM_H * CTX_ITEMS.len() as i32 + 8;
-                let pad = 4i32;
+                let menu_h = CTX_HEADER_H + CTX_PAD * 2 + CTX_ITEM_H * CTX_ITEMS.len() as i32;
 
-                // Shadow
+                // Background
+                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_07_18);
+
+                // Outer border + inner inset
+                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_66_BB);
+                draw_rect_border(
+                    s,
+                    sw,
+                    cm.x + 1,
+                    cm.y + 1,
+                    CTX_W - 2,
+                    menu_h - 2,
+                    0x00_00_22_44,
+                );
+
+                // ── Header strip ──────────────────────────────────────────────────
+                let hdr_bg = 0x00_00_0E_28;
                 s_fill(
                     s,
                     sw,
-                    cm.x + 3,
-                    cm.y + 3,
-                    CTX_W + 2,
-                    menu_h + 2,
-                    0x00_00_02_06,
+                    cm.x + 1,
+                    cm.y + 1,
+                    CTX_W - 2,
+                    CTX_HEADER_H - 1,
+                    hdr_bg,
+                );
+                // Accent pip + "Open App" label
+                s_fill(s, sw, cm.x + 10, cm.y + 12, 4, 4, ACCENT);
+                s_draw_str_small(
+                    s,
+                    sw,
+                    cm.x + 18,
+                    cm.y + 10,
+                    "Open App",
+                    0x00_44_88_BB,
+                    hdr_bg,
+                    cm.x + CTX_W - 4,
+                );
+                // Header bottom rule
+                s_fill(
+                    s,
+                    sw,
+                    cm.x + 1,
+                    cm.y + CTX_HEADER_H - 1,
+                    CTX_W - 2,
+                    1,
+                    0x00_00_33_66,
                 );
 
-                // Background
-                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_08_1C);
-
-                // Border — phosphor blue
-                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_55_AA);
+                // Per-app accent colours, matching the desktop icon set
+                const CTX_ACCENTS: [u32; 4] =
+                    [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC];
 
                 for (i, &label) in CTX_ITEMS.iter().enumerate() {
-                    let item_y = cm.y + pad + i as i32 * CTX_ITEM_H;
+                    let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;
                     let hot = mx_i >= cm.x
                         && mx_i < cm.x + CTX_W
                         && my_i >= item_y
                         && my_i < item_y + CTX_ITEM_H;
+                    let acc = CTX_ACCENTS[i % CTX_ACCENTS.len()];
 
+                    // Hover: subtle tint row + left accent bar (no full solid fill)
                     if hot {
-                        s_fill(s, sw, cm.x + 2, item_y, CTX_W - 4, CTX_ITEM_H, ACCENT);
-                        // Clip hover corners
-                        s_fill(s, sw, cm.x + 2, item_y, 1, 1, 0x00_00_08_1C);
-                        s_fill(s, sw, cm.x + CTX_W - 3, item_y, 1, 1, 0x00_00_08_1C);
-                        s_fill(
-                            s,
-                            sw,
-                            cm.x + 2,
-                            item_y + CTX_ITEM_H - 1,
-                            1,
-                            1,
-                            0x00_00_08_1C,
-                        );
-                        s_fill(
-                            s,
-                            sw,
-                            cm.x + CTX_W - 3,
-                            item_y + CTX_ITEM_H - 1,
-                            1,
-                            1,
-                            0x00_00_08_1C,
-                        );
+                        let hov_bg = 0x00_00_12_2C;
+                        s_fill(s, sw, cm.x + 1, item_y, CTX_W - 2, CTX_ITEM_H - 1, hov_bg);
+                        s_fill(s, sw, cm.x + 1, item_y + 5, 3, CTX_ITEM_H - 11, ACCENT);
                     }
 
+                    // Coloured accent pip (4×4) identifying the app
+                    let pip_x = cm.x + 10;
+                    let pip_y = item_y + (CTX_ITEM_H - 4) / 2;
+                    s_fill(s, sw, pip_x, pip_y, 4, 4, acc);
+
+                    // Label
+                    let text_col = if hot { WHITE } else { 0x00_88_CC_FF };
+                    let text_bg = if hot { 0x00_00_12_2C } else { 0x00_00_07_18 };
                     s_draw_str_small(
                         s,
                         sw,
-                        cm.x + 14,
+                        cm.x + 20,
                         item_y + (CTX_ITEM_H - 8) / 2,
                         label,
-                        if hot { WHITE } else { 0x00_88_CC_FF },
-                        if hot { ACCENT } else { 0x00_00_08_1C },
+                        text_col,
+                        text_bg,
                         cm.x + CTX_W - 4,
                     );
 
                     // Separator (not after last item)
-                    if i + 1 < CTX_ITEMS.len() && !hot {
+                    if i + 1 < CTX_ITEMS.len() {
+                        let sep_col = if hot { 0x00_00_10_22 } else { 0x00_00_1A_33 };
                         s_fill(
                             s,
                             sw,
@@ -1302,7 +1543,7 @@ impl WindowManager {
                             item_y + CTX_ITEM_H - 1,
                             CTX_W - 16,
                             1,
-                            0x00_00_33_66,
+                            sep_col,
                         );
                     }
                 }
@@ -1416,7 +1657,14 @@ impl WindowManager {
     }
 
     /// Draw a single window — Windows 11 Dark Mode chrome.
-    fn draw_window(s: &mut [u32], sw: usize, w: &Window, focused: bool) {
+    fn draw_window(
+        s: &mut [u32],
+        sw: usize,
+        w: &Window,
+        focused: bool,
+        cursor_x: i32,
+        cursor_y: i32,
+    ) {
         // ── Drop shadow ───────────────────────────────────────────────────────
         // Four-sided soft shadow: 6px offset, fades with distance
         const SHADOW_R: i32 = 6;
@@ -1429,16 +1677,15 @@ impl WindowManager {
             s_fill_alpha(s, sw, sx, w.y + d, 1, w.height, shadow_col);
             // Bottom edge
             s_fill_alpha(s, sw, w.x + d, sy, w.width, 1, shadow_col);
+            // Left edge
+            s_fill_alpha(s, sw, w.x - d, w.y + d, 1, w.height, shadow_col);
+            // Top edge
+            s_fill_alpha(s, sw, w.x + d, w.y - d, w.width, 1, shadow_col);
         }
 
         // ── Title bar — CRT phosphor chrome ──────────────────────────────────
         let title_bg = if focused { WIN_BAR_F } else { WIN_BAR_U };
         s_fill(s, sw, w.x, w.y, w.width, TITLE_H, title_bg);
-
-        // Thin top accent stripe on focused window
-        if focused {
-            s_fill(s, sw, w.x, w.y, w.width, 1, ACCENT);
-        }
 
         // ── Window border ─────────────────────────────────────────────────────
         let bord = if focused { WIN_BDR_F } else { WIN_BDR_U };
@@ -1469,72 +1716,117 @@ impl WindowManager {
         let btn_y = w.y + 1;
         let btn_h = TITLE_H - 2;
 
+        // Hover detection — only fire when cursor is over this window's title row
+        let in_btn_row = cursor_y >= btn_y && cursor_y < btn_y + btn_h;
+        let min_x = w.x + w.width - WIN_BTN_W * 3;
+        let max_x = w.x + w.width - WIN_BTN_W * 2;
+        let cls_x = w.x + w.width - WIN_BTN_W;
+        let hover_min = in_btn_row && cursor_x >= min_x && cursor_x < min_x + WIN_BTN_W;
+        let hover_max = in_btn_row && cursor_x >= max_x && cursor_x < max_x + WIN_BTN_W;
+        let hover_close = in_btn_row && cursor_x >= cls_x && cursor_x < cls_x + WIN_BTN_W;
+
         // Minimize  ─
-        let mx = w.x + w.width - WIN_BTN_W * 3;
-        s_fill(s, sw, mx, btn_y, WIN_BTN_W, btn_h, CAP_NORMAL);
-        // Horizontal bar glyph centred
         s_fill(
             s,
             sw,
-            mx + WIN_BTN_W / 2 - 4,
+            min_x,
+            btn_y,
+            WIN_BTN_W,
+            btn_h,
+            if hover_min { CAP_HOV } else { CAP_NORMAL },
+        );
+        let min_glyph = if hover_min { WHITE } else { 0x00_00_99_FF };
+        s_fill(
+            s,
+            sw,
+            min_x + WIN_BTN_W / 2 - 4,
             btn_y + btn_h / 2 + 1,
             8,
             1,
-            0x00_00_99_FF,
+            min_glyph,
         );
 
         // Maximize  □
-        let mx2 = w.x + w.width - WIN_BTN_W * 2;
-        s_fill(s, sw, mx2, btn_y, WIN_BTN_W, btn_h, CAP_NORMAL);
-        // Hollow square glyph
         s_fill(
             s,
             sw,
-            mx2 + WIN_BTN_W / 2 - 4,
+            max_x,
+            btn_y,
+            WIN_BTN_W,
+            btn_h,
+            if hover_max { CAP_HOV } else { CAP_NORMAL },
+        );
+        let max_glyph = if hover_max { WHITE } else { 0x00_00_99_FF };
+        s_fill(
+            s,
+            sw,
+            max_x + WIN_BTN_W / 2 - 4,
             btn_y + btn_h / 2 - 4,
             8,
             1,
-            0x00_00_99_FF,
+            max_glyph,
         );
         s_fill(
             s,
             sw,
-            mx2 + WIN_BTN_W / 2 - 4,
+            max_x + WIN_BTN_W / 2 - 4,
             btn_y + btn_h / 2 + 3,
             8,
             1,
-            0x00_00_99_FF,
+            max_glyph,
         );
         s_fill(
             s,
             sw,
-            mx2 + WIN_BTN_W / 2 - 4,
+            max_x + WIN_BTN_W / 2 - 4,
             btn_y + btn_h / 2 - 4,
             1,
             8,
-            0x00_00_99_FF,
+            max_glyph,
         );
         s_fill(
             s,
             sw,
-            mx2 + WIN_BTN_W / 2 + 3,
+            max_x + WIN_BTN_W / 2 + 3,
             btn_y + btn_h / 2 - 4,
             1,
             8,
-            0x00_00_99_FF,
+            max_glyph,
         );
 
-        // Close  ✕ — pixel diagonals (font glyph gets clipped inside WIN_BTN_W)
-        let cx = w.x + w.width - WIN_BTN_W;
-        let cx_c = cx + WIN_BTN_W / 2;
+        // Close  ✕ — pixel diagonals
+        let cx_c = cls_x + WIN_BTN_W / 2;
         let cy_c = btn_y + btn_h / 2;
         let sh_wnd = s.len() / sw;
-        s_fill(s, sw, cx, btn_y, WIN_BTN_W, btn_h, CLOSE_REST);
+        s_fill(
+            s,
+            sw,
+            cls_x,
+            btn_y,
+            WIN_BTN_W,
+            btn_h,
+            if hover_close { CLOSE_HOV } else { CLOSE_REST },
+        );
+        let cls_glyph = if hover_close { WHITE } else { 0x00_FF_44_44 };
         for i in -3i32..=3 {
-            s_put(s, sw, sh_wnd, cx_c + i, cy_c + i, 0x00_FF_44_44);
-            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c + i, 0x00_FF_44_44);
-            s_put(s, sw, sh_wnd, cx_c + i, cy_c - i, 0x00_FF_44_44);
-            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c - i, 0x00_FF_44_44);
+            s_put(s, sw, sh_wnd, cx_c + i, cy_c + i, cls_glyph);
+            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c + i, cls_glyph);
+            s_put(s, sw, sh_wnd, cx_c + i, cy_c - i, cls_glyph);
+            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c - i, cls_glyph);
+        }
+
+        // Accent stripe drawn last so it runs end-to-end over the caption buttons too
+        if focused {
+            s_fill(s, sw, w.x, w.y, w.width, 2, ACCENT);
+            s_fill(
+                s,
+                sw,
+                w.x,
+                w.y + 2,
+                w.width,
+                2,
+                blend_color(ACCENT, WIN_BAR_F, 180),
+            );
         }
 
         // ── Content area ──────────────────────────────────────────────────────
@@ -1548,8 +1840,11 @@ impl WindowManager {
                 let py = content_y + row as i32;
                 if px >= 0 && py >= 0 && (px as usize) < sw && (py as usize) < s.len() / sw {
                     let pixel = w.buf[row * cw + col];
-                    s[(py as usize) * sw + (px as usize)] =
-                        if pixel == 0 { WIN_CONTENT } else { pixel };
+                    s[(py as usize) * sw + (px as usize)] = if pixel == WIN_TRANSPARENT {
+                        WIN_CONTENT
+                    } else {
+                        pixel
+                    };
                 }
             }
         }
@@ -1582,6 +1877,18 @@ lazy_static! {
 }
 
 // ── Shadow-buffer helpers ─────────────────────────────────────────────────────
+
+#[inline(always)]
+fn s_get(s: &[u32], sw: usize, x: i32, y: i32) -> u32 {
+    if x >= 0 && y >= 0 {
+        let (x, y) = (x as usize, y as usize);
+        let sh = if sw > 0 { s.len() / sw } else { 0 };
+        if x < sw && y < sh {
+            return s[y * sw + x];
+        }
+    }
+    0
+}
 
 #[inline(always)]
 fn s_put(s: &mut [u32], sw: usize, sh: usize, x: i32, y: i32, color: u32) {
