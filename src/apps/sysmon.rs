@@ -1,5 +1,5 @@
 use crate::framebuffer::{
-    BLACK, CHAR_H, CHAR_W, FONT_SCALE, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
+    BLACK, CHAR_H, CHAR_W, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
 };
 use crate::wm::window::Window;
 /// System Monitor — shows CPU vendor, heap usage, and uptime.
@@ -7,6 +7,9 @@ use font8x8::UnicodeFonts;
 
 pub const SYSMON_W: i32 = 520;
 pub const SYSMON_H: i32 = 300;
+
+const CHAR_W_SMALL: usize = 8;
+const CHAR_H_SMALL: usize = 8;
 
 pub struct SysMonApp {
     pub window: Window,
@@ -71,10 +74,10 @@ impl SysMonApp {
     }
 
     fn put_str(&mut self, stride: usize, text_row: usize, s: &str, color: u32) {
-        let py = text_row * CHAR_H;
+        let py = text_row * CHAR_H_SMALL;
         for (ci, c) in s.chars().enumerate() {
-            let px = ci * CHAR_W;
-            if px + CHAR_W > stride {
+            let px = ci * CHAR_W_SMALL;
+            if px + CHAR_W_SMALL > stride {
                 break;
             }
             put_char_buf(&mut self.window.buf, stride, px, py, c, color, BLACK);
@@ -140,15 +143,11 @@ fn put_char_buf(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char,
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
             let color = if byte & (1 << bit) != 0 { fg } else { bg };
-            for sy in 0..FONT_SCALE {
-                for sx in 0..FONT_SCALE {
-                    let px = px0 + bit * FONT_SCALE + sx;
-                    let py = py0 + gy * FONT_SCALE + sy;
-                    let idx = py * stride + px;
-                    if idx < buf.len() {
-                        buf[idx] = color;
-                    }
-                }
+            let px = px0 + bit;
+            let py = py0 + gy;
+            let idx = py * stride + px;
+            if idx < buf.len() {
+                buf[idx] = color;
             }
         }
     }

@@ -168,6 +168,40 @@ pub fn draw_char(col: usize, row: usize, c: char, fg: u32, bg: u32) {
     }
 }
 
+/// Draw a single character at 1× scale (8×8 pixels) to a buffer.
+pub fn draw_char_small(buf: &mut [u32], stride: usize, x: i32, y: i32, c: char, fg: u32, bg: u32) {
+    use font8x8::UnicodeFonts;
+    let glyph = font8x8::BASIC_FONTS
+        .get(c)
+        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    let sh = if stride > 0 { buf.len() / stride } else { 0 };
+    for (gy, &byte) in glyph.iter().enumerate() {
+        for bit in 0..8usize {
+            let color = if byte & (1 << bit) != 0 { fg } else { bg };
+            let px = x + bit as i32;
+            let py = y + gy as i32;
+            if px >= 0 && py >= 0 {
+                let (px, py) = (px as usize, py as usize);
+                if px < stride && py < sh {
+                    buf[py * stride + px] = color;
+                }
+            }
+        }
+    }
+}
+
+/// Draw a string at 1× scale (8×8 pixels) to a buffer.
+pub fn draw_str_small(buf: &mut [u32], stride: usize, x: i32, y: i32, text: &str, fg: u32, bg: u32, max_x: i32) {
+    let mut cx = x;
+    for c in text.chars() {
+        if cx + 8 > max_x {
+            break;
+        }
+        draw_char_small(buf, stride, cx, y, c, fg, bg);
+        cx += 8;
+    }
+}
+
 /// Scroll the hardware framebuffer up by one character row, filling the
 /// vacated bottom row with `bg`.  Used by the panic-mode VGA writer.
 pub fn scroll_up(bg: u32) {

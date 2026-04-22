@@ -5,11 +5,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use font8x8::UnicodeFonts;
 
-use crate::framebuffer::{CHAR_W, CHAR_H, FONT_SCALE, BLACK, LIGHT_GRAY};
+use crate::framebuffer::{BLACK, CHAR_W, CHAR_H, LIGHT_GRAY};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const TERM_W: i32 = 640;
 pub const TERM_H: i32 = 440;
+
+const CHAR_W_SMALL: usize = 8;
+const CHAR_H_SMALL: usize = 8;
 
 const FG: u32 = LIGHT_GRAY;
 const BG: u32 = BLACK;
@@ -26,9 +29,9 @@ pub struct TerminalApp {
 impl TerminalApp {
     pub fn new(x: i32, y: i32) -> Self {
         let window = Window::new(x, y, TERM_W, TERM_H, "Terminal");
-        let cols = TERM_W as usize / CHAR_W;
+        let cols = TERM_W as usize / CHAR_W_SMALL;
         let content_h = (TERM_H - TITLE_H) as usize;
-        let rows = content_h / CHAR_H;
+        let rows = content_h / CHAR_H_SMALL;
 
         let mut t = TerminalApp {
             window,
@@ -243,7 +246,7 @@ impl TerminalApp {
 
     fn scroll_up(&mut self) {
         let stride = self.window.width as usize;
-        let row_pixels = stride * CHAR_H;
+        let row_pixels = stride * CHAR_H_SMALL;
         let total = self.window.buf.len();
         self.window.buf.copy_within(row_pixels..total, 0);
         let last = total - row_pixels;
@@ -254,21 +257,17 @@ impl TerminalApp {
         let glyph = font8x8::BASIC_FONTS
             .get(c)
             .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-        let px0 = col * CHAR_W;
-        let py0 = row * CHAR_H;
+        let px0 = col * CHAR_W_SMALL;
+        let py0 = row * CHAR_H_SMALL;
         let stride = self.window.width as usize;
         for (gy, &byte) in glyph.iter().enumerate() {
             for bit in 0..8usize {
                 let color = if byte & (1 << bit) != 0 { FG } else { BG };
-                for sy in 0..FONT_SCALE {
-                    for sx in 0..FONT_SCALE {
-                        let px = px0 + bit * FONT_SCALE + sx;
-                        let py = py0 + gy  * FONT_SCALE + sy;
-                        let idx = py * stride + px;
-                        if idx < self.window.buf.len() {
-                            self.window.buf[idx] = color;
-                        }
-                    }
+                let px = px0 + bit;
+                let py = py0 + gy;
+                let idx = py * stride + px;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
                 }
             }
         }

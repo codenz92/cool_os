@@ -1,4 +1,5 @@
-https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f
+<https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f>
+
 # coolOS
 
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
@@ -260,9 +261,8 @@ faults still panic.
 | 10 | Per-process virtual memory + isolation | **Done** |
 | 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
 | 12 | ELF loader — real programs run from disk | **Done** |
-| 13 | Pipes + shared memory + IPC + userspace terminal | **Done** |
+| 13 | Pipes + shared memory + IPC | **Done** |
 | 14 | USB HID — real hardware input | Planned |
 | 15 | Networking — virtio-net, TCP/IP | Planned |
-| 16 | UI Polish — desktop icons, start menu, wallpaper | Planned |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

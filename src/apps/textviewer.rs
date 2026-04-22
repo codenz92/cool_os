@@ -1,4 +1,4 @@
-use crate::framebuffer::{CHAR_H, CHAR_W, DARK_GRAY, FONT_SCALE, LIGHT_GRAY, WHITE, YELLOW};
+use crate::framebuffer::{DARK_GRAY, LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
 /// Text Viewer — scrollable read-only document display.
 /// Press 'j' to scroll down, 'k' to scroll up.
@@ -6,6 +6,9 @@ use font8x8::UnicodeFonts;
 
 pub const VIEWER_W: i32 = 640;
 pub const VIEWER_H: i32 = 480;
+
+const CHAR_W: usize = 8;
+const CHAR_H: usize = 8;
 
 const ABOUT: &[&str] = &[
     " coolOS v1.5",
@@ -136,15 +139,11 @@ fn put_char(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg:
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
             if byte & (1 << bit) != 0 {
-                for sy in 0..FONT_SCALE {
-                    for sx in 0..FONT_SCALE {
-                        let px = px0 + bit * FONT_SCALE + sx;
-                        let py = py0 + gy * FONT_SCALE + sy;
-                        let idx = py * stride + px;
-                        if idx < buf.len() {
-                            buf[idx] = fg;
-                        }
-                    }
+                let px = px0 + bit;
+                let py = py0 + gy;
+                let idx = py * stride + px;
+                if idx < buf.len() {
+                    buf[idx] = fg;
                 }
             }
         }

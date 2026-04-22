@@ -840,13 +840,13 @@ impl WindowManager {
                 TASKBAR_BG,
             );
 
-            // "start" label centred in button — 8px small font
+            // "START" label centred in button — 8px small font
             s_draw_str_small(
                 s,
                 sw,
                 btn_x + (btn_w - 5 * 8) / 2,
                 btn_y + (btn_h - 8) / 2,
-                "start",
+                "START",
                 WHITE,
                 s_btn_col,
                 btn_x + btn_w - 2,
@@ -1143,10 +1143,12 @@ impl WindowManager {
                     b'0' + (m % 10) as u8,
                 ];
                 if let Ok(time_str) = core::str::from_utf8(&buf) {
+                    let time_w = 5 * 8;
+                    let time_x = clk_x + (TASKBAR_CLOCK_W - 2 - time_w) / 2;
                     s_draw_str_small(
                         s,
                         sw,
-                        clk_x + 6,
+                        time_x,
                         taskbar_y + 9,
                         time_str,
                         WHITE,
@@ -1155,16 +1157,21 @@ impl WindowManager {
                     );
                 }
             }
-            s_draw_str_small(
-                s,
-                sw,
-                clk_x + 4,
-                taskbar_y + 22,
-                "coolOS",
-                0x00_55_55_55,
-                clk_bg,
-                clk_x + TASKBAR_CLOCK_W - 2,
-            );
+            {
+                let brand = "coolOS";
+                let brand_w = 6 * 8;
+                let brand_x = clk_x + (TASKBAR_CLOCK_W - 2 - brand_w) / 2;
+                s_draw_str_small(
+                    s,
+                    sw,
+                    brand_x,
+                    taskbar_y + 22,
+                    "coolOS",
+                    0x00_55_55_55,
+                    clk_bg,
+                    clk_x + TASKBAR_CLOCK_W - 2,
+                );
+            }
 
             // ── Context menu — Win11 rounded dark ────────────────────────────────
             if let Some(ref cm) = self.context_menu {
