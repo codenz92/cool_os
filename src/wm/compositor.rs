@@ -18,6 +18,8 @@ const START_BTN_W: i32 = 86; // 5 chars × 16px + 4px pad each side
 const TASKBAR_CLOCK_W: i32 = 108; // "00:00" (5×16=80) + padding; "coolOS" (6×16=96) + padding
 const BUTTON_W: i32 = 160;
 const WIN_BTN_W: i32 = crate::wm::window::WIN_BTN_W;
+const SCROLLBAR_W: i32 = crate::wm::window::SCROLLBAR_W;
+const RESIZE_HANDLE: i32 = crate::wm::window::RESIZE_HANDLE;
 const EVENT_PACKET_SIZE: usize = 8;
 const EVENT_KIND_KEY_CHAR: u8 = 1;
 const EVENT_KIND_MOUSE_DOWN: u8 = 2;
@@ -180,6 +182,23 @@ struct DragState {
     off_y: i32,
 }
 
+struct ResizeState {
+    window: usize,
+    start_w: i32,
+    start_h: i32,
+    start_mx: i32,
+    start_my: i32,
+}
+
+struct ScrollDragState {
+    window: usize,
+    start_offset: i32,
+    start_my: i32,
+    content_h: i32,
+    view_h: i32,
+    track_h: i32,
+}
+
 // ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
@@ -237,6 +256,8 @@ pub struct WindowManager {
     key_sink_fd: Option<usize>,
     key_sink_window: Option<usize>,
     drag: Option<DragState>,
+    resize: Option<ResizeState>,
+    scroll_drag: Option<ScrollDragState>,
     prev_left: bool,
     prev_right: bool,
     context_menu: Option<ContextMenu>,
@@ -322,6 +343,8 @@ impl WindowManager {
             key_sink_fd: None,
             key_sink_window: None,
             drag: None,
+            resize: None,
+            scroll_drag: None,
             prev_left: false,
             prev_right: false,
             context_menu: None,
@@ -535,6 +558,26 @@ impl WindowManager {
                             off_x: mx_i - self.windows[win_idx].window().x,
                             off_y: my_i - self.windows[win_idx].window().y,
                         });
+                    } else if self.windows[win_idx].window().hit_resize(mx_i, my_i) {
+                        let w = self.windows[win_idx].window();
+                        self.resize = Some(ResizeState {
+                            window: win_idx,
+                            start_w: w.width,
+                            start_h: w.height,
+                            start_mx: mx_i,
+                            start_my: my_i,
+                        });
+                    } else if self.windows[win_idx].window().hit_scrollbar(mx_i, my_i) {
+                        let w = self.windows[win_idx].window();
+                        let view_h = (w.height - TITLE_H).max(0);
+                        self.scroll_drag = Some(ScrollDragState {
+                            window: win_idx,
+                            start_offset: w.scroll.offset,
+                            start_my: my_i,
+                            content_h: w.scroll.content_h,
+                            view_h,
+                            track_h: view_h,
+                        });
                     } else {
                         let lx = mx_i - self.windows[win_idx].window().x;
                         let ly = my_i - (self.windows[win_idx].window().y + TITLE_H);
@@ -576,6 +619,8 @@ impl WindowManager {
 
         if left_released {
             self.drag = None;
+            self.resize = None;
+            self.scroll_drag = None;
         }
 
         if left {
@@ -585,6 +630,26 @@ impl WindowManager {
                     let w = self.windows[wi].window_mut();
                     w.x = mx_i - d.off_x;
                     w.y = my_i - d.off_y;
+                }
+            }
+            if let Some(ref rs) = self.resize {
+                let wi = rs.window;
+                if wi < self.windows.len() {
+                    let new_w = rs.start_w + mx_i - rs.start_mx;
+                    let new_h = rs.start_h + my_i - rs.start_my;
+                    self.windows[wi].window_mut().resize_to(new_w, new_h);
+                    crate::wm::request_repaint();
+                }
+            }
+            if let Some(ref sd) = self.scroll_drag {
+                let wi = sd.window;
+                if wi < self.windows.len() {
+                    let delta = my_i - sd.start_my;
+                    let max_off = (sd.content_h - sd.view_h).max(1);
+                    let track_h = sd.track_h.max(1);
+                    let new_off = sd.start_offset + delta * max_off / track_h;
+                    self.windows[wi].window_mut().scroll.offset = new_off.clamp(0, max_off);
+                    crate::wm::request_repaint();
                 }
             }
         }
@@ -1847,6 +1912,48 @@ impl WindowManager {
                     };
                 }
             }
+        }
+
+        // ── Scrollbar ─────────────────────────────────────────────────────────
+        let view_h = content_h as i32;
+        if w.scroll.needs_scrollbar(view_h) {
+            let sb_x = w.x + w.width - SCROLLBAR_W;
+            let track_h = view_h;
+            // Track background
+            s_fill(s, sw, sb_x, content_y, SCROLLBAR_W, track_h, 0x00_00_03_0A);
+            // Left edge separator
+            s_fill(s, sw, sb_x, content_y, 1, track_h, 0x00_00_11_22);
+            // Thumb
+            let (thumb_y, thumb_h) = w.scroll.thumb_rect(view_h, track_h);
+            let thumb_col = if focused {
+                0x00_00_44_88
+            } else {
+                0x00_00_22_44
+            };
+            s_fill(
+                s,
+                sw,
+                sb_x + 2,
+                content_y + thumb_y,
+                SCROLLBAR_W - 4,
+                thumb_h,
+                thumb_col,
+            );
+        }
+
+        // ── Resize handle — diagonal dot-grip in bottom-right corner ──────────
+        {
+            let hx = w.x + w.width - RESIZE_HANDLE;
+            let hy = w.y + w.height - RESIZE_HANDLE;
+            let gc = if focused {
+                0x00_00_55_99
+            } else {
+                0x00_00_22_44
+            };
+            // Three 2×2 dots stair-stepping toward the corner
+            s_fill(s, sw, hx + 5, hy + 5, 2, 2, gc);
+            s_fill(s, sw, hx + 3, hy + 5, 2, 2, gc);
+            s_fill(s, sw, hx + 5, hy + 3, 2, 2, gc);
         }
     }
 }
