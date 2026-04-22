@@ -391,25 +391,99 @@ response and writes it to a file on disk.
 | 13 | Pipes, shared memory, IPC | 12 |
 | 14 | USB HID — real hardware input | 9 |
 | 15 | Networking (virtio-net, TCP/IP) | 13 |
-| 16 | UI Polish — desktop icons, start menu, wallpaper, styling | 12 |
+| 16 | UI Polish — desktop surface, window chrome, taskbar & start menu | 12 |
 
 ---
 
-## Option: UI Polish Phase 16 (optional, no kernel changes needed)
+## Phase 16 — UI Polish
 
-**Goal:** Make the desktop look more like a modern OS.
+**Goal:** Make coolOS look and feel like a real desktop OS. No kernel changes are
+required — everything in this phase lives in the compositor, window manager, and
+shell layer. The phase is split into three areas: the desktop surface, the window
+chrome, and interactive shell widgets.
 
-- [x] Desktop icons with positioning and selection
-- [x] Start menu button and pop-up launcher with app list
-- [x] Desktop wallpaper gradient rendering
-- [x] Window minimize/maximize/restore
-- [x] Better title bar styling (colors, minimize/maximize buttons)
-- [x] Taskbar improvements (start button, clock area)
-- [x] Window border rendering
-- [ ] Scrollbars for windows that overflow
+### 16a — Desktop surface
 
-**Status:** Mostly complete. Desktop icons, gradient wallpaper, window min/max/restore,
-taskbar with start button and popup menu, and styled title bars implemented.
+- [x] **Wallpaper gradient** — the desktop background renders a smooth vertical
+      colour gradient (deep blue → teal) using a per-row lerp in `shell/desktop.rs`
+      rather than a flat fill. Redrawn only when the resolution changes.
+- [x] **Desktop icons** — `DesktopIcon` structs hold a label, a 32×32 pixel glyph
+      (drawn with the 8×8 font scaled 2×), an (x, y) grid position, and a selected
+      flag. Icons are hit-tested on left click; double-click spawns the associated app.
+- [x] **Icon selection highlight** — a 2px white border is drawn around the icon
+      bounding box when `selected == true`; cleared when the user clicks the wallpaper.
+- [x] **Icon grid snap** — icons are placed on a 64×72 pixel grid anchored to the
+      left edge of the desktop; dragging an icon snaps it to the nearest cell on
+      mouse-button release.
+
+### 16b — Window chrome
+
+- [x] **Styled title bar** — title bar background uses a two-tone gradient (light
+      blue active, mid-gray inactive). Active window is determined by z-order top.
+- [x] **Minimise / maximise / restore buttons** — three 16×16 pixel buttons rendered
+      in the title bar right section. Minimise hides the window (sets `visible=false`,
+      taskbar entry remains). Maximise saves `(x, y, w, h)` and resizes the window to
+      fill the desktop area. Restore returns to the saved geometry.
+- [x] **Window border** — a 1px solid border (colour matches inactive title bar)
+      surrounds each window's content area; drawn by the compositor after blitting the
+      window's back-buffer, so apps do not need to draw it themselves.
+- [ ] **Resize handle** — a 6×6 drag zone in the bottom-right corner of each window;
+      dragging it resizes the window and reallocates its back-buffer.
+- [ ] **Scrollbars** — drawn by the compositor when a window's logical content height
+      exceeds its physical height. A `ScrollState { offset, content_h, view_h }` field
+      is added to `Window`; apps update `content_h` and the compositor maps scroll-wheel
+      events to `offset` changes and redraws the scrollbar track and thumb.
+
+### 16c — Taskbar & start menu
+
+- [x] **Start button** — leftmost taskbar element; click toggles the start menu popup.
+      Rendered as a raised 3D-style button (light top/left border, dark bottom/right).
+- [x] **Start menu popup** — a 160×220px panel rendered above the taskbar listing
+      installed apps. Each entry is a 20px-tall clickable row with hover highlight.
+      Clicking a row spawns the app and closes the menu; clicking elsewhere dismisses it.
+- [x] **Taskbar window buttons** — one button per non-minimised window, showing a
+      truncated title. Clicking the button of the active window minimises it; clicking
+      any other window's button raises it to the top of the z-order.
+- [x] **Clock area** — rightmost taskbar section displays a static tick counter
+      formatted as `HH:MM` (ticks ÷ 18 for approximate seconds). Redrawn each
+      compositor frame.
+- [ ] **Notification area** — a small region left of the clock; initially empty,
+      reserved for future status icons (network, volume, battery on real hardware).
+
+**Exit criteria:** the compositor, shell, and window manager changes compile cleanly
+with no regressions to existing apps; desktop icons launch apps on double-click;
+windows minimise, maximise, and restore correctly; the start menu opens and closes;
+the taskbar reflects the current window list; the wallpaper gradient renders at boot.
+
+**Current status:** 16a and 16c are complete. 16b window chrome is complete except
+for the resize handle and scrollbar, which are the two remaining items for this phase.
+
+### Phase 16 implementation notes
+
+- All compositor-side changes live in `src/wm/` and `src/shell/`; no `syscall.rs`,
+  `scheduler.rs`, or VMM code was touched.
+- `Window` gained three new fields: `minimised: bool`, `maximised: bool`, and
+  `saved_rect: Option<(i32, i32, i32, i32)>` for min/max/restore bookkeeping.
+  The compositor skips blitting a window when `minimised == true`.
+- `DesktopIcon` hit-testing uses the same coordinate transform already applied to
+  window clicks — subtract the desktop origin, compare against `(x, y, 48, 64)`
+  bounding boxes. No new input path was required.
+- The wallpaper gradient is computed once into a `Vec<u32>` on first draw and cached;
+  the compositor blits it with `copy_nonoverlapping` the same way it blits windows.
+  Incremental dirty-rect tracking means the wallpaper is only redrawn in the regions
+  uncovered by a moved or closed window.
+- Active-window detection for title bar colouring uses `wm.windows.last()` (the top
+  of the z-stack), consistent with how click dispatch already determines focus.
+- Start menu popup is rendered as a compositor overlay — it is not a `Window` struct
+  and does not participate in z-order or drag. It is drawn after all windows in each
+  compositor frame when `shell.start_menu_open == true`. This avoids the complexity
+  of a zero-title popup window and the risk of the menu being occluded by other windows.
+- Taskbar button widths are computed dynamically: total taskbar width minus the start
+  button and clock area, divided by the number of open windows, clamped to a minimum
+  of 80px. Titles are truncated with a `…` suffix when they exceed the button width.
+- 3D-style buttons (start button, taskbar entries) use a four-pixel border trick:
+  top and left edges are drawn in `LIGHT_GRAY`, bottom and right edges in `DARK_GRAY`,
+  giving a raised appearance without any additional rendering primitives.
 
 ---
 
@@ -437,6 +511,8 @@ real machines. Everything in between can be developed entirely in QEMU.
 | Tag | Milestone |
 | :-- | :-------- |
 | v1.14 | Current — Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
+| v1.16 | Phase 16 in progress — desktop surface and taskbar complete; resize handle + scrollbars remaining |
+| v2.0 | Phase 16 complete — fully polished desktop |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete — network-capable |

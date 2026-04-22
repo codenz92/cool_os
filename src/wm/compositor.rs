@@ -1,7 +1,7 @@
 /// Window compositor — desktop, windows, taskbar, cursor, context menu.
 /// All rendering targets a `Vec<u32>` shadow buffer; one blit per frame.
 ///
-/// Visual theme: Windows 11 Dark Mode
+/// Visual theme: Retro-Futuristic CRT Phosphor Blue
 extern crate alloc;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
@@ -22,50 +22,50 @@ const EVENT_PACKET_SIZE: usize = 8;
 const EVENT_KIND_KEY_CHAR: u8 = 1;
 const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 
-// ── Colors — Windows 11 Dark Mode ────────────────────────────────────────────
+// ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
 // Taskbar / shell
-const TASKBAR_BG: u32 = 0x00_20_20_20; // #202020  Win11 taskbar
-const TASKBAR_BORD: u32 = 0x00_50_50_50; // visible hairline against dark wallpaper
+const TASKBAR_BG: u32 = 0x00_00_07_14; // #000714  deep CRT navy-black
+const TASKBAR_BORD: u32 = 0x00_00_66_CC; // #0066CC  phosphor blue hairline
 
-// Accent (default Win11 blue)
-const ACCENT: u32 = 0x00_00_78_D4; // #0078D4
-const ACCENT_HOV: u32 = 0x00_17_85_DA; // lighter on hover
-const ACCENT_PRESS: u32 = 0x00_00_66_B4; // darker on press
+// Accent (CRT phosphor blue)
+const ACCENT: u32 = 0x00_00_99_FF; // #0099FF  bright phosphor blue
+const ACCENT_HOV: u32 = 0x00_33_BB_FF; // #33BBFF  lit hover
+const ACCENT_PRESS: u32 = 0x00_00_66_CC; // #0066CC  depressed
 
-// Window chrome (dark mode)
-const WIN_BAR_F: u32 = 0x00_2B_2B_2B; // focused title bar
-const WIN_BAR_U: u32 = 0x00_1F_1F_1F; // unfocused title bar
-const WIN_CONTENT: u32 = 0x00_20_20_20; // window body background
-const WIN_BDR_F: u32 = 0x00_00_78_D4; // focused border  (accent)
-const WIN_BDR_U: u32 = 0x00_43_43_43; // unfocused border
+// Window chrome (CRT dark mode)
+const WIN_BAR_F: u32 = 0x00_00_10_28; // #001028  focused title bar — deep navy
+const WIN_BAR_U: u32 = 0x00_00_07_14; // #000714  unfocused — near-black
+const WIN_CONTENT: u32 = 0x00_00_09_1C; // #00091C  window body
+const WIN_BDR_F: u32 = 0x00_00_99_FF; // #0099FF  focused border — phosphor glow
+const WIN_BDR_U: u32 = 0x00_00_33_66; // #003366  unfocused — dim blue
 
 // Window caption buttons
-const CAP_NORMAL: u32 = 0x00_2B_2B_2B; // min/max resting bg
-const CAP_HOV: u32 = 0x00_3A_3A_3A; // min/max hover
-const CLOSE_REST: u32 = 0x00_2B_2B_2B; // close resting bg
-const CLOSE_HOV: u32 = 0x00_C4_2B_1C; // close hover  #C42B1C
+const CAP_NORMAL: u32 = 0x00_00_10_28; // same as title bar
+const CAP_HOV: u32 = 0x00_00_22_44; // slightly lighter navy
+const CLOSE_REST: u32 = 0x00_00_10_28; // close resting
+const CLOSE_HOV: u32 = 0x00_BB_11_11; // #BB1111  red-CRT close
 
-// Desktop wallpaper (approximates Win11 "Bloom" dark)
-const DESK_TL: u32 = 0x00_04_09_18; // top-left  deep navy
-const DESK_TR: u32 = 0x00_06_0E_22; // top-right
-const DESK_BL: u32 = 0x00_02_06_12; // bottom-left
-const DESK_BR: u32 = 0x00_05_0C_1E; // bottom-right
-                                    // Bloom glow colours blended toward screen centre
-const BLOOM_1: u32 = 0x00_00_3A_6E; // mid-blue bloom
-const BLOOM_2: u32 = 0x00_00_28_50;
+// Desktop wallpaper — deep space phosphor
+const DESK_TL: u32 = 0x00_00_02_08; // top-left  pitch black with blue ghost
+const DESK_TR: u32 = 0x00_00_03_0C; // top-right
+const DESK_BL: u32 = 0x00_00_01_06; // bottom-left
+const DESK_BR: u32 = 0x00_00_02_0A; // bottom-right
+                                    // CRT phosphor glow toward screen centre
+const BLOOM_1: u32 = 0x00_00_44_AA; // primary phosphor blue bloom
+const BLOOM_2: u32 = 0x00_00_22_66; // secondary deep bloom
 
-// Desktop icons
-const ICON_TERM_BG: u32 = 0x00_1E_1E_1E; // terminal dark
-const ICON_TERM_ACC: u32 = 0x00_00_CC_44; // green glyph
-const ICON_MON_BG: u32 = 0x00_2B_1A_00; // amber tinted
-const ICON_MON_ACC: u32 = 0x00_FF_A5_00;
-const ICON_TXT_BG: u32 = 0x00_00_1E_3C; // blue tinted
-const ICON_TXT_ACC: u32 = 0x00_00_99_FF;
-const ICON_COL_BG: u32 = 0x00_2B_00_2B; // purple tinted
-const ICON_COL_ACC: u32 = 0x00_CC_44_FF;
+// Desktop icons — CRT phosphor colour set
+const ICON_TERM_BG: u32 = 0x00_00_16_08; // terminal — dark green-black
+const ICON_TERM_ACC: u32 = 0x00_00_FF_88; // #00FF88  phosphor green
+const ICON_MON_BG: u32 = 0x00_00_0E_1E; // monitor — deep blue-black
+const ICON_MON_ACC: u32 = 0x00_00_EE_FF; // #00EEFF  cyan phosphor
+const ICON_TXT_BG: u32 = 0x00_00_0A_22; // text — navy
+const ICON_TXT_ACC: u32 = 0x00_00_99_FF; // #0099FF  blue phosphor
+const ICON_COL_BG: u32 = 0x00_10_00_1E; // colour — dark purple-black
+const ICON_COL_ACC: u32 = 0x00_AA_44_FF; // #AA44FF  violet phosphor
 
-const ICON_SEL: u32 = 0x00_00_40_7A;
+const ICON_SEL: u32 = 0x00_00_33_77;
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -289,7 +289,18 @@ impl WindowManager {
                 let br = (r as f32 + bloom * ((BLOOM_1 >> 16) as u8 as f32)).min(255.0) as u32;
                 let bg = (g as f32 + bloom * ((BLOOM_1 >> 8) as u8 as f32)).min(255.0) as u32;
                 let bb = (b as f32 + bloom * (BLOOM_1 as u8 as f32)).min(255.0) as u32;
-                wallpaper[y * w + x] = (br << 16) | (bg << 8) | bb;
+
+                // ── CRT scanline — every even row dimmed ~18% ─────────────────────
+                let scan: u32 = if y % 2 == 0 { 210 } else { 255 };
+
+                // ── Phosphor triad dot-mask — column 2 of every 3 gets blue boost ─
+                let dot_boost: u32 = if x % 3 == 2 { 10 } else { 0 };
+
+                let fr = br * scan / 255;
+                let fg = bg * scan / 255;
+                let fb = (bb * scan / 255).saturating_add(dot_boost).min(255);
+
+                wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
             }
         }
 
@@ -423,8 +434,8 @@ impl WindowManager {
 
         // ── Input ─────────────────────────────────────────────────────────────
 
-        // Start button click
-        let taskbar_click = left_pressed && my_i >= taskbar_y && mx_i < 2 + START_BTN_W + 4;
+        // Start button click — flush left, full height
+        let taskbar_click = left_pressed && my_i >= taskbar_y && mx_i < START_BTN_W + 4;
         if taskbar_click {
             self.start_menu_open = !self.start_menu_open;
             self.context_menu = None;
@@ -745,7 +756,7 @@ impl WindowManager {
 
                 // Selection / hover ring
                 if selected || hot {
-                    let ring = if selected { ACCENT } else { 0x00_50_50_50 };
+                    let ring = if selected { ACCENT } else { 0x00_00_44_88 };
                     s_fill(s, sw, icon.x - 1, icon.y - 1, ICON_SIZE + 2, 1, ring);
                     s_fill(
                         s,
@@ -765,7 +776,7 @@ impl WindowManager {
                 let label_y = icon.y + ICON_SIZE + 8;
                 let label_w = icon.label.len() as i32 * 8; // 8px per char at 1× scale
                 let label_x = (icon.x + (ICON_SIZE - label_w) / 2).max(1);
-                let label_bg = if selected { ICON_SEL } else { 0x00_06_08_16 };
+                let label_bg = if selected { ICON_SEL } else { 0x00_00_04_0E };
                 // Pill — sized for 8 px tall glyphs
                 s_fill(
                     s,
@@ -782,7 +793,11 @@ impl WindowManager {
                     label_x,
                     label_y,
                     icon.label,
-                    if selected { WHITE } else { 0x00_F0_F0_F0 },
+                    if selected {
+                        0x00_CC_EE_FF
+                    } else {
+                        0x00_88_CC_FF
+                    },
                     label_bg,
                     label_x + label_w + 1,
                 );
@@ -800,69 +815,103 @@ impl WindowManager {
                 }
             }
 
-            // ── Taskbar — flat Win11 dark ─────────────────────────────────────────
-            s_fill(s, sw, 0, taskbar_y, sw as i32, TASKBAR_H, TASKBAR_BG);
-            // Hairline top border
-            s_fill(s, sw, 0, taskbar_y, sw as i32, 1, TASKBAR_BORD);
+            // ── Taskbar — frosted glass panel ────────────────────────────────────
+            // Step 1: Darken + blue-tint the wallpaper underneath to fake frosted glass.
+            {
+                let t0 = taskbar_y as usize;
+                let t1 = (t0 + TASKBAR_H as usize).min(s.len() / sw);
+                for row in t0..t1 {
+                    for col in 0..sw {
+                        let p = s[row * sw + col];
+                        let r = ((p >> 16) & 0xFF) * 16 / 100;
+                        let g = ((p >> 8) & 0xFF) * 18 / 100;
+                        let b = ((p & 0xFF) * 28 / 100).saturating_add(22).min(255);
+                        s[row * sw + col] = (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+            // Step 2: Bright 2-px top accent border — phosphor blue glow line.
+            s_fill(s, sw, 0, taskbar_y, sw as i32, 1, 0x00_00_99_EE);
+            s_fill(s, sw, 0, taskbar_y + 1, sw as i32, 1, 0x00_00_33_66);
 
-            // ── Start button ──────────────────────────────────────────────────────
-            let start_hot = mx_i >= 2
-                && mx_i < 2 + START_BTN_W + 4
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H - 2;
+            // ── Start button — floating pill with power icon ──────────────────────
+            let start_hot = mx_i >= 0
+                && mx_i < START_BTN_W + 4
+                && my_i >= taskbar_y
+                && my_i < taskbar_y + TASKBAR_H;
             let start_pressed = left && start_hot;
+            let start_active = self.start_menu_open || start_pressed;
 
-            let s_btn_col = if self.start_menu_open || start_pressed {
-                ACCENT_PRESS
+            let btn_x = 0i32;
+            let btn_w = START_BTN_W + 4; // 90px hit area
+
+            // Pill: visually centered and smaller than the hit zone
+            let pill_w = 58i32;
+            let pill_h = 28i32;
+            let pill_x = btn_x + (btn_w - pill_w) / 2;
+            let pill_y = taskbar_y + (TASKBAR_H - pill_h) / 2;
+
+            // Fill: none at rest, tint on hover, accent on active
+            if start_active {
+                s_fill(s, sw, pill_x, pill_y, pill_w, pill_h, ACCENT_PRESS);
             } else if start_hot {
-                ACCENT_HOV
-            } else {
-                ACCENT
-            };
+                s_fill(s, sw, pill_x, pill_y, pill_w, pill_h, 0x00_00_20_48);
+            }
 
-            // Pill shape: body
-            let btn_x = 8i32;
-            let btn_y = taskbar_y + 5;
-            let btn_h = TASKBAR_H - 10;
-            let btn_w = START_BTN_W + 2;
-            s_fill(s, sw, btn_x, btn_y, btn_w, btn_h, s_btn_col);
-            // Rounded-corner illusion: clip 1px at each corner
-            s_fill(s, sw, btn_x, btn_y, 1, 1, TASKBAR_BG);
-            s_fill(s, sw, btn_x + btn_w - 1, btn_y, 1, 1, TASKBAR_BG);
-            s_fill(s, sw, btn_x, btn_y + btn_h - 1, 1, 1, TASKBAR_BG);
-            s_fill(
-                s,
-                sw,
-                btn_x + btn_w - 1,
-                btn_y + btn_h - 1,
-                1,
-                1,
-                TASKBAR_BG,
-            );
+            // Border: always visible — brighter when active
+            let pill_bord = if start_active { ACCENT_HOV } else { ACCENT };
+            draw_rect_border(s, sw, pill_x, pill_y, pill_w, pill_h, pill_bord);
+            // Second inner border line when menu is open (depth effect)
+            if self.start_menu_open {
+                draw_rect_border(
+                    s,
+                    sw,
+                    pill_x + 1,
+                    pill_y + 1,
+                    pill_w - 2,
+                    pill_h - 2,
+                    0x00_00_44_88,
+                );
+            }
 
-            // "START" label centred in button — 8px small font
-            s_draw_str_small(
-                s,
-                sw,
-                btn_x + (btn_w - 5 * 8) / 2,
-                btn_y + (btn_h - 8) / 2,
-                "START",
-                WHITE,
-                s_btn_col,
-                btn_x + btn_w - 2,
-            );
+            // ── Power button icon — 18×20px, centered in pill ─────────────────────
+            // Each conceptual dot = 2×2 actual pixels
+            // Grid (9 cols × 10 rows):
+            //   col:  0 1 2 3 4 5 6 7 8
+            //   row0: . . . . # . . . .   stem
+            //   row1: . . . . # . . . .   stem
+            //   row2: . . . . # . . . .   stem
+            //   row3: . . # . . . # . .   arc upper
+            //   row4: . # . . . . . # .   arc
+            //   row5: # . . . . . . . #   arc sides
+            //   row6: # . . . . . . . #   arc sides
+            //   row7: # . . . . . . . #   arc sides
+            //   row8: . # . . . . . # .   arc lower
+            //   row9: . . # # # # # . .   arc bottom
+            let ic = if start_active { WHITE } else { ACCENT };
+            let ix = pill_x + (pill_w - 18) / 2; // = pill_x + 20
+            let iy = pill_y + (pill_h - 20) / 2; // = pill_y + 4
 
-            // Separator
-            let sep_x = btn_x + btn_w + 4;
-            s_fill(
-                s,
-                sw,
-                sep_x,
-                taskbar_y + 8,
-                1,
-                TASKBAR_H - 16,
-                0x00_38_38_38,
-            );
+            // Stem (rows 0-2, col 4)
+            s_fill(s, sw, ix + 8, iy, 2, 6, ic);
+            // Upper arc corners (row 3)
+            s_fill(s, sw, ix + 4, iy + 6, 2, 2, ic); // col 2
+            s_fill(s, sw, ix + 12, iy + 6, 2, 2, ic); // col 6
+                                                      // Mid arc (row 4)
+            s_fill(s, sw, ix + 2, iy + 8, 2, 2, ic); // col 1
+            s_fill(s, sw, ix + 14, iy + 8, 2, 2, ic); // col 7
+                                                      // Straight sides (rows 5-7, cols 0 and 8)
+            s_fill(s, sw, ix + 0, iy + 10, 2, 6, ic);
+            s_fill(s, sw, ix + 16, iy + 10, 2, 6, ic);
+            // Lower arc (row 8)
+            s_fill(s, sw, ix + 2, iy + 16, 2, 2, ic); // col 1
+            s_fill(s, sw, ix + 14, iy + 16, 2, 2, ic); // col 7
+                                                       // Bottom arc (row 9, cols 2-6 = 10px wide)
+            s_fill(s, sw, ix + 4, iy + 18, 10, 2, ic);
+
+            // Thin right-edge separator
+            let sep_x = btn_w;
+            s_fill(s, sw, sep_x, taskbar_y + 4, 1, TASKBAR_H - 8, 0x00_00_66_AA);
 
             // ── Start menu — Win11 dark acrylic style ─────────────────────────────
             if self.start_menu_open {
@@ -879,25 +928,25 @@ impl WindowManager {
                     menu_y + 4,
                     menu_w + 4,
                     menu_h + 4,
-                    0x00_08_08_08,
+                    0x00_00_02_06,
                 );
 
-                // Background — dark acrylic (#1C1C1C with very slight blue tint)
-                s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_1C_1C_1E);
+                // Background — deep CRT navy
+                s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_08_1C);
 
-                // Outer border
-                draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_3A_3A_3A);
+                // Outer border — phosphor blue
+                draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_55_AA);
 
                 // Header: "coolOS" branding strip
-                s_fill(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, 36, 0x00_28_28_2C);
+                s_fill(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, 36, 0x00_00_10_2C);
                 s_draw_str_small(
                     s,
                     sw,
                     menu_x + 12,
                     menu_y + (36 - 8) / 2,
                     "coolOS",
-                    0x00_CC_CC_CC,
-                    0x00_28_28_2C,
+                    0x00_88_CC_FF,
+                    0x00_00_10_2C,
                     menu_x + menu_w - 4,
                 );
                 // Small accent dot next to brand (6 chars × 8px = 48px → dot at +62)
@@ -905,16 +954,16 @@ impl WindowManager {
 
                 // Search bar
                 let srch_y = menu_y + 40;
-                s_fill(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_2E_2E_2E);
-                draw_rect_border(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_48_48_48);
+                s_fill(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_00_0C_22);
+                draw_rect_border(s, sw, menu_x + 8, srch_y, menu_w - 16, 28, 0x00_00_44_88);
                 s_draw_str_small(
                     s,
                     sw,
                     menu_x + 16,
                     srch_y + (28 - 8) / 2,
                     "Search",
-                    0x00_66_66_66,
-                    0x00_2E_2E_2E,
+                    0x00_00_55_99,
+                    0x00_00_0C_22,
                     menu_x + menu_w - 12,
                 );
 
@@ -925,8 +974,8 @@ impl WindowManager {
                     menu_x + 12,
                     menu_y + 74,
                     "Pinned",
-                    0x00_88_88_88,
-                    0x00_1C_1C_1E,
+                    0x00_00_77_BB,
+                    0x00_00_08_1C,
                     menu_x + menu_w - 4,
                 );
 
@@ -952,11 +1001,11 @@ impl WindowManager {
                     let iy = items_y + i as i32 * 40;
                     let is_hov = hover_idx == Some(i);
 
-                    let row_bg = if is_hov { 0x00_2C_2C_30 } else { 0x00_1C_1C_1E };
+                    let row_bg = if is_hov { 0x00_00_18_38 } else { 0x00_00_08_1C };
                     s_fill(s, sw, menu_x + 1, iy, menu_w - 2, 38, row_bg);
 
                     // Coloured app icon square: dim accent fill + bright accent top band + glyph
-                    let icon_sq_bg = blend_color(0x00_20_20_20, *acc, 55); // ~22% accent tint
+                    let icon_sq_bg = blend_color(0x00_00_0C_22, *acc, 55); // ~22% accent tint
                     s_fill(s, sw, menu_x + 10, iy + 7, 24, 24, icon_sq_bg);
                     s_fill(s, sw, menu_x + 10, iy + 7, 24, 3, *acc); // accent top band
                     s_draw_str_small(
@@ -977,7 +1026,7 @@ impl WindowManager {
                         menu_x + 40,
                         iy + (38 - 8) / 2,
                         name,
-                        if is_hov { WHITE } else { 0x00_CC_CC_CC },
+                        if is_hov { WHITE } else { 0x00_88_CC_FF },
                         row_bg,
                         menu_x + menu_w - 8,
                     );
@@ -988,18 +1037,18 @@ impl WindowManager {
                     }
 
                     // Row separator
-                    s_fill(s, sw, menu_x + 8, iy + 38, menu_w - 16, 1, 0x00_30_30_30);
+                    s_fill(s, sw, menu_x + 8, iy + 38, menu_w - 16, 1, 0x00_00_22_44);
                 }
             }
 
-            // ── Taskbar window buttons — Win11 pill tabs ──────────────────────────
-            let taskbar_btn_x0 = sep_x + 6;
+            // ── Taskbar window tabs — slim underline style ───────────────────────
+            let taskbar_btn_x0 = sep_x + 8;
             let hovered_btn = if mx_i >= taskbar_btn_x0
                 && mx_i < sw as i32 - TASKBAR_CLOCK_W - 6
-                && my_i >= taskbar_y + 4
-                && my_i < taskbar_y + TASKBAR_H - 4
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H
             {
-                Some(((mx_i - taskbar_btn_x0) / (BUTTON_W + 4)) as usize)
+                Some(((mx_i - taskbar_btn_x0) / (BUTTON_W + 6)) as usize)
             } else {
                 None
             };
@@ -1008,7 +1057,7 @@ impl WindowManager {
             const BTN_ACCENTS: [u32; 4] = [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC];
 
             for i in 0..self.windows.len() {
-                let bx = taskbar_btn_x0 + i as i32 * (BUTTON_W + 4);
+                let bx = taskbar_btn_x0 + i as i32 * (BUTTON_W + 6);
                 if bx + BUTTON_W > sw as i32 - TASKBAR_CLOCK_W - 4 {
                     break;
                 }
@@ -1018,64 +1067,69 @@ impl WindowManager {
                 let hovered = hovered_btn == Some(i);
                 let accent = BTN_ACCENTS[i % BTN_ACCENTS.len()];
 
+                let bh = TASKBAR_H - 4;
+                let by = taskbar_y + 2;
+
+                // Tab background — subtle tint only, no heavy fill
                 let bg = if focused {
-                    0x00_32_32_36
+                    0x00_00_22_4A // slightly brighter navy for focused
                 } else if hovered {
-                    0x00_2C_2C_30
+                    0x00_00_14_30 // hover tint
                 } else {
-                    0x00_26_26_2A
+                    0x00_00_00_00 // transparent — glass shows through
                 };
 
-                let bh = TASKBAR_H - 8;
-                let by = taskbar_y + 4;
-
-                // Button background
-                s_fill(s, sw, bx, by, BUTTON_W, bh, bg);
-
-                // Rounded corners (clip 1px at each corner)
-                s_fill(s, sw, bx, by, 1, 1, TASKBAR_BG);
-                s_fill(s, sw, bx + BUTTON_W - 1, by, 1, 1, TASKBAR_BG);
-                s_fill(s, sw, bx, by + bh - 1, 1, 1, TASKBAR_BG);
-                s_fill(s, sw, bx + BUTTON_W - 1, by + bh - 1, 1, 1, TASKBAR_BG);
-
-                // Left accent bar (coloured per app type)
-                s_fill(
-                    s,
-                    sw,
-                    bx + 2,
-                    by + 3,
-                    2,
-                    bh - 6,
-                    if focused { accent } else { 0x00_44_44_48 },
-                );
-
-                // Focused: bottom accent underline
-                if focused {
-                    let ul_w = BUTTON_W - 8;
-                    s_fill(s, sw, bx + 4, by + bh - 2, ul_w, 2, accent);
+                if focused || hovered {
+                    s_fill(s, sw, bx, by, BUTTON_W, bh, bg);
                 }
 
-                // Minimised: dot indicator instead of dash
+                // Focused: full-width 2px bottom underline in app accent colour
+                if focused {
+                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 2, BUTTON_W, 2, accent);
+                    // Also a very dim 1px top line for depth
+                    s_fill(s, sw, bx, taskbar_y + 2, BUTTON_W, 1, 0x00_00_55_99);
+                } else if hovered {
+                    // Hovered: dim 1px bottom line
+                    s_fill(
+                        s,
+                        sw,
+                        bx,
+                        taskbar_y + TASKBAR_H - 2,
+                        BUTTON_W,
+                        1,
+                        0x00_00_44_88,
+                    );
+                }
+
+                // Minimised: small centre dot above underline position
                 if minimized {
                     s_fill(
                         s,
                         sw,
-                        bx + BUTTON_W / 2 - 2,
-                        by + bh - 4,
-                        4,
+                        bx + BUTTON_W / 2 - 3,
+                        taskbar_y + TASKBAR_H - 5,
+                        6,
                         2,
-                        0x00_55_55_55,
+                        0x00_00_55_99,
                     );
                 }
 
-                // Title text — centred in the button area to the right of the accent strip.
+                // Title text — centred, no accent strip offset
                 let title = self.windows[i].window().title;
-                let trunc = if title.len() > 8 { &title[..8] } else { title };
-                let tcol = if focused { WHITE } else { 0x00_99_99_99 };
-                let text_w = trunc.len() as i32 * 8; // 8px small font
-                let content_start = bx + 6;
-                let content_w = BUTTON_W - 8;
-                let text_x = content_start + ((content_w - text_w).max(0) / 2);
+                let trunc = if title.len() > 10 {
+                    &title[..10]
+                } else {
+                    title
+                };
+                let tcol = if focused {
+                    0x00_CC_EE_FF
+                } else if hovered {
+                    0x00_66_BB_EE
+                } else {
+                    0x00_00_66_99
+                };
+                let text_w = trunc.len() as i32 * 8;
+                let text_x = bx + (BUTTON_W - text_w).max(0) / 2;
                 s_draw_str_small(
                     s,
                     sw,
@@ -1088,49 +1142,51 @@ impl WindowManager {
                 );
             }
 
-            // ── Clock / system tray — Win11 style ────────────────────────────────
+            // ── Clock / system tray — refined phosphor readout ────────────────────
             let clock_sep_x = sw as i32 - TASKBAR_CLOCK_W - 4;
+            // Thin left separator
             s_fill(
                 s,
                 sw,
                 clock_sep_x,
-                taskbar_y + 8,
+                taskbar_y + 4,
                 1,
-                TASKBAR_H - 16,
-                0x00_38_38_38,
+                TASKBAR_H - 8,
+                0x00_00_44_88,
             );
 
-            let clk_x = clock_sep_x + 3;
-            let clk_bg = 0x00_20_20_20;
-            s_fill(
-                s,
-                sw,
-                clk_x,
-                taskbar_y + 3,
-                TASKBAR_CLOCK_W - 2,
-                TASKBAR_H - 6,
-                clk_bg,
-            );
+            let clk_x = clock_sep_x + 4;
+            let clk_w = TASKBAR_CLOCK_W - 4;
 
             // Clock hover tint
             let clk_hot = mx_i >= clk_x
-                && mx_i < clk_x + TASKBAR_CLOCK_W
-                && my_i >= taskbar_y + 3
-                && my_i < taskbar_y + TASKBAR_H - 3;
+                && mx_i < clk_x + clk_w
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H;
+            let clk_bg = 0x00_00_00_00; // fully transparent — glass shows through
             if clk_hot {
                 s_fill(
                     s,
                     sw,
                     clk_x,
-                    taskbar_y + 3,
-                    TASKBAR_CLOCK_W - 2,
-                    TASKBAR_H - 6,
-                    0x00_30_30_30,
+                    taskbar_y + 2,
+                    clk_w,
+                    TASKBAR_H - 2,
+                    0x00_00_14_30,
+                );
+                // Thin border when hovered
+                draw_rect_border(
+                    s,
+                    sw,
+                    clk_x,
+                    taskbar_y + 2,
+                    clk_w,
+                    TASKBAR_H - 2,
+                    0x00_00_44_88,
                 );
             }
 
             // Two-line clock: uptime HH:MM on top, brand below.
-            // Assumes ~60 compose() calls per second; replace with crate::rtc::now() when available.
             {
                 let secs = current_tick / 60;
                 let h = (secs / 3600) % 24;
@@ -1144,36 +1200,35 @@ impl WindowManager {
                 ];
                 if let Ok(time_str) = core::str::from_utf8(&buf) {
                     let time_w = 5 * 8;
-                    let time_x = clk_x + (TASKBAR_CLOCK_W - 2 - time_w) / 2;
+                    let time_x = clk_x + (clk_w - time_w) / 2;
                     s_draw_str_small(
                         s,
                         sw,
                         time_x,
-                        taskbar_y + 9,
+                        taskbar_y + 8,
                         time_str,
-                        WHITE,
+                        0x00_00_EE_FF, // phosphor cyan clock digits
                         clk_bg,
-                        clk_x + TASKBAR_CLOCK_W - 2,
+                        clk_x + clk_w,
                     );
                 }
             }
             {
-                let brand = "coolOS";
                 let brand_w = 6 * 8;
-                let brand_x = clk_x + (TASKBAR_CLOCK_W - 2 - brand_w) / 2;
+                let brand_x = clk_x + (clk_w - brand_w) / 2;
                 s_draw_str_small(
                     s,
                     sw,
                     brand_x,
                     taskbar_y + 22,
                     "coolOS",
-                    0x00_55_55_55,
+                    0x00_00_66_99,
                     clk_bg,
-                    clk_x + TASKBAR_CLOCK_W - 2,
+                    clk_x + clk_w,
                 );
             }
 
-            // ── Context menu — Win11 rounded dark ────────────────────────────────
+            // ── Context menu — CRT phosphor blue ─────────────────────────────────
             if let Some(ref cm) = self.context_menu {
                 let menu_h = CTX_ITEM_H * CTX_ITEMS.len() as i32 + 8;
                 let pad = 4i32;
@@ -1186,14 +1241,14 @@ impl WindowManager {
                     cm.y + 3,
                     CTX_W + 2,
                     menu_h + 2,
-                    0x00_08_08_08,
+                    0x00_00_02_06,
                 );
 
                 // Background
-                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_2B_2B_2B);
+                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_08_1C);
 
-                // Border
-                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_48_48_48);
+                // Border — phosphor blue
+                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_55_AA);
 
                 for (i, &label) in CTX_ITEMS.iter().enumerate() {
                     let item_y = cm.y + pad + i as i32 * CTX_ITEM_H;
@@ -1205,8 +1260,8 @@ impl WindowManager {
                     if hot {
                         s_fill(s, sw, cm.x + 2, item_y, CTX_W - 4, CTX_ITEM_H, ACCENT);
                         // Clip hover corners
-                        s_fill(s, sw, cm.x + 2, item_y, 1, 1, 0x00_2B_2B_2B);
-                        s_fill(s, sw, cm.x + CTX_W - 3, item_y, 1, 1, 0x00_2B_2B_2B);
+                        s_fill(s, sw, cm.x + 2, item_y, 1, 1, 0x00_00_08_1C);
+                        s_fill(s, sw, cm.x + CTX_W - 3, item_y, 1, 1, 0x00_00_08_1C);
                         s_fill(
                             s,
                             sw,
@@ -1214,7 +1269,7 @@ impl WindowManager {
                             item_y + CTX_ITEM_H - 1,
                             1,
                             1,
-                            0x00_2B_2B_2B,
+                            0x00_00_08_1C,
                         );
                         s_fill(
                             s,
@@ -1223,7 +1278,7 @@ impl WindowManager {
                             item_y + CTX_ITEM_H - 1,
                             1,
                             1,
-                            0x00_2B_2B_2B,
+                            0x00_00_08_1C,
                         );
                     }
 
@@ -1233,8 +1288,8 @@ impl WindowManager {
                         cm.x + 14,
                         item_y + (CTX_ITEM_H - 8) / 2,
                         label,
-                        if hot { WHITE } else { 0x00_CC_CC_CC },
-                        if hot { ACCENT } else { 0x00_2B_2B_2B },
+                        if hot { WHITE } else { 0x00_88_CC_FF },
+                        if hot { ACCENT } else { 0x00_00_08_1C },
                         cm.x + CTX_W - 4,
                     );
 
@@ -1247,7 +1302,7 @@ impl WindowManager {
                             item_y + CTX_ITEM_H - 1,
                             CTX_W - 16,
                             1,
-                            0x00_3A_3A_3A,
+                            0x00_00_33_66,
                         );
                     }
                 }
@@ -1376,7 +1431,7 @@ impl WindowManager {
             s_fill_alpha(s, sw, w.x + d, sy, w.width, 1, shadow_col);
         }
 
-        // ── Title bar — flat Win11 dark ───────────────────────────────────────
+        // ── Title bar — CRT phosphor chrome ──────────────────────────────────
         let title_bg = if focused { WIN_BAR_F } else { WIN_BAR_U };
         s_fill(s, sw, w.x, w.y, w.width, TITLE_H, title_bg);
 
@@ -1394,7 +1449,11 @@ impl WindowManager {
 
         // ── Title text ────────────────────────────────────────────────────────
         let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 10;
-        let title_fg = if focused { WHITE } else { 0x00_88_88_88 };
+        let title_fg = if focused {
+            0x00_AA_DD_FF
+        } else {
+            0x00_00_55_88
+        };
         s_draw_str_small(
             s,
             sw,
@@ -1406,7 +1465,7 @@ impl WindowManager {
             max_title_x,
         );
 
-        // ── Caption buttons — Win11 style ─────────────────────────────────────
+        // ── Caption buttons — CRT phosphor style ──────────────────────────────
         let btn_y = w.y + 1;
         let btn_h = TITLE_H - 2;
 
@@ -1421,7 +1480,7 @@ impl WindowManager {
             btn_y + btn_h / 2 + 1,
             8,
             1,
-            0x00_CC_CC_CC,
+            0x00_00_99_FF,
         );
 
         // Maximize  □
@@ -1435,7 +1494,7 @@ impl WindowManager {
             btn_y + btn_h / 2 - 4,
             8,
             1,
-            0x00_CC_CC_CC,
+            0x00_00_99_FF,
         );
         s_fill(
             s,
@@ -1444,7 +1503,7 @@ impl WindowManager {
             btn_y + btn_h / 2 + 3,
             8,
             1,
-            0x00_CC_CC_CC,
+            0x00_00_99_FF,
         );
         s_fill(
             s,
@@ -1453,7 +1512,7 @@ impl WindowManager {
             btn_y + btn_h / 2 - 4,
             1,
             8,
-            0x00_CC_CC_CC,
+            0x00_00_99_FF,
         );
         s_fill(
             s,
@@ -1462,7 +1521,7 @@ impl WindowManager {
             btn_y + btn_h / 2 - 4,
             1,
             8,
-            0x00_CC_CC_CC,
+            0x00_00_99_FF,
         );
 
         // Close  ✕ — pixel diagonals (font glyph gets clipped inside WIN_BTN_W)
@@ -1472,10 +1531,10 @@ impl WindowManager {
         let sh_wnd = s.len() / sw;
         s_fill(s, sw, cx, btn_y, WIN_BTN_W, btn_h, CLOSE_REST);
         for i in -3i32..=3 {
-            s_put(s, sw, sh_wnd, cx_c + i, cy_c + i, 0x00_CC_CC_CC);
-            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c + i, 0x00_CC_CC_CC);
-            s_put(s, sw, sh_wnd, cx_c + i, cy_c - i, 0x00_CC_CC_CC);
-            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c - i, 0x00_CC_CC_CC);
+            s_put(s, sw, sh_wnd, cx_c + i, cy_c + i, 0x00_FF_44_44);
+            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c + i, 0x00_FF_44_44);
+            s_put(s, sw, sh_wnd, cx_c + i, cy_c - i, 0x00_FF_44_44);
+            s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c - i, 0x00_FF_44_44);
         }
 
         // ── Content area ──────────────────────────────────────────────────────
