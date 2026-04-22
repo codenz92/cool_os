@@ -1,4 +1,5 @@
-<img width="1392" height="864" alt="image" src="https://github.com/user-attachments/assets/7818b38a-ef1e-40d9-9eaa-3402db330504" />
+<img width="1392" height="864" alt="image" src="https://github.com/user-attachments/assets/5824d8c0-d0d8-4b79-b650-9fec05fa0c70" />
+
 
 # coolOS
 
