@@ -1,4 +1,4 @@
-<https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f>
+<img width="1392" height="864" alt="image" src="https://github.com/user-attachments/assets/7818b38a-ef1e-40d9-9eaa-3402db330504" />
 
 # coolOS
 
