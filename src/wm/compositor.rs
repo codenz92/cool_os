@@ -681,7 +681,7 @@ impl WindowManager {
             self.shadow[..desk_pixels].copy_from_slice(&self.wallpaper[..desk_pixels]);
         }
         {
-            let s = &mut self.shadow;
+            let s: &mut [u32] = self.shadow.as_mut_slice();
 
             for w in self.windows.iter_mut() {
                 w.update();
