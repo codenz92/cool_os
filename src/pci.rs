@@ -120,10 +120,18 @@ pub fn bar(loc: Location, index: u8) -> Option<u64> {
 
 /// Enable bus-mastering and memory decoding in the command register so the
 /// device can DMA to host memory and respond to MMIO cycles.
+#[allow(dead_code)]
 pub fn enable_bus_master(loc: Location) {
     let cmd = read32(loc, 0x04);
     // Bit 1: memory space enable, bit 2: bus master enable.
     write32(loc, 0x04, cmd | 0x0006);
+}
+
+/// Enable memory decoding in the command register without enabling DMA.
+pub fn enable_memory_space(loc: Location) {
+    let cmd = read32(loc, 0x04);
+    // Bit 1: memory space enable.
+    write32(loc, 0x04, cmd | 0x0002);
 }
 
 /// Iterate every function on every device on every bus once, invoking `f` with

@@ -1,8 +1,9 @@
 /// xHCI host controller driver — Phase 14 slice 1.
 ///
-/// This first slice only **detects** the controller, reads its capability
-/// registers, and logs what it found.  No reset, no rings, no device
-/// enumeration yet — those land in slice 2.
+/// This slice only **detects** the controller and reads its capability
+/// registers. It does not reset or run the controller yet, because coolOS
+/// still depends on the PS/2 input path for live keyboard and mouse support.
+/// Boot-time xHCI bring-up resumes once the USB HID path exists.
 
 use crate::pci::{self, Header, Location};
 use crate::println;
@@ -29,17 +30,13 @@ pub fn init() {
         loc.bus, loc.device, loc.function, hdr.vendor_id, hdr.device_id, mmio,
     );
 
-    // Enable memory decoding + bus mastering so we can read the MMIO block and
-    // so the controller can later DMA into our rings.
-    pci::enable_bus_master(loc);
+    // Enable memory decoding so we can probe the capability registers.
+    // Do not reset or run the controller yet; the PS/2 path still owns input.
+    pci::enable_memory_space(loc);
 
-    // The MMIO region lives in the "identity-mapped physical memory" window that
-    // the bootloader set up via `physical_memory_offset`; we can address it
-    // directly after adding the VMM's phys offset.
+    // The MMIO region lives in the physical-memory window mapped by the
+    // bootloader, so we can read it directly after applying the phys offset.
     let virt = crate::vmm::phys_to_virt(x86_64::PhysAddr::new(mmio)).as_u64();
-    // The xHCI capability register at offset 0 packs CAPLENGTH in bits 0..7
-    // and HCIVERSION in bits 16..31.  Some emulators don't honour a narrow
-    // 8/16-bit MMIO access to this register, so read it as a single u32.
     let cap_word = unsafe { read_u32(virt) };
     let caplength = (cap_word & 0xFF) as u8;
     let version = (cap_word >> 16) as u16;
@@ -65,9 +62,10 @@ pub fn init() {
         "[xhci] slots={} interrupters={} ports={} scratchpads={} 64bit={}",
         max_slots, max_interrupters, max_ports, scratchpad_count, ac64,
     );
+    println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
 }
 
-/// Find the first xHCI function on the PCI bus.  Returns its PCI location,
+/// Find the first xHCI function on the PCI bus. Returns its PCI location,
 /// parsed header, and the physical base address of its MMIO region.
 fn find_controller() -> Option<(Location, Header, u64)> {
     let mut found: Option<(Location, Header, u64)> = None;

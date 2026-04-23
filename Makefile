@@ -1,4 +1,4 @@
-.PHONY: run build clean
+.PHONY: run run-usb build clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -15,6 +15,16 @@ USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/rel
 
 run: build
 	@echo "Booting coolOS in QEMU..."
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(BIOS)" \
+		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
+		-m 512M \
+		-vga std \
+		-display cocoa \
+		-debugcon stdio
+
+run-usb: build
+	@echo "Booting coolOS in QEMU with xHCI-attached USB devices..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(BIOS)" \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
