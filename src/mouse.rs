@@ -1,12 +1,13 @@
-/// PS/2 mouse driver — hardware init and 3-byte packet processing.
+/// PS/2 mouse driver — hardware init and 3/4-byte packet processing.
 ///
 /// The window manager owns cursor rendering; this module just tracks
-/// the logical mouse position and button state, then signals the WM
-/// that a repaint is needed.
+/// the logical mouse position, button state, and scroll wheel delta,
+/// then signals the WM that a repaint is needed.
 ///
 /// Call `init()` once after the heap is ready.  After that, the IRQ12
 /// handler in `interrupts.rs` feeds packets to `handle_packet()`.
 
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -27,6 +28,11 @@ impl MouseState {
 }
 
 static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
+
+/// True when the mouse was detected as an IntelliMouse (4-byte packets).
+static INTELLIMOUSE: AtomicBool = AtomicBool::new(false);
+/// Scroll delta accumulated between frames (positive = wheel down = content up).
+static SCROLL_ACCUM: AtomicI32 = AtomicI32::new(0);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -52,9 +58,20 @@ pub fn buttons() -> (bool, bool) {
     (m.left, m.right)
 }
 
-/// Process a decoded 3-byte PS/2 packet.  Called from the IRQ12 handler
-/// (interrupts already disabled by the CPU on handler entry).
-pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
+/// True when the PS/2 mouse is in IntelliMouse (4-byte packet) mode.
+pub fn is_4byte() -> bool {
+    INTELLIMOUSE.load(Ordering::Relaxed)
+}
+
+/// Drain and return the accumulated scroll-wheel delta since the last call.
+/// Positive = wheel scrolled down (content should scroll up).
+pub fn scroll_delta() -> i32 {
+    SCROLL_ACCUM.swap(0, Ordering::Relaxed)
+}
+
+/// Process a decoded PS/2 packet.  In standard mode b3 is unused (pass 0).
+/// Called from the IRQ12 handler (interrupts already disabled by the CPU).
+pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
     // Bit 3 of byte 0 is always 1 — if not, we're out of sync.
     if b0 & 0x08 == 0 {
         return;
@@ -77,6 +94,21 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
         m.y = ((m.y as i32 - dy).max(0) as usize).min(h);
         m.left  = left;
         m.right = right;
+    }
+
+    // Accumulate scroll-wheel delta from byte 3 in IntelliMouse mode.
+    // PS/2 Z-axis is 4-bit two's complement: positive = scroll up, negative = scroll down.
+    // Negate so SCROLL_ACCUM is positive-down (matches screen offset direction).
+    if INTELLIMOUSE.load(Ordering::Relaxed) {
+        let z_raw = b3 & 0x0F;
+        let z: i8 = if z_raw & 0x08 != 0 {
+            (z_raw | 0xF0) as i8
+        } else {
+            z_raw as i8
+        };
+        if z != 0 {
+            SCROLL_ACCUM.fetch_sub(z as i32, Ordering::Relaxed);
+        }
     }
 
     // Tell the compositor a frame is needed.
@@ -105,6 +137,25 @@ unsafe fn wait_for_read() {
             return;
         }
     }
+}
+
+/// Send the magic sample-rate sequence that enables IntelliMouse 4-byte mode,
+/// then read back the device ID.  Returns true if the device confirmed ID 0x03.
+unsafe fn try_enable_intellimouse(cmd: &mut Port<u8>, data: &mut Port<u8>) -> bool {
+    for &rate in &[200u8, 100u8, 80u8] {
+        wait_for_write(); cmd.write(0xD4u8);
+        wait_for_write(); data.write(0xF3u8); // Set Sample Rate
+        wait_for_read();  let _ = data.read(); // ACK
+        wait_for_write(); cmd.write(0xD4u8);
+        wait_for_write(); data.write(rate);
+        wait_for_read();  let _ = data.read(); // ACK
+    }
+    // Read Device ID
+    wait_for_write(); cmd.write(0xD4u8);
+    wait_for_write(); data.write(0xF2u8); // Read Device ID
+    wait_for_read();  let _ = data.read(); // ACK
+    wait_for_read();  let id = data.read();
+    id == 0x03
 }
 
 unsafe fn init_hardware() {
@@ -138,6 +189,12 @@ unsafe fn init_hardware() {
     wait_for_write(); cmd.write(0xD4u8);
     wait_for_write(); data.write(0xF6u8);
     wait_for_read(); let _ = data.read(); // ACK
+
+    // 5a. Attempt IntelliMouse activation via the magic sample-rate sequence.
+    //     Must happen before data reporting is enabled (0xF4) so no movement
+    //     packets land in the output buffer during the detection handshake.
+    let is_intellimouse = try_enable_intellimouse(&mut cmd, &mut data);
+    INTELLIMOUSE.store(is_intellimouse, Ordering::Relaxed);
 
     // 6. Send 0xF4 (Enable Data Reporting) to the mouse.
     wait_for_write(); cmd.write(0xD4u8);

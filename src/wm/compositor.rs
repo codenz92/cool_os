@@ -260,9 +260,19 @@ impl AppWindow {
             _ => None,
         }
     }
+    pub fn handle_scroll(&mut self, delta: i32) {
+        match self {
+            AppWindow::TextViewer(v) => v.handle_scroll(delta),
+            AppWindow::FileManager(f) => f.handle_scroll(delta),
+            _ => {}
+        }
+    }
     pub fn update(&mut self) {
-        if let AppWindow::SysMon(s) = self {
-            s.update();
+        match self {
+            AppWindow::SysMon(s) => s.update(),
+            AppWindow::TextViewer(v) => v.update(),
+            AppWindow::FileManager(f) => f.update(),
+            _ => {}
         }
     }
     pub fn is_minimized(&self) -> bool {
@@ -802,6 +812,16 @@ impl WindowManager {
                     }
                     crate::wm::request_repaint();
                 }
+            }
+        }
+
+        // ── Scroll wheel ─────────────────────────────────────────────────────
+        let wheel_delta = crate::mouse::scroll_delta();
+        if wheel_delta != 0 {
+            if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
+                let win_idx = self.z_order[z_pos];
+                self.windows[win_idx].handle_scroll(wheel_delta);
+                crate::wm::request_repaint();
             }
         }
 

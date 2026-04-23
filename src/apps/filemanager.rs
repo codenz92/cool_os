@@ -6,7 +6,7 @@ use alloc::string::String as String2;
 
 use crate::fat32::DirEntryInfo;
 use crate::framebuffer::{BLACK, DARK_GRAY, GRAY, LIGHT_CYAN, LIGHT_GRAY, SELECTED_BG, WHITE};
-use crate::wm::window::Window;
+use crate::wm::window::{Window, TITLE_H};
 
 pub const FILEMAN_W: i32 = 640;
 pub const FILEMAN_H: i32 = 440;
@@ -153,11 +153,22 @@ impl FileManagerApp {
     }
 
     pub fn handle_scroll(&mut self, delta: i32) {
-        let rows = self.entries.len();
-        let max_offset = rows.saturating_sub(self.total_rows);
-        let new_offset = (self.offset as i32 - delta.signum() * 3).clamp(0, max_offset as i32) as usize;
+        let max_offset = self.entries.len().saturating_sub(self.total_rows);
+        let new_offset = (self.offset as i32 + delta.signum() * 3).clamp(0, max_offset as i32) as usize;
         if new_offset != self.offset {
             self.offset = new_offset;
+            self.render();
+        }
+    }
+
+    pub fn update(&mut self) {
+        let expected = self.offset as i32 * ROW_H;
+        if self.window.scroll.offset != expected {
+            let content_area_h = (self.window.height - TITLE_H) as i32;
+            let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H).max(0);
+            let visible_rows = (entries_area_h / ROW_H) as usize;
+            let max_row = self.entries.len().saturating_sub(visible_rows);
+            self.offset = ((self.window.scroll.offset / ROW_H) as usize).min(max_row);
             self.render();
         }
     }
@@ -283,7 +294,7 @@ impl FileManagerApp {
 
     fn render(&mut self) {
         let w = FILEMAN_W as usize;
-        let h = FILEMAN_H as usize;
+        let h = (FILEMAN_H - TITLE_H) as usize;
 
         for p in self.window.buf.iter_mut() {
             *p = BLACK;
@@ -292,6 +303,11 @@ impl FileManagerApp {
         let stride = w;
         self.view_h = h as i32 - TOOLBAR_H - COL_HDR_H;
         self.total_rows = (self.view_h as usize) / ROW_H as usize;
+
+        // Sync scroll state so the compositor draws the scrollbar in the right position.
+        self.window.scroll.content_h = self.entries.len() as i32 * ROW_H + TOOLBAR_H + COL_HDR_H;
+        self.window.scroll.offset = self.offset as i32 * ROW_H;
+        self.window.scroll.clamp(FILEMAN_H - TITLE_H);
 
         self.draw_toolbar(stride);
         self.draw_column_header(stride);

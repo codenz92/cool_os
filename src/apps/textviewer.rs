@@ -102,12 +102,31 @@ impl TextViewerApp {
         }
     }
 
+    pub fn handle_scroll(&mut self, delta: i32) {
+        let max = self.lines.len().saturating_sub(self.rows);
+        let new = (self.scroll as i32 + delta.signum() * 3).clamp(0, max as i32) as usize;
+        if new != self.scroll {
+            self.scroll = new;
+            self.render();
+        }
+    }
+
+    pub fn update(&mut self) {
+        let expected = self.scroll as i32 * CHAR_H as i32;
+        if self.window.scroll.offset != expected {
+            let max = self.lines.len().saturating_sub(self.rows);
+            self.scroll = ((self.window.scroll.offset / CHAR_H as i32) as usize).min(max);
+            self.render();
+        }
+    }
+
     fn render(&mut self) {
         let stride = VIEWER_W as usize;
         for b in self.window.buf.iter_mut() {
             *b = DARK_GRAY;
         }
         self.window.scroll.content_h = (self.lines.len() * CHAR_H) as i32;
+        self.window.scroll.offset = self.scroll as i32 * CHAR_H as i32;
         self.window.scroll.clamp((self.rows * CHAR_H) as i32);
 
         for screen_row in 0..self.rows {

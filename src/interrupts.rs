@@ -272,10 +272,12 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
 use core::sync::atomic::AtomicU8;
 
-/// Which byte of the 3-byte packet we are currently collecting.
+/// Which byte of the current PS/2 packet we are collecting (0-based).
 static MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
-/// Raw bytes of the in-flight packet.
-static MOUSE_BYTES: [AtomicU8; 3] = [AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0)];
+/// Raw bytes of the in-flight packet (4 bytes to accommodate IntelliMouse).
+static MOUSE_BYTES: [AtomicU8; 4] = [
+    AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0),
+];
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
@@ -294,11 +296,14 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {
 
     MOUSE_BYTES[cycle as usize].store(byte, Ordering::Relaxed);
 
-    if cycle == 2 {
+    // IntelliMouse uses 4-byte packets (last byte index = 3); standard = 3-byte (last = 2).
+    let last_byte: u8 = if crate::mouse::is_4byte() { 3 } else { 2 };
+    if cycle == last_byte {
         let b0 = MOUSE_BYTES[0].load(Ordering::Relaxed);
         let b1 = MOUSE_BYTES[1].load(Ordering::Relaxed);
         let b2 = MOUSE_BYTES[2].load(Ordering::Relaxed);
-        crate::mouse::handle_packet(b0, b1, b2);
+        let b3 = MOUSE_BYTES[3].load(Ordering::Relaxed);
+        crate::mouse::handle_packet(b0, b1, b2, b3);
         MOUSE_CYCLE.store(0, Ordering::Relaxed);
     } else {
         MOUSE_CYCLE.store(cycle + 1, Ordering::Relaxed);

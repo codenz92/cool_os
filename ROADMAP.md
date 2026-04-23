@@ -395,7 +395,7 @@ response and writes it to a file on disk.
 
 ---
 
-## Phase 16 — UI Polish
+## ✅ Phase 16 — UI Polish
 
 **Goal:** Make coolOS look and feel like a real desktop OS. No kernel changes are
 required — everything in this phase lives in the compositor, window manager, and
@@ -429,7 +429,7 @@ chrome, and interactive shell widgets.
       window's back-buffer, so apps do not need to draw it themselves.
 - [x] **Resize handle** — a 6×6 drag zone in the bottom-right corner of each window;
       dragging it resizes the window and reallocates its back-buffer.
-- [ ] **Scrollbars** — drawn by the compositor when a window's logical content height
+- [x] **Scrollbars** — drawn by the compositor when a window's logical content height
       exceeds its physical height. A `ScrollState { offset, content_h, view_h }` field
       is added to `Window`; apps update `content_h` and the compositor maps scroll-wheel
       events to `offset` changes and redraws the scrollbar track and thumb.
@@ -447,17 +447,19 @@ chrome, and interactive shell widgets.
 - [x] **Clock area** — rightmost taskbar section displays a static tick counter
       formatted as `HH:MM` (ticks ÷ 18 for approximate seconds). Redrawn each
       compositor frame.
-- [ ] **Notification area** — a small region left of the clock; initially empty,
-      reserved for future status icons (network, volume, battery on real hardware).
+- [x] **Notification area** — reserved slot left of the clock; intentionally left
+      empty until Phase 14/15 land hardware (network, volume, battery).
 
 **Exit criteria:** the compositor, shell, and window manager changes compile cleanly
 with no regressions to existing apps; desktop icons launch apps on double-click;
 windows minimise, maximise, and restore correctly; the start menu opens and closes;
 the taskbar reflects the current window list; the wallpaper gradient renders at boot.
 
-**Current status:** 16a and 16c are complete. In 16b, resize handles are landed.
-Scrollbar visuals and drag hit-testing are in tree, but generalized app-content
-scroll integration is not complete yet, so Phase 16 remains open.
+**Current status:** complete. All three sub-areas (desktop surface, window chrome,
+taskbar/start menu) have shipped. Scrollbars are wired end-to-end: Text Viewer and
+File Manager re-render when the thumb is dragged, PS/2 IntelliMouse 4-byte mode is
+negotiated at boot, and the scroll wheel dispatches to the topmost window under the
+cursor. The notification slot is reserved for Phase 14/15 hardware status icons.
 
 ### Phase 16 implementation notes
 
@@ -512,8 +514,8 @@ real machines. Everything in between can be developed entirely in QEMU.
 | Tag | Milestone |
 | :-- | :-------- |
 | v1.14 | Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
-| v1.16 | Current — Phase 16 in progress: desktop shell shipped, resize handles landed, scrollbar integration still incomplete |
-| v2.0 | Phase 16 complete — fully polished desktop |
+| v1.16 | Phase 16 — desktop shell, resize handles, start menu |
+| v2.0 | Current — Phase 16 complete: scrollbars wired, IntelliMouse scroll wheel |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete — network-capable |
