@@ -427,7 +427,7 @@ chrome, and interactive shell widgets.
 - [x] **Window border** — a 1px solid border (colour matches inactive title bar)
       surrounds each window's content area; drawn by the compositor after blitting the
       window's back-buffer, so apps do not need to draw it themselves.
-- [ ] **Resize handle** — a 6×6 drag zone in the bottom-right corner of each window;
+- [x] **Resize handle** — a 6×6 drag zone in the bottom-right corner of each window;
       dragging it resizes the window and reallocates its back-buffer.
 - [ ] **Scrollbars** — drawn by the compositor when a window's logical content height
       exceeds its physical height. A `ScrollState { offset, content_h, view_h }` field
@@ -455,8 +455,9 @@ with no regressions to existing apps; desktop icons launch apps on double-click;
 windows minimise, maximise, and restore correctly; the start menu opens and closes;
 the taskbar reflects the current window list; the wallpaper gradient renders at boot.
 
-**Current status:** 16a and 16c are complete. 16b window chrome is complete except
-for the resize handle and scrollbar, which are the two remaining items for this phase.
+**Current status:** 16a and 16c are complete. In 16b, resize handles are landed.
+Scrollbar visuals and drag hit-testing are in tree, but generalized app-content
+scroll integration is not complete yet, so Phase 16 remains open.
 
 ### Phase 16 implementation notes
 
@@ -510,8 +511,8 @@ real machines. Everything in between can be developed entirely in QEMU.
 
 | Tag | Milestone |
 | :-- | :-------- |
-| v1.14 | Current — Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
-| v1.16 | Phase 16 in progress — desktop surface and taskbar complete; resize handle + scrollbars remaining |
+| v1.14 | Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
+| v1.16 | Current — Phase 16 in progress: desktop shell shipped, resize handles landed, scrollbar integration still incomplete |
 | v2.0 | Phase 16 complete — fully polished desktop |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |

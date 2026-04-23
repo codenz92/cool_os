@@ -4,20 +4,21 @@
 # coolOS
 
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
-graphical desktop with draggable windows, a taskbar, a PS/2 mouse cursor,
-and four built-in applications — now with a preemptive scheduler, ring-3
+graphical desktop with draggable and resizable windows, a taskbar, a start
+menu, a PS/2 mouse cursor, and five built-in applications — now with a preemptive scheduler, ring-3
 userspace, per-process virtual memory, process isolation, a FAT32
 filesystem with VFS/syscalls, an ELF loader with `exec`, and a full IPC
 layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.14
+# Current state — v1.16
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps. A preemptive round-robin scheduler runs five boot tasks driven by the PIT
+apps, and the shell also exposes desktop icons plus a start menu/taskbar flow.
+A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`:
 
@@ -47,9 +48,8 @@ FAT32-backed VFS.
 | :-------- | :------ |
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
-| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, close button, per-window pixel back-buffer. |
-| **Taskbar** | 24 px bar at the bottom; one button per open window. |
-| **Context menu** | Right-click the desktop to spawn any of the four apps. |
+| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, minimise/maximise/restore, resize grip, close button, per-window pixel back-buffer. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -63,7 +63,8 @@ FAT32-backed VFS.
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 parser** | Read-only. BPB parsing, FAT chain walking, 8.3 filename lookup, directory traversal, cluster→sector mapping. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
-| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, and `/bin/read`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, and File Manager. |
+| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, and `/bin/terminal`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -73,6 +74,7 @@ FAT32-backed VFS.
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
+| **File Manager** | Right-click / desktop icon | Browse the FAT32 disk image, navigate folders, and open UTF-8 text files in the Text Viewer. |
 
 ### Terminal commands
 

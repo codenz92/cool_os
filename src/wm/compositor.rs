@@ -249,6 +249,17 @@ impl AppWindow {
             _ => {}
         }
     }
+    pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
+        if let AppWindow::FileManager(fm) = self {
+            fm.handle_dbl_click(lx, ly);
+        }
+    }
+    pub fn take_open_request(&mut self) -> Option<alloc::string::String> {
+        match self {
+            AppWindow::FileManager(fm) => fm.take_open_request(),
+            _ => None,
+        }
+    }
     pub fn update(&mut self) {
         if let AppWindow::SysMon(s) = self {
             s.update();
@@ -275,6 +286,10 @@ pub struct WindowManager {
     context_menu: Option<ContextMenu>,
     icon_selected: Option<usize>,
     start_menu_open: bool,
+    last_click_tick: u64,
+    last_click_window: Option<usize>,
+    last_click_x: i32,
+    last_click_y: i32,
     /// Frame counter — used to drive the uptime clock display.
     /// Replace with a real RTC read once the kernel time API is wired up.
     tick: u64,
@@ -362,6 +377,10 @@ impl WindowManager {
             context_menu: None,
             icon_selected: None,
             start_menu_open: false,
+            last_click_tick: 0,
+            last_click_window: None,
+            last_click_x: 0,
+            last_click_y: 0,
             tick: 0,
             shadow: alloc::vec![0u32; w * h],
             shadow_width: w,
@@ -609,6 +628,36 @@ impl WindowManager {
                             }
                         }
                         self.windows[win_idx].handle_click(lx, ly);
+                        let is_double_click = self.last_click_window == Some(win_idx)
+                            && self.tick.wrapping_sub(self.last_click_tick) <= 25
+                            && (self.last_click_x - lx).abs() <= 6
+                            && (self.last_click_y - ly).abs() <= 6;
+                        if is_double_click {
+                            self.windows[win_idx].handle_dbl_click(lx, ly);
+                            if let Some(path) = self.windows[win_idx].take_open_request() {
+                                let off = self.windows.len() as i32 * 16;
+                                let wx = (20 + off).min(sw as i32 - 220);
+                                let wy = (20 + off).min(taskbar_y - 120);
+                                match TextViewerApp::open_file(wx, wy, &path) {
+                                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
+                                    Err(err) => {
+                                        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                                            AppWindow::Terminal(t) => Some(t),
+                                            _ => None,
+                                        }) {
+                                            term.print_str("open failed: ");
+                                            term.print_str(err);
+                                            term.print_char('\n');
+                                        }
+                                    }
+                                }
+                                crate::wm::request_repaint();
+                            }
+                        }
+                        self.last_click_tick = self.tick;
+                        self.last_click_window = Some(win_idx);
+                        self.last_click_x = lx;
+                        self.last_click_y = ly;
                     }
                 }
 

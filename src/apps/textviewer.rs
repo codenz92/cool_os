@@ -1,3 +1,7 @@
+extern crate alloc;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::framebuffer::{DARK_GRAY, LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
 /// Text Viewer — scrollable read-only document display.
@@ -11,7 +15,7 @@ const CHAR_W: usize = 8;
 const CHAR_H: usize = 8;
 
 const ABOUT: &[&str] = &[
-    " coolOS v1.5",
+    " coolOS v1.16",
     " Bare-metal OS in Rust",
     "",
     " == Phases ==",
@@ -21,6 +25,8 @@ const ABOUT: &[&str] = &[
     " 4. Desktop shell",
     " 5. Applications",
     " 6. High-res framebuffer",
+    " 7-13. Scheduler, userspace, VMM, FS, ELF, IPC",
+    " 16. Desktop shell in progress",
     "",
     " == Commands ==",
     " help    - list commands",
@@ -35,6 +41,7 @@ const ABOUT: &[&str] = &[
     " Drag title bar: move",
     " x button: close win",
     " Right-click: new app",
+    " File Manager: browse FAT32 + open text files",
     "",
     " github.com/codenz92",
     "   /cool-os",
@@ -42,6 +49,7 @@ const ABOUT: &[&str] = &[
 
 pub struct TextViewerApp {
     pub window: Window,
+    lines: Vec<String>,
     scroll: usize,
     rows: usize,
     cols: usize,
@@ -49,10 +57,11 @@ pub struct TextViewerApp {
 
 impl TextViewerApp {
     pub fn new(x: i32, y: i32) -> Self {
-        let window = Window::new(x, y, VIEWER_W, VIEWER_H, "About coolOS");
+        let window = Window::new(x, y, VIEWER_W, VIEWER_H, "Text Viewer");
         let content_h = (VIEWER_H - TITLE_H) as usize;
         let mut app = TextViewerApp {
             window,
+            lines: ABOUT.iter().map(|line| String::from(*line)).collect(),
             scroll: 0,
             rows: content_h / CHAR_H,
             cols: VIEWER_W as usize / CHAR_W,
@@ -61,10 +70,24 @@ impl TextViewerApp {
         app
     }
 
+    pub fn open_file(x: i32, y: i32, path: &str) -> Result<Self, &'static str> {
+        let bytes = crate::fat32::read_file(path).ok_or("file not found")?;
+        let text = core::str::from_utf8(&bytes).map_err(|_| "file is not UTF-8 text")?;
+        let mut app = Self::new(x, y);
+        app.lines = if text.is_empty() {
+            alloc::vec![String::from("(empty file)")]
+        } else {
+            text.lines().map(String::from).collect()
+        };
+        app.scroll = 0;
+        app.render();
+        Ok(app)
+    }
+
     pub fn handle_key(&mut self, c: char) {
         match c {
             'j' | 'J' => {
-                if self.scroll + self.rows < ABOUT.len() {
+                if self.scroll + self.rows < self.lines.len() {
                     self.scroll += 1;
                     self.render();
                 }
@@ -84,13 +107,15 @@ impl TextViewerApp {
         for b in self.window.buf.iter_mut() {
             *b = DARK_GRAY;
         }
+        self.window.scroll.content_h = (self.lines.len() * CHAR_H) as i32;
+        self.window.scroll.clamp((self.rows * CHAR_H) as i32);
 
         for screen_row in 0..self.rows {
             let doc_row = self.scroll + screen_row;
-            if doc_row >= ABOUT.len() {
+            if doc_row >= self.lines.len() {
                 break;
             }
-            let line = ABOUT[doc_row];
+            let line = &self.lines[doc_row];
             let py = screen_row * CHAR_H;
             for (ci, c) in line.chars().enumerate() {
                 if ci >= self.cols {
@@ -114,7 +139,7 @@ impl TextViewerApp {
         } else {
             DARK_GRAY
         };
-        let bot_color = if self.scroll + self.rows < ABOUT.len() {
+        let bot_color = if self.scroll + self.rows < self.lines.len() {
             LIGHT_GRAY
         } else {
             DARK_GRAY

@@ -39,6 +39,7 @@ pub struct FileManagerApp {
     view_h: i32,
     selected: Option<usize>,
     total_rows: usize,
+    pending_open: Option<String2>,
 }
 
 impl FileManagerApp {
@@ -51,6 +52,7 @@ impl FileManagerApp {
             view_h: 0,
             selected: None,
             total_rows: 0,
+            pending_open: None,
         };
         app.load_dir("/");
         app
@@ -102,7 +104,6 @@ impl FileManagerApp {
                     let rel_x = (lx - 20) as usize;
                     let path_chars = (FILEMAN_W as usize - 24) / CW;
                     let clicked_char = rel_x / CW;
-                    let scroll_max = self.path.len().saturating_sub(path_chars);
                     let path_start = self.path.len().saturating_sub(path_chars);
                     let clicked = if path_start + clicked_char < self.path.len() {
                         Some(path_start + clicked_char)
@@ -129,7 +130,7 @@ impl FileManagerApp {
         }
     }
 
-    pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
+    pub fn handle_dbl_click(&mut self, _lx: i32, ly: i32) {
         let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
         if ly <= toolbar_bottom {
             return;
@@ -141,8 +142,14 @@ impl FileManagerApp {
             let abs = self.make_abs(entry_idx);
             if self.is_dir_idx(entry_idx) {
                 self.load_dir(&abs);
+            } else {
+                self.pending_open = Some(abs);
             }
         }
+    }
+
+    pub fn take_open_request(&mut self) -> Option<String2> {
+        self.pending_open.take()
     }
 
     pub fn handle_scroll(&mut self, delta: i32) {
@@ -170,7 +177,42 @@ impl FileManagerApp {
         }
     }
 
-    fn navigate_to_pos(&mut self, _pos: usize) {}
+    fn navigate_to_pos(&mut self, pos: usize) {
+        if self.path == "/" {
+            return;
+        }
+
+        let bytes = self.path.as_bytes();
+        if pos >= bytes.len() {
+            return;
+        }
+        if pos == 0 {
+            self.load_dir("/");
+            return;
+        }
+
+        let mut end = bytes.len();
+        for (idx, &b) in bytes.iter().enumerate().skip(pos) {
+            if b == b'/' {
+                end = idx;
+                break;
+            }
+        }
+
+        if end == 0 {
+            self.load_dir("/");
+            return;
+        }
+
+        let target = &self.path[..end];
+        if !target.is_empty() {
+            let mut normalized = String2::from(target);
+            while normalized.len() > 1 && normalized.ends_with('/') {
+                normalized.pop();
+            }
+            self.load_dir(&normalized);
+        }
+    }
 
     fn make_abs(&self, idx: usize) -> String2 {
         let mut s = String2::from(&self.path);
@@ -298,7 +340,7 @@ impl FileManagerApp {
         }
     }
 
-    fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, stride: usize) {
+    fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, _stride: usize) {
         let avail = (FILEMAN_W as usize - 24) - x0;
         let display = if path_str.len() * CW > avail {
             let start = path_str.len() - avail / CW;
