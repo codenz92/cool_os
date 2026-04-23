@@ -19,6 +19,10 @@ const CAP_HCSPARAMS1: u64 = 0x04; // u32 — slots, interrupters, ports
 const CAP_HCSPARAMS2: u64 = 0x08; // u32 — IST, ERST max, scratchpad size
 const CAP_HCCPARAMS1: u64 = 0x10; // u32 — addressing, extended caps
 
+// xHCI extended capability IDs.
+const EXT_CAP_LEGACY_SUPPORT: u8 = 1;
+const EXT_CAP_SUPPORTED_PROTOCOL: u8 = 2;
+
 pub fn init() {
     let Some((loc, hdr, mmio)) = find_controller() else {
         println!("[xhci] no controller found on PCI bus");
@@ -51,6 +55,7 @@ pub fn init() {
     let scratch_lo = (hcsparams2 >> 27) & 0x1F;
     let scratchpad_count = (scratch_hi << 5) | scratch_lo;
     let ac64 = hccparams1 & 0x1 != 0;
+    let xecp = ((hccparams1 >> 16) & 0xFFFF) as u64 * 4;
 
     println!(
         "[xhci] version=0x{:04x} caplength={} op_regs@{:#x}",
@@ -59,9 +64,10 @@ pub fn init() {
         virt + caplength as u64,
     );
     println!(
-        "[xhci] slots={} interrupters={} ports={} scratchpads={} 64bit={}",
-        max_slots, max_interrupters, max_ports, scratchpad_count, ac64,
+        "[xhci] slots={} interrupters={} ports={} scratchpads={} 64bit={} xecp={:#x}",
+        max_slots, max_interrupters, max_ports, scratchpad_count, ac64, xecp,
     );
+    scan_extended_caps(virt, xecp);
     println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
 }
 
@@ -87,4 +93,142 @@ fn find_controller() -> Option<(Location, Header, u64)> {
 
 unsafe fn read_u32(addr: u64) -> u32 {
     core::ptr::read_volatile(addr as *const u32)
+}
+
+fn scan_extended_caps(base: u64, mut off: u64) {
+    if off == 0 {
+        println!("[xhci] no extended capabilities");
+        return;
+    }
+
+    for _ in 0..32 {
+        let header = unsafe { read_u32(base + off) };
+        let cap_id = (header & 0xFF) as u8;
+        let next = ((header >> 8) & 0xFF) as u64 * 4;
+
+        match cap_id {
+            EXT_CAP_LEGACY_SUPPORT => {
+                println!("[xhci] ext cap @+{:#x}: USB legacy support", off);
+            }
+            EXT_CAP_SUPPORTED_PROTOCOL => {
+                log_supported_protocol(base, off, header);
+            }
+            0 => {
+                println!("[xhci] ext cap @+{:#x}: invalid id=0", off);
+            }
+            _ => {
+                println!("[xhci] ext cap @+{:#x}: id={} header={:#x}", off, cap_id, header);
+            }
+        }
+
+        if next == 0 {
+            return;
+        }
+        off += next;
+    }
+
+    println!("[xhci] extended capability scan truncated");
+}
+
+fn log_supported_protocol(base: u64, off: u64, header: u32) {
+    let name = unsafe { read_u32(base + off + 0x04) };
+    let ports = unsafe { read_u32(base + off + 0x08) };
+    let slot = unsafe { read_u32(base + off + 0x0C) };
+
+    let rev_minor = ((header >> 16) & 0xFF) as u8;
+    let rev_major = ((header >> 24) & 0xFF) as u8;
+    let port_offset = (ports & 0xFF) as u8;
+    let port_count = ((ports >> 8) & 0xFF) as u8;
+    let psi_count = ((ports >> 28) & 0xF) as u8;
+    let slot_type = (slot & 0x1F) as u8;
+    let name_str = protocol_name(name);
+    let label = protocol_label(name_str, rev_major, rev_minor);
+    let port_last = port_offset.saturating_add(port_count.saturating_sub(1));
+
+    println!(
+        "[xhci] ext cap @+{:#x}: supported protocol {} rev={}.{} ports={}..{} psic={} slot_type={}",
+        off,
+        label,
+        rev_major,
+        bcd_hex(rev_minor),
+        port_offset,
+        port_last,
+        psi_count,
+        slot_type,
+    );
+
+    for idx in 0..psi_count {
+        let psi = unsafe { read_u32(base + off + 0x10 + idx as u64 * 4) };
+        log_psi(idx, psi);
+    }
+}
+
+fn protocol_name(raw: u32) -> [u8; 4] {
+    raw.to_le_bytes()
+}
+
+fn protocol_label(name: [u8; 4], major: u8, minor: u8) -> &'static str {
+    if name == *b"USB " {
+        match (major, minor) {
+            (2, 0x00) => "USB 2.0",
+            (3, 0x00) => "USB 3.0",
+            (3, 0x10) => "USB 3.1",
+            (3, 0x20) => "USB 3.2",
+            _ => "USB",
+        }
+    } else {
+        "unknown"
+    }
+}
+
+fn bcd_hex(v: u8) -> u8 {
+    ((v >> 4) * 10) + (v & 0x0F)
+}
+
+fn log_psi(idx: u8, psi: u32) {
+    let psiv = (psi & 0x0F) as u8;
+    let psie = ((psi >> 4) & 0x03) as u8;
+    let plt = ((psi >> 6) & 0x03) as u8;
+    let full_duplex = ((psi >> 8) & 0x01) != 0;
+    let lp = ((psi >> 14) & 0x03) as u8;
+    let psim = ((psi >> 16) & 0xFFFF) as u16;
+
+    println!(
+        "[xhci]   psi{}: id={} rate={} {} kind={} duplex={} link={} raw={:#x}",
+        idx,
+        psiv,
+        psim,
+        psi_units(psie),
+        psi_type(plt),
+        if full_duplex { "full" } else { "half" },
+        link_protocol(lp),
+        psi,
+    );
+}
+
+fn psi_units(psie: u8) -> &'static str {
+    match psie {
+        0 => "b/s",
+        1 => "Kb/s",
+        2 => "Mb/s",
+        3 => "Gb/s",
+        _ => "?",
+    }
+}
+
+fn psi_type(plt: u8) -> &'static str {
+    match plt {
+        0 => "sym",
+        2 => "rx",
+        3 => "tx",
+        _ => "?",
+    }
+}
+
+fn link_protocol(lp: u8) -> &'static str {
+    match lp {
+        0 => "SS",
+        1 => "SSP",
+        _ => "?",
+    }
 }
