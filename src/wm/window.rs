@@ -120,15 +120,15 @@ impl Window {
     }
 
     pub fn hit_minimize(&self, px: i32, py: i32) -> bool {
-        px >= self.x + self.width - WIN_BTN_W * 2
-            && px < self.x + self.width - WIN_BTN_W
+        px >= self.x + self.width - WIN_BTN_W * 3
+            && px < self.x + self.width - WIN_BTN_W * 2
             && py >= self.y
             && py < self.y + TITLE_H
     }
 
     pub fn hit_maximize(&self, px: i32, py: i32) -> bool {
-        px >= self.x + self.width - WIN_BTN_W * 3
-            && px < self.x + self.width - WIN_BTN_W * 2
+        px >= self.x + self.width - WIN_BTN_W * 2
+            && px < self.x + self.width - WIN_BTN_W
             && py >= self.y
             && py < self.y + TITLE_H
     }
