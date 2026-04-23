@@ -5,6 +5,10 @@
 /// still depends on the PS/2 input path for live keyboard and mouse support.
 /// Boot-time xHCI bring-up resumes once the USB HID path exists.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use crate::pci::{self, Header, Location};
 use crate::println;
 
@@ -18,10 +22,21 @@ const PCI_PROGIF_XHCI: u8 = 0x30;
 const CAP_HCSPARAMS1: u64 = 0x04; // u32 — slots, interrupters, ports
 const CAP_HCSPARAMS2: u64 = 0x08; // u32 — IST, ERST max, scratchpad size
 const CAP_HCCPARAMS1: u64 = 0x10; // u32 — addressing, extended caps
+const OP_PORTSC_BASE: u64 = 0x400;
 
 // xHCI extended capability IDs.
 const EXT_CAP_LEGACY_SUPPORT: u8 = 1;
 const EXT_CAP_SUPPORTED_PROTOCOL: u8 = 2;
+
+struct SupportedProtocol {
+    label: &'static str,
+    major: u8,
+    minor: u8,
+    port_offset: u8,
+    port_count: u8,
+    psi_count: u8,
+    slot_type: u8,
+}
 
 pub fn init() {
     let Some((loc, hdr, mmio)) = find_controller() else {
@@ -67,7 +82,8 @@ pub fn init() {
         "[xhci] slots={} interrupters={} ports={} scratchpads={} 64bit={} xecp={:#x}",
         max_slots, max_interrupters, max_ports, scratchpad_count, ac64, xecp,
     );
-    scan_extended_caps(virt, xecp);
+    let protocols = scan_extended_caps(virt, xecp);
+    scan_ports(virt + caplength as u64, max_ports, &protocols);
     println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
 }
 
@@ -95,10 +111,11 @@ unsafe fn read_u32(addr: u64) -> u32 {
     core::ptr::read_volatile(addr as *const u32)
 }
 
-fn scan_extended_caps(base: u64, mut off: u64) {
+fn scan_extended_caps(base: u64, mut off: u64) -> Vec<SupportedProtocol> {
+    let mut protocols = Vec::new();
     if off == 0 {
         println!("[xhci] no extended capabilities");
-        return;
+        return protocols;
     }
 
     for _ in 0..32 {
@@ -111,7 +128,7 @@ fn scan_extended_caps(base: u64, mut off: u64) {
                 println!("[xhci] ext cap @+{:#x}: USB legacy support", off);
             }
             EXT_CAP_SUPPORTED_PROTOCOL => {
-                log_supported_protocol(base, off, header);
+                protocols.push(log_supported_protocol(base, off, header));
             }
             0 => {
                 println!("[xhci] ext cap @+{:#x}: invalid id=0", off);
@@ -122,15 +139,16 @@ fn scan_extended_caps(base: u64, mut off: u64) {
         }
 
         if next == 0 {
-            return;
+            return protocols;
         }
         off += next;
     }
 
     println!("[xhci] extended capability scan truncated");
+    protocols
 }
 
-fn log_supported_protocol(base: u64, off: u64, header: u32) {
+fn log_supported_protocol(base: u64, off: u64, header: u32) -> SupportedProtocol {
     let name = unsafe { read_u32(base + off + 0x04) };
     let ports = unsafe { read_u32(base + off + 0x08) };
     let slot = unsafe { read_u32(base + off + 0x0C) };
@@ -160,6 +178,92 @@ fn log_supported_protocol(base: u64, off: u64, header: u32) {
     for idx in 0..psi_count {
         let psi = unsafe { read_u32(base + off + 0x10 + idx as u64 * 4) };
         log_psi(idx, psi);
+    }
+
+    SupportedProtocol {
+        label,
+        major: rev_major,
+        minor: rev_minor,
+        port_offset,
+        port_count,
+        psi_count,
+        slot_type,
+    }
+}
+
+fn scan_ports(op_base: u64, max_ports: u8, protocols: &[SupportedProtocol]) {
+    let mut any = false;
+    for port in 0..max_ports {
+        let port_num = port + 1;
+        let portsc = unsafe { read_u32(op_base + OP_PORTSC_BASE + 0x10 * port as u64) };
+        let connected = portsc & 0x1 != 0;
+        let enabled = portsc & 0x2 != 0;
+        let speed_id = ((portsc >> 10) & 0xF) as u8;
+
+        if !connected && !enabled {
+            continue;
+        }
+
+        any = true;
+        if let Some(proto) = protocol_for_port(protocols, port_num) {
+            println!(
+                "[xhci] port {} proto={} rev={}.{} slot_type={} ccs={} ped={} speed_id={} speed={} portsc={:#x}",
+                port_num,
+                proto.label,
+                proto.major,
+                bcd_hex(proto.minor),
+                proto.slot_type,
+                connected as u8,
+                enabled as u8,
+                speed_id,
+                port_speed_name(proto, speed_id),
+                portsc,
+            );
+        } else {
+            println!(
+                "[xhci] port {} proto=? ccs={} ped={} speed_id={} portsc={:#x}",
+                port_num,
+                connected as u8,
+                enabled as u8,
+                speed_id,
+                portsc,
+            );
+        }
+    }
+
+    if !any {
+        println!("[xhci] no active root-hub ports reported");
+    }
+}
+
+fn protocol_for_port(
+    protocols: &[SupportedProtocol],
+    port_num: u8,
+) -> Option<&SupportedProtocol> {
+    protocols.iter().find(|proto| {
+        let start = proto.port_offset;
+        let end = proto.port_offset.saturating_add(proto.port_count.saturating_sub(1));
+        port_num >= start && port_num <= end
+    })
+}
+
+fn port_speed_name(proto: &SupportedProtocol, speed_id: u8) -> &'static str {
+    if proto.psi_count != 0 {
+        return "psi";
+    }
+
+    match (proto.major, proto.minor, speed_id) {
+        (2, _, 1) => "Full",
+        (2, _, 2) => "Low",
+        (2, _, 3) => "High",
+        (3, 0x00, 4) => "Super",
+        (3, 0x10, 4) => "Super",
+        (3, 0x10, 5) => "Super+",
+        (3, 0x20, 4) => "Super",
+        (3, 0x20, 5) => "Super+ Gen2x1",
+        (3, 0x20, 6) => "Super+ Gen1x2",
+        (3, 0x20, 7) => "Super+ Gen2x2",
+        _ => "?",
     }
 }
 
