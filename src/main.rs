@@ -16,7 +16,9 @@ mod keyboard;
 mod memory;
 mod mouse;
 mod scheduler;
+mod pci;
 mod syscall;
+mod usb;
 mod userspace;
 mod vfs;
 mod vga_buffer;
@@ -126,6 +128,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     mouse::init();
     wm::init();
+
+    // xHCI probe runs last so that a broken controller can't mask earlier init.
+    usb::init();
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()

@@ -20,6 +20,9 @@ run: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
 		-m 512M \
 		-vga std \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-mouse,bus=xhci.0 \
 		-display cocoa \
 		-debugcon stdio
 
