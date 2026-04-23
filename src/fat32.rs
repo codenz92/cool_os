@@ -146,6 +146,34 @@ impl DirEntry {
 
     fn is_dir(&self) -> bool { self.attr & ATTR_DIRECTORY != 0 }
 
+    fn name_as_string(&self) -> alloc::string::String {
+        let name = self.name;
+        let mut base_buf = [0u8; 8];
+        let mut base_len = 0usize;
+        for &b in &name[..8] {
+            if b == b' ' { break; }
+            base_buf[base_len] = b;
+            base_len += 1;
+        }
+        let mut ext_buf = [0u8; 3];
+        let mut ext_len = 0usize;
+        for &b in &name[8..] {
+            if b == b' ' { break; }
+            ext_buf[ext_len] = b;
+            ext_len += 1;
+        }
+        let base_str = core::str::from_utf8(&base_buf[..base_len]).unwrap_or("????????");
+        let ext_str = core::str::from_utf8(&ext_buf[..ext_len]).unwrap_or("");
+        if ext_str.is_empty() {
+            alloc::string::String::from(base_str)
+        } else {
+            let mut s = alloc::string::String::from(base_str);
+            s.push('.');
+            s.push_str(ext_str);
+            s
+        }
+    }
+
     /// Match this entry's 8.3 name against an uppercase 8.3 component.
     fn matches(&self, component: &[u8]) -> bool {
         self.name == name_to_83(component)
@@ -172,6 +200,53 @@ fn name_to_83(s: &[u8]) -> [u8; 11] {
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/// A directory entry exposed to the rest of the kernel.
+#[derive(Debug, Clone)]
+pub struct DirEntryInfo {
+    pub name: alloc::string::String,
+    pub is_dir: bool,
+    pub size: u32,
+}
+
+/// List all entries in a directory given its absolute path (e.g. `/bin`).
+/// Returns `None` if the path doesn't exist or isn't a directory.
+pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
+    let bpb = Bpb::load()?;
+    let mut cluster = bpb.root_cluster;
+    let components: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|&b| b == b'/')
+        .filter(|c| !c.is_empty())
+        .collect();
+
+    for component in components {
+        match find_in_dir(&bpb, cluster, component)? {
+            (next_cluster, true) => cluster = next_cluster,
+            (_next, false) => return None,
+        }
+    }
+
+    let sectors = bpb.cluster_chain_sectors(cluster);
+    let mut buf = [0u8; 512];
+    let mut entries = Vec::new();
+    for lba in sectors {
+        if !crate::ata::read_sector(lba, &mut buf) { return None; }
+        for offset in (0..512).step_by(32) {
+            if let Some(entry) = DirEntry::from_bytes(&buf[offset..]) {
+                let name = entry.name_as_string();
+                entries.push(DirEntryInfo {
+                    name,
+                    is_dir: entry.is_dir(),
+                    size: entry.file_size,
+                });
+            } else if buf[offset] == 0x00 {
+                return Some(entries);
+            }
+        }
+    }
+    Some(entries)
+}
 
 /// Read the entire contents of an absolute path (e.g. `/bin/hello.txt`) from
 /// the FAT32 filesystem on the ATA slave device.  Returns `None` on any error.

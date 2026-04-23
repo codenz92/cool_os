@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::apps::{ColorPickerApp, SysMonApp, TerminalApp, TextViewerApp};
+use crate::apps::{ColorPickerApp, FileManagerApp, SysMonApp, TerminalApp, TextViewerApp};
 use crate::framebuffer::{BLACK, CHAR_W, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
@@ -115,7 +115,7 @@ const CTX_W: i32 = 224;
 const CTX_ITEM_H: i32 = 32;
 const CTX_HEADER_H: i32 = 28; // non-clickable header strip
 const CTX_PAD: i32 = 4; // top/bottom padding inside menu body
-const CTX_ITEMS: &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick"];
+const CTX_ITEMS: &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick", "File Manager"];
 
 struct ContextMenu {
     x: i32,
@@ -143,7 +143,7 @@ impl DesktopIcon {
     }
 }
 
-fn desktop_icons() -> [DesktopIcon; 4] {
+fn desktop_icons() -> [DesktopIcon; 5] {
     // Column stride: ICON_SIZE(64) + 104px gap = 168 — gives 8-char label room before next tile.
     // Row stride:    ICON_SIZE(64) + ICON_LABEL_H(14) + 20px gap = 98.
     [
@@ -170,6 +170,12 @@ fn desktop_icons() -> [DesktopIcon; 4] {
             y: 118,
             label: "Color Pick",
             app: "Color Pick",
+        },
+        DesktopIcon {
+            x: 356,
+            y: 20,
+            label: "File Mgr",
+            app: "File Manager",
         },
     ]
 }
@@ -206,6 +212,7 @@ pub enum AppWindow {
     SysMon(SysMonApp),
     TextViewer(TextViewerApp),
     ColorPicker(ColorPickerApp),
+    FileManager(FileManagerApp),
 }
 
 impl AppWindow {
@@ -215,6 +222,7 @@ impl AppWindow {
             AppWindow::SysMon(s) => &s.window,
             AppWindow::TextViewer(v) => &v.window,
             AppWindow::ColorPicker(c) => &c.window,
+            AppWindow::FileManager(f) => &f.window,
         }
     }
     pub fn window_mut(&mut self) -> &mut Window {
@@ -223,18 +231,22 @@ impl AppWindow {
             AppWindow::SysMon(s) => &mut s.window,
             AppWindow::TextViewer(v) => &mut v.window,
             AppWindow::ColorPicker(c) => &mut c.window,
+            AppWindow::FileManager(f) => &mut f.window,
         }
     }
     pub fn handle_key(&mut self, c: char) {
         match self {
             AppWindow::Terminal(t) => t.handle_key(c),
             AppWindow::TextViewer(v) => v.handle_key(c),
+            AppWindow::FileManager(f) => f.handle_key(c),
             _ => {}
         }
     }
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
-        if let AppWindow::ColorPicker(cp) = self {
-            cp.handle_click(lx, ly);
+        match self {
+            AppWindow::ColorPicker(cp) => cp.handle_click(lx, ly),
+            AppWindow::FileManager(fm) => fm.handle_click(lx, ly),
+            _ => {}
         }
     }
     pub fn update(&mut self) {
@@ -517,6 +529,9 @@ impl WindowManager {
                     Some("Color Pick") => {
                         self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy)))
                     }
+                    Some("File Manager") => {
+                        self.add_window(AppWindow::FileManager(FileManagerApp::new(wx, wy)))
+                    }
                     _ => {}
                 }
             } else {
@@ -731,6 +746,9 @@ impl WindowManager {
                         "Color Pick" => {
                             self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy)))
                         }
+                        "File Manager" => {
+                            self.add_window(AppWindow::FileManager(FileManagerApp::new(wx, wy)))
+                        }
                         _ => {}
                     }
                     crate::wm::request_repaint();
@@ -753,11 +771,12 @@ impl WindowManager {
             }
 
             // ── Desktop icons — drawn BEFORE windows so windows can cover them ────
-            let icon_data: [(u32, u32); 4] = [
+            let icon_data: [(u32, u32); 5] = [
                 (ICON_TERM_BG, ICON_TERM_ACC),
                 (ICON_MON_BG, ICON_MON_ACC),
                 (ICON_TXT_BG, ICON_TXT_ACC),
                 (ICON_COL_BG, ICON_COL_ACC),
+                (ICON_TXT_BG, ICON_MON_ACC),
             ];
             for (i, icon) in desktop_icons().iter().enumerate() {
                 let selected = self.icon_selected == Some(i);
@@ -791,7 +810,7 @@ impl WindowManager {
                 s_fill(s, sw, icon.x, icon.y, ICON_SIZE, 4, icon_acc);
 
                 // ── Per-app pixel-art icon ────────────────────────────────────────
-                match i {
+match i {
                     0 => {
                         // Terminal — pixelated ">" prompt + underscore cursor (scaled for 52px)
                         let bx = icon.x + 8;
@@ -826,15 +845,24 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 11, icon.y + 28, 16, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 34, 22, 2, icon_acc);
                     }
-                    _ => {
+                    3 => {
                         // Color Picker — four colour quadrants (scaled for 52px)
                         s_fill(s, sw, icon.x + 6, icon.y + 8, 16, 16, 0x00_FF_50_50); // red
                         s_fill(s, sw, icon.x + 26, icon.y + 8, 16, 16, 0x00_50_FF_50); // green
                         s_fill(s, sw, icon.x + 6, icon.y + 28, 16, 16, 0x00_50_50_FF); // blue
                         s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50); // yellow
-                                                                                        // Central accent pip
+                                                                                         // Central accent pip
                         s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
                     }
+                    4 => {
+                        // File Manager — folder with open tab and content lines
+                        s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
+                        s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
+                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14, 8, icon_acc);
+                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28, 2, 0x00_00_0B_20);
+                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28, 2, 0x00_00_0B_20);
+                    }
+                    _ => unreachable!(),
                 }
 
                 // Selection / hover ring
