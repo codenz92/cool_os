@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{fence, Ordering};
+use spin::Mutex;
 
 use crate::pci::{self, Header, Location};
 use crate::println;
@@ -68,6 +69,8 @@ const EXT_CAP_EXT_MSG_INTERRUPT: u8 = 17;
 const COMMAND_RING_TRBS: usize = 256;
 const CONTROL_RING_TRBS: usize = 256;
 const EVENT_RING_TRBS: usize = 256;
+const INTERRUPT_RING_TRBS: usize = 256;
+const TRB_TYPE_NORMAL: u32 = 1;
 const TRB_TYPE_SETUP_STAGE: u32 = 2;
 const TRB_TYPE_DATA_STAGE: u32 = 3;
 const TRB_TYPE_STATUS_STAGE: u32 = 4;
@@ -75,19 +78,32 @@ const TRB_TYPE_LINK: u32 = 6;
 const TRB_TYPE_ENABLE_SLOT_CMD: u32 = 9;
 const TRB_TYPE_DISABLE_SLOT_CMD: u32 = 10;
 const TRB_TYPE_ADDRESS_DEVICE_CMD: u32 = 11;
+const TRB_TYPE_CONFIGURE_ENDPOINT_CMD: u32 = 12;
 const TRB_TYPE_NOOP_CMD: u32 = 23;
 const TRB_TYPE_TRANSFER_EVENT: u32 = 32;
 const TRB_TYPE_CMD_COMPLETION: u32 = 33;
 const TRB_TYPE_PORT_STATUS_CHANGE: u32 = 34;
 const TRB_TC: u32 = 1 << 1;
 const TRB_CYCLE: u32 = 1 << 0;
+const TRB_IOC: u32 = 1 << 5;
+const TRB_IDT: u32 = 1 << 6;
+const TRB_DIR_IN: u32 = 1 << 16;
+const TRB_TRT_NONE: u32 = 0 << 16;
+const TRB_TRT_IN: u32 = 3 << 16;
 const COMPLETION_SUCCESS: u8 = 1;
+const COMPLETION_SHORT_PACKET: u8 = 13;
 const ERDP_EHB_CLEAR: u64 = 1 << 3;
 const CONTROL_ENDPOINT_DCI: u8 = 1;
 const SETUP_GET_DESCRIPTOR: u8 = 6;
+const SETUP_SET_CONFIGURATION: u8 = 9;
+const SETUP_SET_IDLE: u8 = 10;
+const SETUP_SET_PROTOCOL: u8 = 11;
 const REQUEST_TYPE_IN: u8 = 0x80;
+const REQUEST_TYPE_OUT: u8 = 0x00;
 const REQUEST_TYPE_STANDARD: u8 = 0x00;
+const REQUEST_TYPE_CLASS: u8 = 0x20;
 const REQUEST_RECIPIENT_DEVICE: u8 = 0x00;
+const REQUEST_RECIPIENT_INTERFACE: u8 = 0x01;
 const DESCRIPTOR_TYPE_DEVICE: u16 = 1;
 const DESCRIPTOR_TYPE_CONFIGURATION: u16 = 2;
 const DESCRIPTOR_TYPE_HID: u8 = 0x21;
@@ -103,6 +119,8 @@ const USB_HID_SUBCLASS_BOOT: u8 = 0x01;
 const USB_HID_PROTOCOL_KEYBOARD: u8 = 0x01;
 const USB_HID_PROTOCOL_MOUSE: u8 = 0x02;
 const DESCRIPTOR_BUFFER_BYTES: usize = 4096;
+const BOOT_KEYBOARD_REPORT_BYTES: usize = 8;
+const BOOT_MOUSE_REPORT_BYTES: usize = 4;
 
 const ACTIVE_INIT: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
 const SPIN_TIMEOUT: u64 = 10_000_000;
@@ -150,10 +168,18 @@ struct XhciInfo {
 }
 
 struct ActiveState {
+    op_base: u64,
+    rt_base: u64,
+    db_base: u64,
     dcbaa_phys: u64,
     cmd_ring_phys: u64,
     event_ring_phys: u64,
+    event_ring: EventRingState,
     erst_phys: u64,
+    devices: Vec<HidDeviceState>,
+    poll_count: u64,
+    event_count: u64,
+    last_runtime_note: String,
     port_status: Vec<String>,
 }
 
@@ -230,6 +256,8 @@ struct PrimedDevice {
     descriptor_phys: u64,
     descriptor_virt: u64,
     input_ctx_phys: u64,
+    input_ctx_virt: u64,
+    output_ctx_virt: u64,
 }
 
 struct DeviceDescriptor {
@@ -254,7 +282,29 @@ struct HidInterface {
     report_descriptor_len: u16,
 }
 
+struct HidDeviceState {
+    port_num: u8,
+    slot_id: u8,
+    protocol: u8,
+    interface_number: u8,
+    endpoint_address: u8,
+    endpoint_dci: u8,
+    report_request_len: usize,
+    report_ring: TransferRingState,
+    report_buffer_phys: u64,
+    report_buffer_virt: u64,
+    report_trb_phys: u64,
+    interval: u8,
+    report_count: u64,
+    error_count: u64,
+    last_report_len: usize,
+    last_completion_code: u8,
+}
+
+static RUNTIME: Mutex<Option<ActiveState>> = Mutex::new(None);
+
 pub fn probe() -> Vec<String> {
+    *RUNTIME.lock() = None;
     let mut status = Vec::new();
 
     let Some((loc, hdr, mmio_phys)) = find_controller() else {
@@ -312,7 +362,8 @@ pub fn probe() -> Vec<String> {
                     state.dcbaa_phys, state.cmd_ring_phys, state.event_ring_phys, state.erst_phys,
                 );
                 status.push(String::from("USB: active init ready"));
-                status.extend(state.port_status);
+                status.extend(state.port_status.iter().cloned());
+                *RUNTIME.lock() = Some(state);
             }
             Err(err) => {
                 println!("[xhci] active init failed: {}", err);
@@ -326,6 +377,97 @@ pub fn probe() -> Vec<String> {
         println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
     }
     status
+}
+
+pub fn poll() {
+    let mut runtime_guard = RUNTIME.lock();
+    let Some(runtime) = runtime_guard.as_mut() else {
+        return;
+    };
+
+    runtime.poll_count = runtime.poll_count.saturating_add(1);
+    while let Some(event) = next_event_by_base(runtime.rt_base, &mut runtime.event_ring) {
+        runtime.event_count = runtime.event_count.saturating_add(1);
+        match event.trb_type() as u32 {
+            TRB_TYPE_TRANSFER_EVENT => handle_runtime_transfer_event(runtime, event),
+            TRB_TYPE_PORT_STATUS_CHANGE => {
+                let port_num = event.port_id();
+                let portsc = read_portsc_by_op_base(runtime.op_base, port_num);
+                clear_port_changes_by_op_base(runtime.op_base, port_num);
+                runtime.last_runtime_note = format!(
+                    "port {} change ccs={} ped={} speed_id={}",
+                    port_num,
+                    (portsc & PORTSC_CCS != 0) as u8,
+                    (portsc & PORTSC_PED != 0) as u8,
+                    port_speed_id(portsc),
+                );
+                println!(
+                    "[xhci] runtime event: port {} status change portsc={:#x}",
+                    port_num,
+                    portsc,
+                );
+            }
+            TRB_TYPE_CMD_COMPLETION => {
+                runtime.last_runtime_note = format!(
+                    "unexpected command completion slot={} code={}",
+                    event.slot_id(),
+                    event.completion_code(),
+                );
+                println!(
+                    "[xhci] runtime event: unexpected command completion ptr={:#x} code={} slot={}",
+                    event.parameter & !0xFu64,
+                    event.completion_code(),
+                    event.slot_id(),
+                );
+            }
+            _ => {
+                runtime.last_runtime_note = format!(
+                    "event type={} code={}",
+                    event.trb_type(),
+                    event.completion_code(),
+                );
+                println!(
+                    "[xhci] runtime event: type={} code={} param={:#x} status={:#x}",
+                    event.trb_type(),
+                    event.completion_code(),
+                    event.parameter,
+                    event.status,
+                );
+            }
+        }
+    }
+}
+
+pub fn runtime_status_lines() -> Vec<String> {
+    let runtime_guard = RUNTIME.lock();
+    let Some(runtime) = runtime_guard.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "USB: runtime devices={} polls={} events={}",
+        runtime.devices.len(),
+        runtime.poll_count,
+        runtime.event_count,
+    ));
+    if !runtime.last_runtime_note.is_empty() {
+        lines.push(format!("USB: runtime {}", runtime.last_runtime_note));
+    }
+    for device in runtime.devices.iter() {
+        lines.push(format!(
+            "USB: runtime port={} slot={} {} ep={:#04x} reports={} last={}B errors={} cc={}",
+            device.port_num,
+            device.slot_id,
+            hid_protocol_name(device.protocol),
+            device.endpoint_address,
+            device.report_count,
+            device.last_report_len,
+            device.error_count,
+            device.last_completion_code,
+        ));
+    }
+    lines
 }
 
 fn read_info(mmio_virt: u64) -> XhciInfo {
@@ -436,13 +578,22 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
         read_u32(info.op_base + OP_USBSTS) & USBSTS_HCH == 0
     })?;
     run_command_ring_noop(info, &mut cmd_ring, &mut event_ring)?;
-    let port_status = prime_attached_ports(info, dcbaa_virt, &mut cmd_ring, &mut event_ring);
+    let (port_status, devices) =
+        prime_attached_ports(info, dcbaa_virt, &mut cmd_ring, &mut event_ring);
 
     Ok(ActiveState {
+        op_base: info.op_base,
+        rt_base: info.rt_base,
+        db_base: info.db_base,
         dcbaa_phys,
         cmd_ring_phys,
         event_ring_phys,
+        event_ring,
         erst_phys,
+        devices,
+        poll_count: 0,
+        event_count: 0,
+        last_runtime_note: String::from("polling ready"),
         port_status,
     })
 }
@@ -544,8 +695,9 @@ fn prime_attached_ports(
     dcbaa_virt: u64,
     cmd_ring: &mut CommandRingState,
     event_ring: &mut EventRingState,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<HidDeviceState>) {
     let mut status = Vec::new();
+    let mut devices = Vec::new();
 
     for port_num in 1..=info.max_ports {
         let Some(proto) = protocol_for_port(&info.protocols, port_num) else {
@@ -599,7 +751,10 @@ fn prime_attached_ports(
         match prime_default_control_endpoint(
             info, dcbaa_virt, cmd_ring, event_ring, proto, port_num, portsc,
         ) {
-            Ok(lines) => status.extend(lines),
+            Ok((lines, maybe_devices)) => {
+                status.extend(lines);
+                devices.extend(maybe_devices);
+            }
             Err(err) => status.push(format!(
                 "USB: port {} {} prime failed: {}",
                 port_num, proto.label, err
@@ -607,7 +762,7 @@ fn prime_attached_ports(
         }
     }
 
-    status
+    (status, devices)
 }
 
 fn prime_default_control_endpoint(
@@ -618,7 +773,7 @@ fn prime_default_control_endpoint(
     proto: &SupportedProtocol,
     port_num: u8,
     portsc: u32,
-) -> Result<Vec<String>, &'static str> {
+) -> Result<(Vec<String>, Vec<HidDeviceState>), &'static str> {
     let speed_id = port_speed_id(portsc);
     if speed_id == 0 {
         return Err("port speed undefined");
@@ -635,7 +790,7 @@ fn prime_default_control_endpoint(
     };
 
     if let Err(err) =
-        address_device_default(info, cmd_ring, event_ring, slot_id, device.input_ctx_phys)
+        address_device(info, cmd_ring, event_ring, slot_id, device.input_ctx_phys, true)
     {
         let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
         return Err(err);
@@ -671,6 +826,19 @@ fn prime_default_control_endpoint(
         }
     };
 
+    update_ep0_max_packet_size(info, &device, descriptor.max_packet_size0);
+    if let Err(err) = address_device(
+        info,
+        cmd_ring,
+        event_ring,
+        slot_id,
+        device.input_ctx_phys,
+        false,
+    ) {
+        let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
+        return Err(err);
+    }
+
     let config = match read_configuration_descriptor(
         info,
         event_ring,
@@ -688,6 +856,8 @@ fn prime_default_control_endpoint(
 
     let hid_interfaces = parse_boot_hid_interfaces(&config);
     let mut status = Vec::new();
+    let mut devices = Vec::new();
+    let config_value = config.get(5).copied().ok_or("configuration value missing")?;
 
     println!(
         "[xhci] slot {} device vid={:04x} pid={:04x} bcdUSB={:04x} dev={:04x} class={:02x}/{:02x}/{:02x} configs={}",
@@ -726,36 +896,64 @@ fn prime_default_control_endpoint(
             "USB: port {} slot={} no boot HID interfaces in config 0",
             port_num, slot_id,
         ));
-        return Ok(status);
+        return Ok((status, devices));
+    }
+
+    if let Err(err) = set_configuration(
+        info,
+        event_ring,
+        slot_id,
+        &mut device.transfer_ring,
+        config_value,
+    ) {
+        let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
+        return Err(err);
     }
 
     for hid in hid_interfaces {
+        let configured = match activate_hid_interface(
+            info,
+            cmd_ring,
+            event_ring,
+            slot_id,
+            port_num,
+            speed_id,
+            &hid,
+            &mut device,
+        ) {
+            Ok(configured) => configured,
+            Err(err) => {
+                let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
+                return Err(err);
+            }
+        };
         println!(
             "[xhci] slot {} hid {} iface={} alt={} ep={:#04x} mps={} interval={} report_desc={}",
             slot_id,
-            hid_protocol_name(hid.protocol),
-            hid.number,
+            hid_protocol_name(configured.protocol),
+            configured.interface_number,
             hid.alternate_setting,
-            hid.endpoint_address,
+            configured.endpoint_address,
             hid.max_packet_size,
-            hid.interval,
+            configured.interval,
             hid.report_descriptor_len,
         );
         status.push(format!(
             "USB: port {} slot={} HID {} iface={} alt={} ep={:#04x} mps={} interval={} report_desc={}",
             port_num,
             slot_id,
-            hid_protocol_name(hid.protocol),
-            hid.number,
+            hid_protocol_name(configured.protocol),
+            configured.interface_number,
             hid.alternate_setting,
-            hid.endpoint_address,
+            configured.endpoint_address,
             hid.max_packet_size,
-            hid.interval,
+            configured.interval,
             hid.report_descriptor_len,
         ));
+        devices.push(configured);
     }
 
-    Ok(status)
+    Ok((status, devices))
 }
 
 fn build_default_control_device(
@@ -767,7 +965,8 @@ fn build_default_control_device(
 ) -> Result<PrimedDevice, &'static str> {
     let (input_ctx_phys, input_ctx_virt) =
         alloc_zeroed_phys().ok_or("input context alloc failed")?;
-    let (output_ctx_phys, _) = alloc_zeroed_phys().ok_or("output context alloc failed")?;
+    let (output_ctx_phys, output_ctx_virt) =
+        alloc_zeroed_phys().ok_or("output context alloc failed")?;
     let (transfer_ring_phys, transfer_ring_virt) =
         alloc_zeroed_phys().ok_or("control ring alloc failed")?;
     let (descriptor_phys, descriptor_virt) =
@@ -813,6 +1012,8 @@ fn build_default_control_device(
         descriptor_phys,
         descriptor_virt,
         input_ctx_phys,
+        input_ctx_virt,
+        output_ctx_virt,
     })
 }
 
@@ -869,18 +1070,21 @@ fn disable_slot(
     Ok(())
 }
 
-fn address_device_default(
+fn address_device(
     info: &XhciInfo,
     cmd_ring: &mut CommandRingState,
     event_ring: &mut EventRingState,
     slot_id: u8,
     input_ctx_phys: u64,
+    bsr: bool,
 ) -> Result<(), &'static str> {
     let trb_phys = push_command_trb(
         cmd_ring,
         input_ctx_phys,
         0,
-        (TRB_TYPE_ADDRESS_DEVICE_CMD << 10) | (1 << 9) | ((slot_id as u32) << 24),
+        (TRB_TYPE_ADDRESS_DEVICE_CMD << 10)
+            | ((bsr as u32) << 9)
+            | ((slot_id as u32) << 24),
     );
     ring_host_doorbell(info);
 
@@ -893,8 +1097,29 @@ fn address_device_default(
         return Err("address device failed");
     }
 
-    println!("[xhci] slot {} entered default state (BSR=1)", slot_id);
+    println!(
+        "[xhci] slot {} address device complete bsr={}",
+        slot_id,
+        bsr as u8,
+    );
     Ok(())
+}
+
+fn update_ep0_max_packet_size(info: &XhciInfo, device: &PrimedDevice, max_packet_size0: u16) {
+    if max_packet_size0 == 0 {
+        return;
+    }
+
+    let ep0_ctx = device.input_ctx_virt + (info.context_size as u64 * 2);
+    unsafe {
+        let word = read_u32(ep0_ctx + 0x04);
+        write_u32(
+            ep0_ctx + 0x04,
+            (word & 0x0000_FFFF) | ((max_packet_size0 as u32) << 16),
+        );
+        write_u32(device.input_ctx_virt, 0);
+        write_u32(device.input_ctx_virt + 0x04, 0x0000_0003);
+    }
 }
 
 fn read_device_descriptor_header(
@@ -1032,6 +1257,317 @@ fn read_configuration_descriptor(
     Ok(config)
 }
 
+fn set_configuration(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    configuration_value: u8,
+) -> Result<(), &'static str> {
+    control_transfer_no_data(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        REQUEST_TYPE_OUT | REQUEST_TYPE_STANDARD | REQUEST_RECIPIENT_DEVICE,
+        SETUP_SET_CONFIGURATION,
+        configuration_value as u16,
+        0,
+    )?;
+    println!(
+        "[xhci] slot {} set configuration {}",
+        slot_id, configuration_value
+    );
+    Ok(())
+}
+
+fn set_boot_protocol(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    interface_number: u8,
+) -> Result<(), &'static str> {
+    control_transfer_no_data(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        REQUEST_TYPE_OUT | REQUEST_TYPE_CLASS | REQUEST_RECIPIENT_INTERFACE,
+        SETUP_SET_PROTOCOL,
+        0,
+        interface_number as u16,
+    )?;
+    Ok(())
+}
+
+fn set_idle(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    interface_number: u8,
+) -> Result<(), &'static str> {
+    control_transfer_no_data(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        REQUEST_TYPE_OUT | REQUEST_TYPE_CLASS | REQUEST_RECIPIENT_INTERFACE,
+        SETUP_SET_IDLE,
+        0,
+        interface_number as u16,
+    )?;
+    Ok(())
+}
+
+fn activate_hid_interface(
+    info: &XhciInfo,
+    cmd_ring: &mut CommandRingState,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    port_num: u8,
+    speed_id: u8,
+    hid: &HidInterface,
+    device: &mut PrimedDevice,
+) -> Result<HidDeviceState, &'static str> {
+    set_boot_protocol(
+        info,
+        event_ring,
+        slot_id,
+        &mut device.transfer_ring,
+        hid.number,
+    )?;
+    if hid.protocol == USB_HID_PROTOCOL_KEYBOARD {
+        let _ = set_idle(
+            info,
+            event_ring,
+            slot_id,
+            &mut device.transfer_ring,
+            hid.number,
+        );
+    }
+
+    let endpoint_dci = endpoint_dci(hid.endpoint_address);
+    if endpoint_dci <= CONTROL_ENDPOINT_DCI {
+        return Err("invalid HID interrupt endpoint");
+    }
+
+    let (report_ring_phys, report_ring_virt) =
+        alloc_zeroed_phys().ok_or("interrupt ring alloc failed")?;
+    let (report_buffer_phys, report_buffer_virt) =
+        alloc_zeroed_phys().ok_or("report buffer alloc failed")?;
+    unsafe {
+        init_link_trb(report_ring_phys, INTERRUPT_RING_TRBS, report_ring_phys);
+    }
+
+    configure_interrupt_endpoint(
+        info,
+        cmd_ring,
+        event_ring,
+        slot_id,
+        speed_id,
+        hid,
+        endpoint_dci,
+        report_ring_phys,
+        device,
+    )?;
+
+    let mut hid_state = HidDeviceState {
+        port_num,
+        slot_id,
+        protocol: hid.protocol,
+        interface_number: hid.number,
+        endpoint_address: hid.endpoint_address,
+        endpoint_dci,
+        report_request_len: interrupt_report_len(hid),
+        report_ring: TransferRingState {
+            phys: report_ring_phys,
+            virt: report_ring_virt,
+            enqueue_idx: 0,
+            cycle: true,
+        },
+        report_buffer_phys,
+        report_buffer_virt,
+        report_trb_phys: 0,
+        interval: hid.interval.max(1),
+        report_count: 0,
+        error_count: 0,
+        last_report_len: 0,
+        last_completion_code: 0,
+    };
+    queue_interrupt_transfer_by_base(info.db_base, &mut hid_state)?;
+
+    Ok(hid_state)
+}
+
+fn configure_interrupt_endpoint(
+    info: &XhciInfo,
+    cmd_ring: &mut CommandRingState,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    speed_id: u8,
+    hid: &HidInterface,
+    endpoint_dci: u8,
+    report_ring_phys: u64,
+    device: &mut PrimedDevice,
+) -> Result<(), &'static str> {
+    unsafe {
+        zero_page(device.input_ctx_virt);
+
+        let output_slot_ctx = device.output_ctx_virt + info.context_size as u64;
+        let input_slot_ctx = device.input_ctx_virt + info.context_size as u64;
+        copy_context(output_slot_ctx, input_slot_ctx, info.context_size);
+
+        let output_ep0_ctx = device.output_ctx_virt + (info.context_size as u64 * 2);
+        let input_ep0_ctx = device.input_ctx_virt + (info.context_size as u64 * 2);
+        copy_context(output_ep0_ctx, input_ep0_ctx, info.context_size);
+
+        write_u32(device.input_ctx_virt, 0);
+        write_u32(
+            device.input_ctx_virt + 0x04,
+            (1 << 0) | (1 << endpoint_dci),
+        );
+
+        let slot_ctx_entries = read_u32(input_slot_ctx) & !(0x1F << 27);
+        write_u32(
+            input_slot_ctx,
+            slot_ctx_entries | ((endpoint_dci.max(1) as u32) << 27),
+        );
+
+        let ep_ctx = device.input_ctx_virt + ((endpoint_dci as u64 + 1) * info.context_size as u64);
+        write_u32(
+            ep_ctx,
+            (interrupt_interval(speed_id, hid.interval) as u32) << 16,
+        );
+        write_u32(
+            ep_ctx + 0x04,
+            ((hid.max_packet_size as u32) << 16) | (7 << 3) | (3 << 1),
+        );
+        write_u64(ep_ctx + 0x08, report_ring_phys | 1);
+        write_u32(
+            ep_ctx + 0x10,
+            interrupt_report_len(hid) as u32,
+        );
+    }
+
+    let trb_phys = push_command_trb(
+        cmd_ring,
+        device.input_ctx_phys,
+        0,
+        (TRB_TYPE_CONFIGURE_ENDPOINT_CMD << 10) | ((slot_id as u32) << 24),
+    );
+    ring_host_doorbell(info);
+
+    let completion = wait_for_command_completion(info, event_ring, trb_phys)?;
+    if completion.completion_code != COMPLETION_SUCCESS {
+        println!(
+            "[xhci] configure endpoint failed slot={} code={} ptr={:#x}",
+            slot_id, completion.completion_code, completion.ptr,
+        );
+        return Err("configure endpoint failed");
+    }
+
+    Ok(())
+}
+
+fn control_transfer_in(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    buffer_phys: u64,
+    buffer_virt: u64,
+    request_type: u8,
+    request: u8,
+    value: u16,
+    index: u16,
+    len: usize,
+) -> Result<Vec<u8>, &'static str> {
+    if len == 0 || len > DESCRIPTOR_BUFFER_BYTES || len > u16::MAX as usize {
+        return Err("control transfer length unsupported");
+    }
+
+    let setup = usb_setup_packet(request_type, request, value, index, len as u16);
+
+    let _setup_phys = push_transfer_trb(ring, setup, 8, (TRB_TYPE_SETUP_STAGE << 10) | TRB_IDT | TRB_TRT_IN);
+    let _data_phys = push_transfer_trb(
+        ring,
+        buffer_phys,
+        len as u32,
+        (TRB_TYPE_DATA_STAGE << 10) | TRB_DIR_IN,
+    );
+    let status_phys = push_transfer_trb(ring, 0, 0, (TRB_TYPE_STATUS_STAGE << 10) | TRB_IOC);
+
+    ring_device_doorbell(info, slot_id, CONTROL_ENDPOINT_DCI);
+
+    let transfer =
+        wait_for_transfer_completion(info, event_ring, slot_id, CONTROL_ENDPOINT_DCI, status_phys)?;
+    if !completion_is_success_like(transfer.completion_code) {
+        println!(
+            "[xhci] control IN failed slot={} req={:#x} value={:#x} code={} ptr={:#x} residual={}",
+            slot_id,
+            request,
+            value,
+            transfer.completion_code,
+            transfer.ptr,
+            transfer.residual,
+        );
+        return Err("control IN transfer failed");
+    }
+
+    let mut bytes = Vec::with_capacity(len);
+    bytes.resize(len, 0);
+    for (idx, byte) in bytes.iter_mut().enumerate() {
+        *byte = unsafe { core::ptr::read_volatile((buffer_virt + idx as u64) as *const u8) };
+    }
+
+    Ok(bytes)
+}
+
+fn control_transfer_no_data(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    request_type: u8,
+    request: u8,
+    value: u16,
+    index: u16,
+) -> Result<(), &'static str> {
+    let setup = usb_setup_packet(request_type, request, value, index, 0);
+    let _setup_phys = push_transfer_trb(
+        ring,
+        setup,
+        8,
+        (TRB_TYPE_SETUP_STAGE << 10) | TRB_IDT | TRB_TRT_NONE,
+    );
+    let status_phys = push_transfer_trb(
+        ring,
+        0,
+        0,
+        (TRB_TYPE_STATUS_STAGE << 10) | TRB_IOC | TRB_DIR_IN,
+    );
+
+    ring_device_doorbell(info, slot_id, CONTROL_ENDPOINT_DCI);
+
+    let transfer =
+        wait_for_transfer_completion(info, event_ring, slot_id, CONTROL_ENDPOINT_DCI, status_phys)?;
+    if !completion_is_success_like(transfer.completion_code) {
+        println!(
+            "[xhci] control no-data failed slot={} req={:#x} value={:#x} code={} ptr={:#x}",
+            slot_id,
+            request,
+            value,
+            transfer.completion_code,
+            transfer.ptr,
+        );
+        return Err("control transfer failed");
+    }
+
+    Ok(())
+}
+
 fn read_descriptor(
     info: &XhciInfo,
     event_ring: &mut EventRingState,
@@ -1045,56 +1581,19 @@ fn read_descriptor(
     index: u16,
     len: usize,
 ) -> Result<Vec<u8>, &'static str> {
-    if len == 0 || len > DESCRIPTOR_BUFFER_BYTES || len > u16::MAX as usize {
-        return Err("descriptor length unsupported");
-    }
-
-    let setup = usb_setup_packet(
+    control_transfer_in(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        buffer_phys,
+        buffer_virt,
         REQUEST_TYPE_IN | REQUEST_TYPE_STANDARD | recipient,
         SETUP_GET_DESCRIPTOR,
         (descriptor_type << 8) | descriptor_index as u16,
         index,
-        len as u16,
-    );
-
-    let _setup_phys = push_transfer_trb(
-        ring,
-        setup,
-        8,
-        (TRB_TYPE_SETUP_STAGE << 10) | (1 << 6) | (3 << 16),
-    );
-    let _data_phys = push_transfer_trb(
-        ring,
-        buffer_phys,
-        len as u32,
-        (TRB_TYPE_DATA_STAGE << 10) | (1 << 16),
-    );
-    let status_phys = push_transfer_trb(ring, 0, 0, (TRB_TYPE_STATUS_STAGE << 10) | (1 << 5));
-
-    ring_device_doorbell(info, slot_id, CONTROL_ENDPOINT_DCI);
-
-    let transfer =
-        wait_for_transfer_completion(info, event_ring, slot_id, CONTROL_ENDPOINT_DCI, status_phys)?;
-    if transfer.completion_code != COMPLETION_SUCCESS {
-        println!(
-            "[xhci] descriptor read failed slot={} type={:#x} idx={} code={} ptr={:#x} residual={}",
-            slot_id,
-            descriptor_type,
-            descriptor_index,
-            transfer.completion_code,
-            transfer.ptr,
-            transfer.residual,
-        );
-        return Err("descriptor read failed");
-    }
-
-    let mut bytes = Vec::with_capacity(len);
-    bytes.resize(len, 0);
-    for (idx, byte) in bytes.iter_mut().enumerate() {
-        *byte = unsafe { core::ptr::read_volatile((buffer_virt + idx as u64) as *const u8) };
-    }
-
-    Ok(bytes)
+        len,
+    )
 }
 
 fn parse_boot_hid_interfaces(config: &[u8]) -> Vec<HidInterface> {
@@ -1198,6 +1697,32 @@ fn hid_protocol_name(protocol: u8) -> &'static str {
     }
 }
 
+fn interrupt_report_len(hid: &HidInterface) -> usize {
+    match hid.protocol {
+        USB_HID_PROTOCOL_KEYBOARD => BOOT_KEYBOARD_REPORT_BYTES,
+        USB_HID_PROTOCOL_MOUSE => BOOT_MOUSE_REPORT_BYTES.min(hid.max_packet_size as usize).max(3),
+        _ => hid.max_packet_size as usize,
+    }
+}
+
+fn endpoint_dci(endpoint_address: u8) -> u8 {
+    let ep_num = endpoint_address & 0x0f;
+    if ep_num == 0 {
+        CONTROL_ENDPOINT_DCI
+    } else {
+        ep_num * 2 + ((endpoint_address >> 7) & 0x1)
+    }
+}
+
+fn interrupt_interval(speed_id: u8, interval: u8) -> u8 {
+    let raw = interval.max(1);
+    if speed_id >= 3 {
+        raw.saturating_sub(1).min(15)
+    } else {
+        raw.saturating_sub(1).min(15)
+    }
+}
+
 fn default_control_mps(speed_id: u8) -> u16 {
     match speed_id {
         1 | 2 => 8,
@@ -1208,11 +1733,19 @@ fn default_control_mps(speed_id: u8) -> u16 {
 }
 
 fn read_portsc(info: &XhciInfo, port_num: u8) -> u32 {
-    unsafe { read_u32(portsc_addr(info, port_num)) }
+    read_portsc_by_op_base(info.op_base, port_num)
 }
 
 fn portsc_addr(info: &XhciInfo, port_num: u8) -> u64 {
-    info.op_base + OP_PORTSC_BASE + 0x10 * (port_num as u64 - 1)
+    portsc_addr_by_op_base(info.op_base, port_num)
+}
+
+fn portsc_addr_by_op_base(op_base: u64, port_num: u8) -> u64 {
+    op_base + OP_PORTSC_BASE + 0x10 * (port_num as u64 - 1)
+}
+
+fn read_portsc_by_op_base(op_base: u64, port_num: u8) -> u32 {
+    unsafe { read_u32(portsc_addr_by_op_base(op_base, port_num)) }
 }
 
 fn port_speed_id(portsc: u32) -> u8 {
@@ -1220,15 +1753,21 @@ fn port_speed_id(portsc: u32) -> u8 {
 }
 
 fn clear_port_changes(info: &XhciInfo, port_num: u8) {
-    let portsc = read_portsc(info, port_num);
+    clear_port_changes_by_op_base(info.op_base, port_num);
+}
+
+fn clear_port_changes_by_op_base(op_base: u64, port_num: u8) {
+    let portsc = read_portsc_by_op_base(op_base, port_num);
     let change_bits = portsc & PORTSC_CHANGE_BITS;
-    if change_bits != 0 {
-        unsafe {
-            write_u32(
-                portsc_addr(info, port_num),
-                (portsc & PORTSC_PP) | change_bits,
-            );
-        }
+    if change_bits == 0 {
+        return;
+    }
+
+    unsafe {
+        write_u32(
+            portsc_addr_by_op_base(op_base, port_num),
+            (portsc & PORTSC_PP) | change_bits,
+        );
     }
 }
 
@@ -1325,7 +1864,7 @@ fn wait_for_transfer_completion(
 
                     if completion.slot_id == slot_id && completion.endpoint_id == endpoint_id {
                         if completion.ptr == expected_trb_phys
-                            || completion.completion_code != COMPLETION_SUCCESS
+                            || !completion_is_success_like(completion.completion_code)
                         {
                             return Ok(completion);
                         }
@@ -1484,6 +2023,10 @@ fn wait_for_command_completion(
 }
 
 fn next_event(info: &XhciInfo, ring: &mut EventRingState) -> Option<EventTrb> {
+    next_event_by_base(info.rt_base, ring)
+}
+
+fn next_event_by_base(rt_base: u64, ring: &mut EventRingState) -> Option<EventTrb> {
     let trb_virt = ring.virt + ring.dequeue_idx as u64 * 16;
     let control = unsafe { read_u32(trb_virt + 12) };
     if (control & TRB_CYCLE != 0) != ring.cycle {
@@ -1495,11 +2038,11 @@ fn next_event(info: &XhciInfo, ring: &mut EventRingState) -> Option<EventTrb> {
         status: unsafe { read_u32(trb_virt + 8) },
         control,
     };
-    advance_event_ring(info, ring);
+    advance_event_ring_by_base(rt_base, ring);
     Some(event)
 }
 
-fn advance_event_ring(info: &XhciInfo, ring: &mut EventRingState) {
+fn advance_event_ring_by_base(rt_base: u64, ring: &mut EventRingState) {
     ring.dequeue_idx += 1;
     if ring.dequeue_idx == EVENT_RING_TRBS {
         ring.dequeue_idx = 0;
@@ -1508,8 +2051,137 @@ fn advance_event_ring(info: &XhciInfo, ring: &mut EventRingState) {
 
     let erdp = ring.phys + ring.dequeue_idx as u64 * 16;
     unsafe {
-        write_u64(info.rt_base + RT_IR0 + IR0_ERDP, erdp | ERDP_EHB_CLEAR);
+        write_u64(rt_base + RT_IR0 + IR0_ERDP, erdp | ERDP_EHB_CLEAR);
     }
+}
+
+fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
+    let completion = TransferCompletion {
+        ptr: event.parameter & !0xFu64,
+        completion_code: event.completion_code(),
+        slot_id: event.slot_id(),
+        endpoint_id: event.endpoint_id(),
+        residual: event.residual(),
+    };
+
+    let Some(device) = runtime.devices.iter_mut().find(|device| {
+        device.slot_id == completion.slot_id && device.endpoint_dci == completion.endpoint_id
+    }) else {
+        println!(
+            "[xhci] runtime transfer for unknown device slot={} ep={} ptr={:#x} code={}",
+            completion.slot_id,
+            completion.endpoint_id,
+            completion.ptr,
+            completion.completion_code,
+        );
+        return;
+    };
+
+    if completion.ptr != device.report_trb_phys {
+        device.error_count = device.error_count.saturating_add(1);
+        device.last_completion_code = completion.completion_code;
+        runtime.last_runtime_note = format!(
+            "slot {} ep {} ptr mismatch",
+            completion.slot_id,
+            completion.endpoint_id,
+        );
+        println!(
+            "[xhci] runtime transfer ptr mismatch slot={} ep={} got={:#x} expected={:#x}",
+            completion.slot_id,
+            completion.endpoint_id,
+            completion.ptr,
+            device.report_trb_phys,
+        );
+        return;
+    }
+
+    device.last_completion_code = completion.completion_code;
+    if !completion_is_success_like(completion.completion_code) {
+        device.error_count = device.error_count.saturating_add(1);
+        runtime.last_runtime_note = format!(
+            "slot {} ep {} code {}",
+            completion.slot_id,
+            completion.endpoint_id,
+            completion.completion_code,
+        );
+        println!(
+            "[xhci] HID transfer failed slot={} ep={} code={}",
+            completion.slot_id,
+            completion.endpoint_id,
+            completion.completion_code,
+        );
+        return;
+    }
+
+    let actual_len = device
+        .report_request_len
+        .saturating_sub(completion.residual as usize);
+    device.report_count = device.report_count.saturating_add(1);
+    device.last_report_len = actual_len;
+    runtime.last_runtime_note = format!(
+        "slot {} {} {}B",
+        device.slot_id,
+        hid_protocol_name(device.protocol),
+        actual_len,
+    );
+    dispatch_hid_report(device, actual_len);
+
+    if let Err(err) = queue_interrupt_transfer_by_base(runtime.db_base, device) {
+        device.error_count = device.error_count.saturating_add(1);
+        runtime.last_runtime_note = format!(
+            "slot {} ep {} requeue {}",
+            device.slot_id,
+            device.endpoint_dci,
+            err,
+        );
+        println!(
+            "[xhci] failed to requeue HID transfer slot={} ep={} err={}",
+            device.slot_id, device.endpoint_dci, err
+        );
+    }
+}
+
+fn dispatch_hid_report(device: &mut HidDeviceState, actual_len: usize) {
+    let mut report = [0u8; BOOT_KEYBOARD_REPORT_BYTES];
+    let len = actual_len.min(device.report_request_len).min(report.len());
+    for (idx, byte) in report.iter_mut().take(len).enumerate() {
+        *byte = unsafe { core::ptr::read_volatile((device.report_buffer_virt + idx as u64) as *const u8) };
+    }
+
+    match device.protocol {
+        USB_HID_PROTOCOL_KEYBOARD if len >= BOOT_KEYBOARD_REPORT_BYTES => {
+            crate::keyboard::handle_usb_boot_report(&report);
+        }
+        USB_HID_PROTOCOL_MOUSE if len >= 3 => {
+            crate::mouse::handle_usb_boot_report(&report[..len]);
+        }
+        _ => {}
+    }
+}
+
+fn queue_interrupt_transfer_by_base(
+    db_base: u64,
+    device: &mut HidDeviceState,
+) -> Result<(), &'static str> {
+    if device.report_request_len == 0 {
+        return Err("interrupt report length is zero");
+    }
+
+    device.report_trb_phys = push_transfer_trb(
+        &mut device.report_ring,
+        device.report_buffer_phys,
+        device.report_request_len as u32,
+        (TRB_TYPE_NORMAL << 10) | TRB_IOC | TRB_DIR_IN,
+    );
+    fence(Ordering::SeqCst);
+    unsafe {
+        write_u32(db_base + device.slot_id as u64 * 4, device.endpoint_dci as u32);
+    }
+    Ok(())
+}
+
+fn completion_is_success_like(code: u8) -> bool {
+    code == COMPLETION_SUCCESS || code == COMPLETION_SHORT_PACKET
 }
 
 fn find_controller() -> Option<(Location, Header, u64)> {
@@ -1544,6 +2216,14 @@ unsafe fn write_u32(addr: u64, val: u32) {
 
 unsafe fn write_u64(addr: u64, val: u64) {
     core::ptr::write_volatile(addr as *mut u64, val)
+}
+
+unsafe fn zero_page(addr: u64) {
+    core::ptr::write_bytes(addr as *mut u8, 0, 4096);
+}
+
+unsafe fn copy_context(src: u64, dst: u64, len: usize) {
+    core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, len);
 }
 
 fn scan_extended_caps(base: u64, mut off: u64) -> (Option<LegacySupport>, Vec<SupportedProtocol>) {

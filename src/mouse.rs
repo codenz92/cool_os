@@ -28,6 +28,8 @@ impl MouseState {
 }
 
 static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
+const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
+static USB_MOUSE_LOG_COUNT: AtomicI32 = AtomicI32::new(0);
 
 /// True when the mouse was detected as an IntelliMouse (4-byte packets).
 static INTELLIMOUSE: AtomicBool = AtomicBool::new(false);
@@ -86,15 +88,7 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
     let left  = b0 & 0x01 != 0;
     let right = b0 & 0x02 != 0;
 
-    {
-        let mut m = MOUSE.lock();
-        let w = crate::framebuffer::width().saturating_sub(1);
-        let h = crate::framebuffer::height().saturating_sub(1);
-        m.x = ((m.x as i32 + dx).max(0) as usize).min(w);
-        m.y = ((m.y as i32 - dy).max(0) as usize).min(h);
-        m.left  = left;
-        m.right = right;
-    }
+    apply_motion(dx, -dy, left, right);
 
     // Accumulate scroll-wheel delta from byte 3 in IntelliMouse mode.
     // PS/2 Z-axis is 4-bit two's complement: positive = scroll up, negative = scroll down.
@@ -113,6 +107,54 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
 
     // Tell the compositor a frame is needed.
     crate::wm::request_repaint();
+}
+
+/// Process a USB HID boot-protocol mouse report (3 or 4 bytes).
+pub fn handle_usb_boot_report(report: &[u8]) {
+    if report.len() < 3 {
+        return;
+    }
+
+    let buttons = report[0];
+    let dx = report[1] as i8 as i32;
+    let dy = report[2] as i8 as i32;
+    let left = buttons & 0x01 != 0;
+    let right = buttons & 0x02 != 0;
+
+    if USB_DEBUG_LOGS
+        && (dx != 0 || dy != 0 || buttons != 0 || report.get(3).copied().unwrap_or(0) != 0)
+        && USB_MOUSE_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 8
+    {
+        crate::println!(
+            "[usb-mouse] buttons={:#x} dx={} dy={} wheel={}",
+            buttons,
+            dx,
+            dy,
+            report.get(3).copied().unwrap_or(0) as i8,
+        );
+    }
+
+    // HID boot mouse reports use signed relative deltas; positive Y moves down.
+    apply_motion(dx, dy, left, right);
+
+    if report.len() >= 4 {
+        let wheel = report[3] as i8 as i32;
+        if wheel != 0 {
+            SCROLL_ACCUM.fetch_sub(wheel, Ordering::Relaxed);
+        }
+    }
+
+    crate::wm::request_repaint();
+}
+
+fn apply_motion(dx: i32, dy: i32, left: bool, right: bool) {
+    let mut m = MOUSE.lock();
+    let w = crate::framebuffer::width().saturating_sub(1);
+    let h = crate::framebuffer::height().saturating_sub(1);
+    m.x = ((m.x as i32 + dx).max(0) as usize).min(w);
+    m.y = ((m.y as i32 + dy).max(0) as usize).min(h);
+    m.left = left;
+    m.right = right;
 }
 
 // ── Hardware init ─────────────────────────────────────────────────────────────

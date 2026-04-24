@@ -21,7 +21,9 @@ pub mod xhci;
 static USB_STATUS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn status_lines() -> Vec<String> {
-    USB_STATUS.lock().clone()
+    let mut lines = USB_STATUS.lock().clone();
+    lines.extend(xhci::runtime_status_lines());
+    lines
 }
 
 /// Called once from `kernel_main` after the VMM and interrupt controller are up.
@@ -29,4 +31,8 @@ pub fn status_lines() -> Vec<String> {
 /// (the PS/2 path still owns input).
 pub fn init() {
     *USB_STATUS.lock() = xhci::probe();
+}
+
+pub fn poll() {
+    xhci::poll();
 }

@@ -75,10 +75,18 @@ impl SysMonApp {
 
         self.put_str(stride, row, "USB:", WHITE);
         row += 1;
-        if let Some(line) = crate::usb::status_lines().into_iter().next() {
-            self.put_str(stride, row, &line, LIGHT_CYAN);
-        } else {
+        let usb_lines = crate::usb::status_lines();
+        if usb_lines.is_empty() {
             self.put_str(stride, row, "USB: no probe data", LIGHT_GRAY);
+        } else {
+            let max_rows = SYSMON_H as usize / CHAR_H_SMALL;
+            for line in usb_lines {
+                if row >= max_rows {
+                    break;
+                }
+                self.put_str(stride, row, &line, LIGHT_CYAN);
+                row += 1;
+            }
         }
     }
 
