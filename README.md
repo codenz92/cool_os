@@ -265,7 +265,7 @@ faults still panic.
 | 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
 | 12 | ELF loader — real programs run from disk | **Done** |
 | 13 | Pipes + shared memory + IPC | **Done** |
-| 14 | USB HID — real hardware input | Planned |
+| 14 | USB HID — real hardware input | In progress |
 | 15 | Networking — virtio-net, TCP/IP | Planned |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

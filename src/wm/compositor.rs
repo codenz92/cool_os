@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::apps::{ColorPickerApp, FileManagerApp, SysMonApp, TerminalApp, TextViewerApp};
-use crate::framebuffer::{BLACK, CHAR_W, WHITE};
+use crate::framebuffer::{BLACK, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -27,9 +27,6 @@ const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 // ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
 // Taskbar / shell
-const TASKBAR_BG: u32 = 0x00_00_07_14; // #000714  deep CRT navy-black
-const TASKBAR_BORD: u32 = 0x00_00_66_CC; // #0066CC  phosphor blue hairline
-
 // Accent (CRT phosphor blue)
 const ACCENT: u32 = 0x00_00_99_FF; // #0099FF  bright phosphor blue
 const ACCENT_HOV: u32 = 0x00_33_BB_FF; // #33BBFF  lit hover
@@ -60,7 +57,6 @@ const DESK_BL: u32 = 0x00_00_01_06; // bottom-left
 const DESK_BR: u32 = 0x00_00_02_0A; // bottom-right
                                     // CRT phosphor glow toward screen centre
 const BLOOM_1: u32 = 0x00_00_44_AA; // primary phosphor blue bloom
-const BLOOM_2: u32 = 0x00_00_22_66; // secondary deep bloom
 
 // Desktop icons — CRT phosphor colour set
 const ICON_TERM_BG: u32 = 0x00_00_16_08; // terminal — dark green-black
@@ -2083,18 +2079,6 @@ lazy_static! {
 // ── Shadow-buffer helpers ─────────────────────────────────────────────────────
 
 #[inline(always)]
-fn s_get(s: &[u32], sw: usize, x: i32, y: i32) -> u32 {
-    if x >= 0 && y >= 0 {
-        let (x, y) = (x as usize, y as usize);
-        let sh = if sw > 0 { s.len() / sw } else { 0 };
-        if x < sw && y < sh {
-            return s[y * sw + x];
-        }
-    }
-    0
-}
-
-#[inline(always)]
 fn s_put(s: &mut [u32], sw: usize, sh: usize, x: i32, y: i32, color: u32) {
     if x >= 0 && y >= 0 {
         let (x, y) = (x as usize, y as usize);
@@ -2144,43 +2128,6 @@ fn s_fill_alpha(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, shadow
             let b = (p & 0xFF).saturating_sub(amount);
             s[idx] = (r << 16) | (g << 8) | b;
         }
-    }
-}
-
-fn s_draw_char(s: &mut [u32], sw: usize, x: i32, y: i32, c: char, fg: u32, bg: u32) {
-    use font8x8::UnicodeFonts;
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    use crate::framebuffer::FONT_SCALE;
-    for (gy, &byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            let color = if byte & (1 << bit) != 0 { fg } else { bg };
-            for sy in 0..FONT_SCALE {
-                for sx in 0..FONT_SCALE {
-                    let px = x + (bit * FONT_SCALE + sx) as i32;
-                    let py = y + (gy * FONT_SCALE + sy) as i32;
-                    if px >= 0 && py >= 0 {
-                        let (px, py) = (px as usize, py as usize);
-                        if px < sw && py < sh {
-                            s[py * sw + px] = color;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn s_draw_str(s: &mut [u32], sw: usize, x: i32, y: i32, text: &str, fg: u32, bg: u32, max_x: i32) {
-    let mut cx = x;
-    for c in text.chars() {
-        if cx + CHAR_W as i32 > max_x {
-            break;
-        }
-        s_draw_char(s, sw, cx, y, c, fg, bg);
-        cx += CHAR_W as i32;
     }
 }
 

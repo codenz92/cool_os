@@ -43,11 +43,6 @@ impl ScrollState {
         self.offset = self.offset.clamp(0, max);
     }
 
-    pub fn scroll_by(&mut self, delta: i32, view_h: i32) {
-        self.offset += delta;
-        self.clamp(view_h);
-    }
-
     /// Returns `(thumb_y, thumb_h)` in track-local coordinates (pixels from track top).
     pub fn thumb_rect(&self, view_h: i32, track_h: i32) -> (i32, i32) {
         if self.content_h <= 0 || view_h <= 0 || !self.needs_scrollbar(view_h) {

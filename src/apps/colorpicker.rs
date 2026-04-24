@@ -15,7 +15,6 @@ const GRID_Y: i32 = 16;
 const COLS: i32 = 8;
 
 const CHAR_W: usize = 8;
-const CHAR_H: usize = 8;
 
 /// True RGB colors matching the classic EGA/VGA 16-colour palette.
 const COLORS: [(&str, u32); 16] = [

@@ -347,12 +347,13 @@ All Phase 13 items done.
 
 **Goal:** Input works on real hardware, not just in QEMU with PS/2 emulation.
 
-- [ ] Write an xHCI host controller driver — detect the MMIO BAR via the PCI config
-      space, initialise the command ring, event ring, and transfer rings.
-- [ ] Implement USB enumeration — detect connected devices, read descriptors,
-      assign addresses.
-- [ ] Write a USB HID class driver — parse HID report descriptors for keyboards and
-      mice; feed events into the existing keyboard/mouse state.
+- [x] Write an xHCI host controller driver — detect the MMIO BAR via the PCI config
+      space, initialise the command ring, event ring, and default control transfer rings.
+- [x] Implement USB enumeration — detect connected devices, read device/configuration
+      descriptors, and identify boot HID keyboard/mouse interfaces plus interrupt IN
+      endpoints.
+- [ ] Finish the USB HID runtime — switch devices into a usable protocol, configure
+      interrupt endpoints, and feed keyboard/mouse events into the existing input path.
 - [ ] Remove the PS/2 driver dependency for systems that do not support it.
 
 **Exit criteria:** coolOS boots on real x86_64 hardware and accepts keyboard and

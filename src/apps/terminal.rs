@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use font8x8::UnicodeFonts;
 
-use crate::framebuffer::{BLACK, CHAR_W, CHAR_H, LIGHT_GRAY};
+use crate::framebuffer::{BLACK, LIGHT_GRAY};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const TERM_W: i32 = 640;
@@ -77,7 +77,7 @@ impl TerminalApp {
         let mut words = input.split_whitespace();
         match words.next() {
             Some("help") => {
-                self.print_str("Commands: help clear reboot echo exec ipc keydemo term info uptime\n");
+                self.print_str("Commands: help clear reboot echo exec ipc keydemo term info uptime usb\n");
             }
             Some("clear") => {
                 for b in self.window.buf.iter_mut() { *b = BG; }
@@ -210,6 +210,17 @@ impl TerminalApp {
                     self.print_str("CPU: ");
                     self.print_str(v.as_str());
                     self.print_char('\n');
+                }
+            }
+            Some("usb") => {
+                let lines = crate::usb::status_lines();
+                if lines.is_empty() {
+                    self.print_str("USB: no probe data\n");
+                } else {
+                    for line in lines {
+                        self.print_str(&line);
+                        self.print_char('\n');
+                    }
                 }
             }
             Some(unknown) => {

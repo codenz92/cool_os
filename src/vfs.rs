@@ -72,15 +72,13 @@ enum PipeReadResult {
 }
 
 struct SharedMemRegion {
-    id: usize,
     frames: Vec<PhysFrame>,
-    size: usize,
     refcount: usize,
 }
 
 impl SharedMemRegion {
-    fn new(id: usize, frames: Vec<PhysFrame>, size: usize) -> Self {
-        Self { id, frames, size, refcount: 1 }
+    fn new(frames: Vec<PhysFrame>) -> Self {
+        Self { frames, refcount: 1 }
     }
 }
 
@@ -552,7 +550,7 @@ pub fn vfs_shmem_create(len: usize) -> usize {
     while regions.len() <= id {
         regions.push(None);
     }
-    regions[id] = Some(SharedMemRegion::new(id, frames, pages * 4096));
+    regions[id] = Some(SharedMemRegion::new(frames));
 
     id
 }
@@ -589,14 +587,4 @@ pub fn vfs_shmem_map(id: usize, pml4: PhysFrame) -> u64 {
     };
 
     addr
-}
-
-pub fn vfs_shmem_drop_ref(id: usize) {
-    let mut regions = SHMEM_REGIONS.lock();
-    if let Some(Some(region)) = regions.get_mut(id) {
-        region.refcount = region.refcount.saturating_sub(1);
-        if region.refcount == 0 {
-            regions[id] = None;
-        }
-    }
 }

@@ -12,15 +12,12 @@ pub const FILEMAN_W: i32 = 640;
 pub const FILEMAN_H: i32 = 440;
 
 const CW: usize = 8;
-const CH: usize = 8;
 const TOOLBAR_H: i32 = 24;
 const COL_HDR_H: i32 = 16;
 const NAME_COL_W: i32 = 260;
 const SIZE_COL_W: i32 = 80;
-const TYPE_COL_W: i32 = 90;
 const ROW_H: i32 = 16;
 
-const COL_NAME: usize = 0;
 const COL_SIZE: usize = NAME_COL_W as usize;
 const COL_TYPE: usize = NAME_COL_W as usize + SIZE_COL_W as usize;
 
@@ -343,7 +340,7 @@ impl FileManagerApp {
                 } else if arrow_y == py + 2 {
                     gx == 1 || gx == 2 || gx == 3 || gx == 4 || gx == 5 || gx == 6
                 } else if arrow_y == py + 3 {
-                    gx >= 0 && gx <= 7
+                    gx <= 7
                 } else {
                     false
                 };
@@ -428,45 +425,6 @@ impl FileManagerApp {
             let idx = separator_y * stride + px;
             if idx < self.window.buf.len() {
                 self.window.buf[idx] = DARK_GRAY;
-            }
-        }
-    }
-
-    fn put_folder_icon(&mut self, px: usize, py: usize) {
-        let stride = FILEMAN_W as usize;
-        for gy in 0..16 {
-            for gx in 0..16 {
-                let on = match gy {
-                    0 if gx >= 4 && gx <= 9 => true,
-                    1..=2 if gx == 2 || gx == 11 => true,
-                    3..=12 if gx >= 1 && gx <= 12 => gx != 1,
-                    13..=14 if gx >= 0 && gx <= 13 => gx != 13,
-                    15 if gx >= 0 && gx <= 14 => true,
-                    _ => false,
-                };
-                let color = if on { LIGHT_CYAN } else { BLACK };
-                let idx = (py + gy) * stride + px + gx;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
-            }
-        }
-    }
-
-    fn put_file_icon(&mut self, px: usize, py: usize) {
-        let stride = FILEMAN_W as usize;
-        for gy in 0..16 {
-            for gx in 0..16 {
-                let on = match gy {
-                    0 | 15 => gx >= 2 && gx <= 13,
-                    1..=14 => gx == 2 || gx == 13,
-                    _ => false,
-                };
-                let color = if on { LIGHT_GRAY } else { BLACK };
-                let idx = (py + gy) * stride + px + gx;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
             }
         }
     }

@@ -1,5 +1,5 @@
 use crate::framebuffer::{
-    BLACK, CHAR_H, CHAR_W, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
+    BLACK, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
 };
 use crate::wm::window::Window;
 /// System Monitor — shows CPU vendor, heap usage, and uptime.
@@ -71,6 +71,15 @@ impl SysMonApp {
         let mut line = NumberLine::new();
         line.push_u64(counter);
         self.put_str(stride, row, line.as_str(), LIGHT_CYAN);
+        row += 2;
+
+        self.put_str(stride, row, "USB:", WHITE);
+        row += 1;
+        if let Some(line) = crate::usb::status_lines().into_iter().next() {
+            self.put_str(stride, row, &line, LIGHT_CYAN);
+        } else {
+            self.put_str(stride, row, "USB: no probe data", LIGHT_GRAY);
+        }
     }
 
     fn put_str(&mut self, stride: usize, text_row: usize, s: &str, color: u32) {

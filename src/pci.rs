@@ -56,8 +56,6 @@ pub struct Header {
     pub class: u8,
     pub subclass: u8,
     pub prog_if: u8,
-    pub revision: u8,
-    pub header_type: u8,
 }
 
 impl Header {
@@ -70,12 +68,9 @@ impl Header {
         let device_id = (id >> 16) as u16;
 
         let class_word = read32(loc, 0x08);
-        let revision = class_word as u8;
         let prog_if = (class_word >> 8) as u8;
         let subclass = (class_word >> 16) as u8;
         let class = (class_word >> 24) as u8;
-
-        let header_type = ((read32(loc, 0x0C) >> 16) & 0xFF) as u8;
 
         Some(Header {
             vendor_id,
@@ -83,8 +78,6 @@ impl Header {
             class,
             subclass,
             prog_if,
-            revision,
-            header_type,
         })
     }
 }
