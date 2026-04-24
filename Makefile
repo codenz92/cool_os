@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-usb-init build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-usb-init smoke-hotplug-usb-init build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -105,6 +105,11 @@ smoke-usb-init: build-usb-init
 		--expect "[xhci] active init ready" \
 		--expect "[input] USB keyboard detected; PS/2 keyboard fallback disabled" \
 		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled"
+
+smoke-hotplug-usb-init: build-usb-init
+	python3 $(CURDIR)/scripts/qemu_hotplug_smoke.py \
+		--bios "$(USB_INIT_BIOS)" \
+		--fsimg "$(USB_INIT_FSIMG)"
 
 build:
 	cargo build --release --target $(TARGET) \

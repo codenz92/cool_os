@@ -38,7 +38,7 @@ pub fn init_pit(hz: u32) {
 ///   IRQ0 (timer), IRQ2 (PIC2 cascade).
 /// IRQ1 (PS/2 keyboard) and IRQ12 (PS/2 mouse) stay masked until their
 /// respective fallbacks are explicitly enabled by `keyboard::enable_ps2_fallback()`
-/// and `mouse::init_ps2()`. All other IRQs — including IRQ14/IRQ15 (IDE) —
+/// and `mouse::enable_ps2_fallback()`. All other IRQs — including IRQ14/IRQ15 (IDE) —
 /// are masked so that unhandled interrupts cannot reach the CPU and trigger a #GP.
 pub fn mask_unused_irqs() {
     use x86_64::instructions::port::Port;

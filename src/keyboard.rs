@@ -54,10 +54,24 @@ pub fn pop() -> Option<char> {
 
 /// Enable the PS/2 keyboard IRQ as a fallback when no USB keyboard is active.
 pub fn enable_ps2_fallback() {
+    set_ps2_fallback_mask(false);
+}
+
+/// Disable the PS/2 keyboard IRQ when USB keyboard input is active.
+pub fn disable_ps2_fallback() {
+    set_ps2_fallback_mask(true);
+}
+
+fn set_ps2_fallback_mask(masked: bool) {
     unsafe {
         let mut pic1_mask: Port<u8> = Port::new(0x21);
         let mask = pic1_mask.read();
-        pic1_mask.write(mask & !(1 << 1));
+        let next = if masked {
+            mask | (1 << 1)
+        } else {
+            mask & !(1 << 1)
+        };
+        pic1_mask.write(next);
     }
 }
 

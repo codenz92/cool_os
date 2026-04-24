@@ -5,8 +5,8 @@
 /// then signals the WM that a repaint is needed.
 ///
 /// Call `init_cursor()` once after the framebuffer is ready. If PS/2 mouse
-/// fallback is needed, follow it with `init_ps2()`. After that, the IRQ12
-/// handler in `interrupts.rs` feeds packets to `handle_packet()`.
+/// fallback is needed, follow it with `enable_ps2_fallback()`. After that,
+/// the IRQ12 handler in `interrupts.rs` feeds packets to `handle_packet()`.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use spin::Mutex;
@@ -31,6 +31,7 @@ impl MouseState {
 static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
 const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
 static USB_MOUSE_LOG_COUNT: AtomicI32 = AtomicI32::new(0);
+static PS2_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// True when the mouse was detected as an IntelliMouse (4-byte packets).
 static INTELLIMOUSE: AtomicBool = AtomicBool::new(false);
@@ -48,10 +49,20 @@ pub fn init_cursor() {
     }
 }
 
-/// Initialise the PS/2 mouse hardware.
-pub fn init_ps2() {
-    init_cursor();
-    unsafe { init_hardware(); }
+/// Ensure the PS/2 mouse fallback is live when no USB mouse is active.
+pub fn enable_ps2_fallback() {
+    if !PS2_INITIALIZED.swap(true, Ordering::AcqRel) {
+        unsafe { init_hardware(); }
+    } else {
+        unsafe { set_ps2_fallback_mask(false); }
+    }
+}
+
+/// Disable the PS/2 mouse fallback IRQ when USB mouse input is active.
+pub fn disable_ps2_fallback() {
+    if PS2_INITIALIZED.load(Ordering::Acquire) {
+        unsafe { set_ps2_fallback_mask(true); }
+    }
 }
 
 /// Returns the current cursor position as `(x, y)`.
@@ -261,4 +272,15 @@ unsafe fn init_hardware() {
     let mut pic1_mask: Port<u8> = Port::new(0x21);
     let m = pic1_mask.read();
     pic1_mask.write(m & !(1 << 2));
+}
+
+unsafe fn set_ps2_fallback_mask(masked: bool) {
+    let mut pic2_mask: Port<u8> = Port::new(0xA1);
+    let mask = pic2_mask.read();
+    let next = if masked {
+        mask | (1 << 4)
+    } else {
+        mask & !(1 << 4)
+    };
+    pic2_mask.write(next);
 }
