@@ -149,6 +149,50 @@ def terminate_qemu(proc: subprocess.Popen[str], reader: threading.Thread) -> int
         reader.join(timeout=1.0)
 
 
+def hotplug_device(
+    qmp: QmpClient,
+    output: OutputBuffer,
+    args: argparse.Namespace,
+    *,
+    driver: str,
+    device_id: str,
+    add_message: str,
+    enum_message: str,
+    fallback_message: str,
+) -> None:
+    before_add = len(output.snapshot())
+    qmp.execute(
+        "device_add",
+        {"driver": driver, "bus": "xhci.0", "id": device_id},
+    )
+
+    if not output.wait_for("[xhci] runtime event: port ", args.hotplug_timeout, before_add):
+        raise RuntimeError(f"{add_message} did not trigger a runtime port-change event")
+    if not output.wait_for(enum_message, args.hotplug_timeout, before_add):
+        raise RuntimeError(f"{add_message} did not trigger fresh HID enumeration")
+    if not output.wait_for(fallback_message, args.hotplug_timeout, before_add):
+        raise RuntimeError(f"{add_message} did not flip the expected PS/2 fallback state")
+
+
+def unplug_device(
+    qmp: QmpClient,
+    output: OutputBuffer,
+    args: argparse.Namespace,
+    *,
+    device_id: str,
+    remove_message: str,
+    fallback_message: str,
+) -> None:
+    before_del = len(output.snapshot())
+    qmp.execute("device_del", {"id": device_id})
+    qmp.wait_for_event("DEVICE_DELETED", timeout=args.hotplug_timeout)
+
+    if not output.wait_for("[xhci] runtime event: port ", args.hotplug_timeout, before_del):
+        raise RuntimeError(f"{remove_message} did not trigger a runtime port-change event")
+    if not output.wait_for(fallback_message, args.hotplug_timeout, before_del):
+        raise RuntimeError(f"{remove_message} did not restore the expected PS/2 fallback state")
+
+
 def main() -> int:
     args = parse_args()
 
@@ -184,35 +228,45 @@ def main() -> int:
             ):
                 raise RuntimeError("kernel did not reach the no-USB-mouse fallback path")
 
-            before_add = len(output.snapshot())
-            qmp.execute(
-                "device_add",
-                {"driver": "usb-kbd", "bus": "xhci.0", "id": "hotkbd"},
+            hotplug_device(
+                qmp,
+                output,
+                args,
+                driver="usb-kbd",
+                device_id="hotkbd",
+                add_message="keyboard attach",
+                enum_message="hid keyboard iface=",
+                fallback_message="[input] USB keyboard detected; PS/2 keyboard fallback disabled",
             )
 
-            if not output.wait_for("[xhci] runtime event: port ", args.hotplug_timeout, before_add):
-                raise RuntimeError("attach did not trigger a runtime port-change event")
-            if not output.wait_for("hid keyboard iface=", args.hotplug_timeout, before_add):
-                raise RuntimeError("attach did not trigger fresh HID keyboard enumeration")
-            if not output.wait_for(
-                "[input] USB keyboard detected; PS/2 keyboard fallback disabled",
-                args.hotplug_timeout,
-                before_add,
-            ):
-                raise RuntimeError("attach did not disable the PS/2 keyboard fallback")
+            hotplug_device(
+                qmp,
+                output,
+                args,
+                driver="usb-mouse",
+                device_id="hotmouse",
+                add_message="mouse attach",
+                enum_message="hid mouse iface=",
+                fallback_message="[input] USB mouse detected; PS/2 mouse fallback disabled",
+            )
 
-            before_del = len(output.snapshot())
-            qmp.execute("device_del", {"id": "hotkbd"})
-            qmp.wait_for_event("DEVICE_DELETED", timeout=args.hotplug_timeout)
+            unplug_device(
+                qmp,
+                output,
+                args,
+                device_id="hotkbd",
+                remove_message="keyboard detach",
+                fallback_message="[input] no USB keyboard detected; enabling PS/2 keyboard fallback",
+            )
 
-            if not output.wait_for("[xhci] runtime event: port ", args.hotplug_timeout, before_del):
-                raise RuntimeError("detach did not trigger a runtime port-change event")
-            if not output.wait_for(
-                "[input] no USB keyboard detected; enabling PS/2 keyboard fallback",
-                args.hotplug_timeout,
-                before_del,
-            ):
-                raise RuntimeError("detach did not re-enable the PS/2 keyboard fallback")
+            unplug_device(
+                qmp,
+                output,
+                args,
+                device_id="hotmouse",
+                remove_message="mouse detach",
+                fallback_message="[input] no USB mouse detected; enabling PS/2 mouse fallback",
+            )
 
             rc = terminate_qemu(proc, reader)
             if rc not in (0, -15):
