@@ -126,11 +126,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let term = apps::TerminalApp::new(20, 20);
     wm::add_window(wm::AppWindow::Terminal(term));
 
-    mouse::init();
+    mouse::init_cursor();
     wm::init();
 
     // xHCI probe runs last so that a broken controller can't mask earlier init.
     usb::init();
+    let (_usb_keyboard, usb_mouse) = usb::input_presence();
+    if usb_mouse {
+        println!("[input] USB mouse detected; PS/2 mouse fallback disabled");
+    } else {
+        println!("[input] no USB mouse detected; enabling PS/2 mouse fallback");
+        mouse::init_ps2();
+    }
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()

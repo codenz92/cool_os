@@ -26,6 +26,10 @@ pub fn status_lines() -> Vec<String> {
     lines
 }
 
+pub fn input_presence() -> (bool, bool) {
+    xhci::runtime_input_presence()
+}
+
 /// Called once from `kernel_main` after the VMM and interrupt controller are up.
 /// Logs a line on success; silently does nothing if no xHCI controller is present
 /// (the PS/2 path still owns input).

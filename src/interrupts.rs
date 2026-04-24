@@ -34,17 +34,19 @@ pub fn init_pit(hz: u32) {
     }
 }
 
-/// Mask all PIC IRQs except the ones we handle:
-///   IRQ0 (timer), IRQ1 (keyboard), IRQ2 (PIC2 cascade), IRQ12 (mouse).
-/// All other IRQs — including IRQ14/IRQ15 (IDE) — are masked so that
-/// unhandled interrupts cannot reach the CPU and trigger a #GP.
+/// Mask all PIC IRQs except the ones we always handle:
+///   IRQ0 (timer), IRQ1 (keyboard), IRQ2 (PIC2 cascade).
+/// IRQ12 (PS/2 mouse) stays masked until the PS/2 fallback is explicitly
+/// enabled by `mouse::init_ps2()`. All other IRQs — including IRQ14/IRQ15
+/// (IDE) — are masked so that unhandled interrupts cannot reach the CPU and
+/// trigger a #GP.
 pub fn mask_unused_irqs() {
     use x86_64::instructions::port::Port;
     unsafe {
         // PIC1: unmask IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade); mask IRQ3–7.
         Port::<u8>::new(0x21).write(0xF8);
-        // PIC2: unmask IRQ12 (mouse); mask IRQ8–11 and IRQ13–15 (including IRQ14=IDE).
-        Port::<u8>::new(0xA1).write(0xEF);
+        // PIC2: keep all secondary IRQs masked until a driver explicitly enables one.
+        Port::<u8>::new(0xA1).write(0xFF);
     }
 }
 

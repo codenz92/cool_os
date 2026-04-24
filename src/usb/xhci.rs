@@ -470,6 +470,25 @@ pub fn runtime_status_lines() -> Vec<String> {
     lines
 }
 
+pub fn runtime_input_presence() -> (bool, bool) {
+    let runtime_guard = RUNTIME.lock();
+    let Some(runtime) = runtime_guard.as_ref() else {
+        return (false, false);
+    };
+
+    let mut keyboard = false;
+    let mut mouse = false;
+    for device in runtime.devices.iter() {
+        if device.protocol == USB_HID_PROTOCOL_KEYBOARD {
+            keyboard = true;
+        } else if device.protocol == USB_HID_PROTOCOL_MOUSE {
+            mouse = true;
+        }
+    }
+
+    (keyboard, mouse)
+}
+
 fn read_info(mmio_virt: u64) -> XhciInfo {
     let cap_word = unsafe { read_u32(mmio_virt) };
     let caplength = (cap_word & 0xFF) as u8;

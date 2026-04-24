@@ -4,7 +4,8 @@
 /// the logical mouse position, button state, and scroll wheel delta,
 /// then signals the WM that a repaint is needed.
 ///
-/// Call `init()` once after the heap is ready.  After that, the IRQ12
+/// Call `init_cursor()` once after the framebuffer is ready. If PS/2 mouse
+/// fallback is needed, follow it with `init_ps2()`. After that, the IRQ12
 /// handler in `interrupts.rs` feeds packets to `handle_packet()`.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -22,7 +23,7 @@ struct MouseState {
 
 impl MouseState {
     const fn new() -> Self {
-        // Start at (0,0); mouse::init() will centre after framebuffer is ready.
+        // Start at (0,0); mouse::init_cursor() will centre after framebuffer is ready.
         MouseState { x: 0, y: 0, left: false, right: false }
     }
 }
@@ -38,13 +39,18 @@ static SCROLL_ACCUM: AtomicI32 = AtomicI32::new(0);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Initialise the PS/2 mouse and centre the cursor on screen.
-pub fn init() {
+/// Centre the logical cursor on screen.
+pub fn init_cursor() {
     {
         let mut m = MOUSE.lock();
         m.x = crate::framebuffer::width()  / 2;
         m.y = crate::framebuffer::height() / 2;
     }
+}
+
+/// Initialise the PS/2 mouse hardware.
+pub fn init_ps2() {
+    init_cursor();
     unsafe { init_hardware(); }
 }
 
