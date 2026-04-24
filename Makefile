@@ -16,8 +16,8 @@ USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/rel
 run: build
 	@echo "Booting coolOS in QEMU..."
 	qemu-system-x86_64 \
-		-drive format=raw,file="$(BIOS)" \
-		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
+		-drive format=raw,file="$(BIOS)",snapshot=on \
+		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-vga std \
 		-display cocoa \
@@ -26,8 +26,8 @@ run: build
 run-usb: build
 	@echo "Booting coolOS in QEMU with xHCI-attached USB devices..."
 	qemu-system-x86_64 \
-		-drive format=raw,file="$(BIOS)" \
-		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
+		-drive format=raw,file="$(BIOS)",snapshot=on \
+		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-vga std \
 		-device qemu-xhci,id=xhci \
@@ -39,8 +39,8 @@ run-usb: build
 run-usb-init: build-usb-init
 	@echo "Booting coolOS in QEMU with active xHCI init..."
 	qemu-system-x86_64 \
-		-drive format=raw,file="$(BIOS)" \
-		-drive file="$(FSIMG)",if=ide,format=raw,index=1 \
+		-drive format=raw,file="$(BIOS)",snapshot=on \
+		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-vga std \
 		-device qemu-xhci,id=xhci \

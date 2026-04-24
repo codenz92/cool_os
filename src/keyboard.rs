@@ -1,15 +1,17 @@
 //! Lock-free keyboard ring buffer.
 //!
-//! The PS/2 keyboard IRQ handler pushes decoded chars here without touching
-//! the WM lock.  The compositor drains the buffer at the start of each frame
-//! while it already holds the WM lock.  This prevents the classic
-//! interrupt-context deadlock: IRQ fires while compose() holds WM.lock(),
-//! IRQ tries to acquire WM.lock(), single-core deadlock.
+//! The PS/2 keyboard IRQ handler and the USB HID runtime both push decoded
+//! chars here without touching the WM lock. The compositor drains the buffer
+//! at the start of each frame while it already holds the WM lock. This
+//! prevents the classic interrupt-context deadlock: IRQ fires while
+//! compose() holds WM.lock(), IRQ tries to acquire WM.lock(), single-core
+//! deadlock.
 
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, KeyCode, KeyEvent, KeyState, Keyboard, ScancodeSet1};
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 const QUEUE_SIZE: usize = 64;
 const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
@@ -48,6 +50,15 @@ pub fn pop() -> Option<char> {
     let v = QUEUE[tail].load(Ordering::Relaxed);
     TAIL.store((tail + 1) % QUEUE_SIZE, Ordering::Release);
     char::from_u32(v)
+}
+
+/// Enable the PS/2 keyboard IRQ as a fallback when no USB keyboard is active.
+pub fn enable_ps2_fallback() {
+    unsafe {
+        let mut pic1_mask: Port<u8> = Port::new(0x21);
+        let mask = pic1_mask.read();
+        pic1_mask.write(mask & !(1 << 1));
+    }
 }
 
 pub fn handle_usb_boot_report(report: &[u8; 8]) {

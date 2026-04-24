@@ -131,7 +131,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // xHCI probe runs last so that a broken controller can't mask earlier init.
     usb::init();
-    let (_usb_keyboard, usb_mouse) = usb::input_presence();
+    let (usb_keyboard, usb_mouse) = usb::input_presence();
+    if usb_keyboard {
+        println!("[input] USB keyboard detected; PS/2 keyboard fallback disabled");
+    } else {
+        println!("[input] no USB keyboard detected; enabling PS/2 keyboard fallback");
+        keyboard::enable_ps2_fallback();
+    }
     if usb_mouse {
         println!("[input] USB mouse detected; PS/2 mouse fallback disabled");
     } else {
