@@ -6,7 +6,7 @@
 /// command ring, event ring, and controller run.
 extern crate alloc;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
@@ -125,10 +125,12 @@ const BOOT_MOUSE_REPORT_BYTES: usize = 4;
 const ACTIVE_INIT: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
 const SPIN_TIMEOUT: u64 = 10_000_000;
 
+#[derive(Clone)]
 struct LegacySupport {
     off: u64,
 }
 
+#[derive(Clone)]
 struct ProtocolSpeedId {
     psiv: u8,
     psie: u8,
@@ -138,6 +140,7 @@ struct ProtocolSpeedId {
     psim: u16,
 }
 
+#[derive(Clone)]
 struct SupportedProtocol {
     label: &'static str,
     major: u8,
@@ -149,6 +152,7 @@ struct SupportedProtocol {
     psis: Vec<ProtocolSpeedId>,
 }
 
+#[derive(Clone)]
 struct XhciInfo {
     mmio_virt: u64,
     caplength: u8,
@@ -168,11 +172,13 @@ struct XhciInfo {
 }
 
 struct ActiveState {
-    op_base: u64,
+    info: XhciInfo,
     rt_base: u64,
     db_base: u64,
     dcbaa_phys: u64,
+    dcbaa_virt: u64,
     cmd_ring_phys: u64,
+    cmd_ring: CommandRingState,
     event_ring_phys: u64,
     event_ring: EventRingState,
     erst_phys: u64,
@@ -306,6 +312,7 @@ static RUNTIME: Mutex<Option<ActiveState>> = Mutex::new(None);
 pub fn probe() -> Vec<String> {
     *RUNTIME.lock() = None;
     let mut status = Vec::new();
+    let mut runtime_started = false;
 
     let Some((loc, hdr, mmio_phys)) = find_controller() else {
         println!("[xhci] no controller found on PCI bus");
@@ -362,8 +369,8 @@ pub fn probe() -> Vec<String> {
                     state.dcbaa_phys, state.cmd_ring_phys, state.event_ring_phys, state.erst_phys,
                 );
                 status.push(String::from("USB: active init ready"));
-                status.extend(state.port_status.iter().cloned());
                 *RUNTIME.lock() = Some(state);
+                runtime_started = true;
             }
             Err(err) => {
                 println!("[xhci] active init failed: {}", err);
@@ -372,7 +379,9 @@ pub fn probe() -> Vec<String> {
         }
     }
 
-    status.extend(scan_ports(&info));
+    if !runtime_started {
+        status.extend(scan_ports(&info));
+    }
     if !ACTIVE_INIT {
         println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
     }
@@ -391,21 +400,7 @@ pub fn poll() {
         match event.trb_type() as u32 {
             TRB_TYPE_TRANSFER_EVENT => handle_runtime_transfer_event(runtime, event),
             TRB_TYPE_PORT_STATUS_CHANGE => {
-                let port_num = event.port_id();
-                let portsc = read_portsc_by_op_base(runtime.op_base, port_num);
-                clear_port_changes_by_op_base(runtime.op_base, port_num);
-                runtime.last_runtime_note = format!(
-                    "port {} change ccs={} ped={} speed_id={}",
-                    port_num,
-                    (portsc & PORTSC_CCS != 0) as u8,
-                    (portsc & PORTSC_PED != 0) as u8,
-                    port_speed_id(portsc),
-                );
-                println!(
-                    "[xhci] runtime event: port {} status change portsc={:#x}",
-                    port_num,
-                    portsc,
-                );
+                handle_runtime_port_status_change(runtime, event.port_id());
             }
             TRB_TYPE_CMD_COMPLETION => {
                 runtime.last_runtime_note = format!(
@@ -454,6 +449,7 @@ pub fn runtime_status_lines() -> Vec<String> {
     if !runtime.last_runtime_note.is_empty() {
         lines.push(format!("USB: runtime {}", runtime.last_runtime_note));
     }
+    lines.extend(runtime.port_status.iter().cloned());
     for device in runtime.devices.iter() {
         lines.push(format!(
             "USB: runtime port={} slot={} {} ep={:#04x} reports={} last={}B errors={} cc={}",
@@ -601,11 +597,13 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
         prime_attached_ports(info, dcbaa_virt, &mut cmd_ring, &mut event_ring);
 
     Ok(ActiveState {
-        op_base: info.op_base,
+        info: info.clone(),
         rt_base: info.rt_base,
         db_base: info.db_base,
         dcbaa_phys,
+        dcbaa_virt,
         cmd_ring_phys,
+        cmd_ring,
         event_ring_phys,
         event_ring,
         erst_phys,
@@ -709,6 +707,39 @@ fn run_command_ring_noop(
     Ok(())
 }
 
+fn prepare_port_for_probe(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    port_num: u8,
+    proto: &SupportedProtocol,
+) -> Result<Option<u32>, &'static str> {
+    let mut portsc = read_portsc(info, port_num);
+    if portsc & PORTSC_CCS == 0 {
+        clear_port_changes(info, port_num);
+        return Ok(None);
+    }
+
+    clear_port_changes(info, port_num);
+    portsc = read_portsc(info, port_num);
+
+    if proto.major == 2 && portsc & PORTSC_PED == 0 {
+        portsc = reset_port(info, event_ring, port_num)?;
+    } else if proto.major >= 3 && portsc & PORTSC_PED == 0 {
+        let _ = wait_until("usb3 port enable", || {
+            let current = read_portsc(info, port_num);
+            current & PORTSC_PED != 0 || current & PORTSC_CCS == 0
+        });
+        clear_port_changes(info, port_num);
+        portsc = read_portsc(info, port_num);
+    }
+
+    if portsc & PORTSC_CCS == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(portsc))
+}
+
 fn prime_attached_ports(
     info: &XhciInfo,
     dcbaa_virt: u64,
@@ -723,41 +754,28 @@ fn prime_attached_ports(
             continue;
         };
 
-        let mut portsc = read_portsc(info, port_num);
-        if portsc & PORTSC_CCS == 0 {
+        let initial_portsc = read_portsc(info, port_num);
+        if initial_portsc & PORTSC_CCS == 0 {
             continue;
         }
 
-        clear_port_changes(info, port_num);
-        portsc = read_portsc(info, port_num);
-
-        if proto.major == 2 && portsc & PORTSC_PED == 0 {
-            match reset_port(info, event_ring, port_num) {
-                Ok(updated) => portsc = updated,
-                Err(err) => {
-                    status.push(format!(
-                        "USB: port {} {} reset failed: {}",
-                        port_num, proto.label, err
-                    ));
-                    continue;
-                }
+        let portsc = match prepare_port_for_probe(info, event_ring, port_num, proto) {
+            Ok(Some(portsc)) => portsc,
+            Ok(None) => {
+                status.push(format!(
+                    "USB: port {} {} disconnected during probe",
+                    port_num, proto.label
+                ));
+                continue;
             }
-        } else if proto.major >= 3 && portsc & PORTSC_PED == 0 {
-            let _ = wait_until("usb3 port enable", || {
-                let current = read_portsc(info, port_num);
-                current & PORTSC_PED != 0 || current & PORTSC_CCS == 0
-            });
-            clear_port_changes(info, port_num);
-            portsc = read_portsc(info, port_num);
-        }
-
-        if portsc & PORTSC_CCS == 0 {
-            status.push(format!(
-                "USB: port {} {} disconnected during probe",
-                port_num, proto.label
-            ));
-            continue;
-        }
+            Err(err) => {
+                status.push(format!(
+                    "USB: port {} {} reset failed: {}",
+                    port_num, proto.label, err
+                ));
+                continue;
+            }
+        };
 
         if portsc & PORTSC_PED == 0 {
             status.push(format!(
@@ -2158,6 +2176,147 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
             device.slot_id, device.endpoint_dci, err
         );
     }
+}
+
+fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
+    let Some(proto) = protocol_for_port(&runtime.info.protocols, port_num).cloned() else {
+        let portsc = read_portsc(&runtime.info, port_num);
+        clear_port_changes(&runtime.info, port_num);
+        runtime.last_runtime_note = format!(
+            "port {} change ccs={} ped={} speed_id={}",
+            port_num,
+            (portsc & PORTSC_CCS != 0) as u8,
+            (portsc & PORTSC_PED != 0) as u8,
+            port_speed_id(portsc),
+        );
+        println!(
+            "[xhci] runtime event: port {} status change portsc={:#x}",
+            port_num,
+            portsc,
+        );
+        return;
+    };
+
+    let initial_portsc = read_portsc(&runtime.info, port_num);
+    println!(
+        "[xhci] runtime event: port {} status change portsc={:#x}",
+        port_num,
+        initial_portsc,
+    );
+
+    let had_connection_change = initial_portsc & PORTSC_CSC != 0;
+    let had_existing_device = runtime.devices.iter().any(|device| device.port_num == port_num);
+
+    clear_port_changes(&runtime.info, port_num);
+    let current_portsc = read_portsc(&runtime.info, port_num);
+
+    if current_portsc & PORTSC_CCS == 0 {
+        remove_port_devices(runtime, port_num);
+        replace_port_status_lines(
+            runtime,
+            port_num,
+            vec![format!("USB: port {} {} disconnected", port_num, proto.label)],
+        );
+        runtime.last_runtime_note = format!("port {} disconnected", port_num);
+        return;
+    }
+
+    if had_existing_device && (had_connection_change || current_portsc & PORTSC_PED == 0) {
+        remove_port_devices(runtime, port_num);
+    }
+
+    if runtime.devices.iter().any(|device| device.port_num == port_num) {
+        runtime.last_runtime_note = format!("port {} {} status change handled", port_num, proto.label);
+        return;
+    }
+
+    let portsc = match prepare_port_for_probe(&runtime.info, &mut runtime.event_ring, port_num, &proto) {
+        Ok(Some(portsc)) => portsc,
+        Ok(None) => {
+            replace_port_status_lines(
+                runtime,
+                port_num,
+                vec![format!("USB: port {} {} disconnected", port_num, proto.label)],
+            );
+            runtime.last_runtime_note = format!("port {} disconnected", port_num);
+            return;
+        }
+        Err(err) => {
+            replace_port_status_lines(
+                runtime,
+                port_num,
+                vec![format!("USB: port {} {} reset failed: {}", port_num, proto.label, err)],
+            );
+            runtime.last_runtime_note = format!("port {} reset failed {}", port_num, err);
+            return;
+        }
+    };
+
+    if portsc & PORTSC_PED == 0 {
+        replace_port_status_lines(
+            runtime,
+            port_num,
+            vec![format!(
+                "USB: port {} {} connected but not enabled",
+                port_num, proto.label
+            )],
+        );
+        runtime.last_runtime_note = format!("port {} connected but not enabled", port_num);
+        return;
+    }
+
+    match prime_default_control_endpoint(
+        &runtime.info,
+        runtime.dcbaa_virt,
+        &mut runtime.cmd_ring,
+        &mut runtime.event_ring,
+        &proto,
+        port_num,
+        portsc,
+    ) {
+        Ok((lines, mut devices)) => {
+            replace_port_status_lines(runtime, port_num, lines);
+            runtime.devices.append(&mut devices);
+            runtime.last_runtime_note = format!("port {} {} attached", port_num, proto.label);
+        }
+        Err(err) => {
+            replace_port_status_lines(
+                runtime,
+                port_num,
+                vec![format!("USB: port {} {} prime failed: {}", port_num, proto.label, err)],
+            );
+            runtime.last_runtime_note = format!("port {} prime failed {}", port_num, err);
+        }
+    }
+}
+
+fn remove_port_devices(runtime: &mut ActiveState, port_num: u8) {
+    let mut slot_ids = Vec::new();
+    for device in runtime.devices.iter() {
+        if device.port_num != port_num || slot_ids.contains(&device.slot_id) {
+            continue;
+        }
+        slot_ids.push(device.slot_id);
+    }
+
+    for slot_id in slot_ids {
+        let _ = disable_slot(
+            &runtime.info,
+            &mut runtime.cmd_ring,
+            &mut runtime.event_ring,
+            slot_id,
+        );
+    }
+
+    runtime.devices.retain(|device| device.port_num != port_num);
+}
+
+fn replace_port_status_lines(runtime: &mut ActiveState, port_num: u8, mut new_lines: Vec<String>) {
+    let prefix = format!("USB: port {} ", port_num);
+    runtime
+        .port_status
+        .retain(|line| !line.starts_with(&prefix));
+    runtime.port_status.append(&mut new_lines);
 }
 
 fn dispatch_hid_report(device: &mut HidDeviceState, actual_len: usize) {
