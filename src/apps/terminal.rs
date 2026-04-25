@@ -5,7 +5,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use font8x8::UnicodeFonts;
 
-use crate::framebuffer::{BLACK, LIGHT_GRAY};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const TERM_W: i32 = 640;
@@ -14,8 +13,16 @@ pub const TERM_H: i32 = 440;
 const CHAR_W_SMALL: usize = 8;
 const CHAR_H_SMALL: usize = 8;
 
-const FG: u32 = LIGHT_GRAY;
-const BG: u32 = BLACK;
+const TERM_BG_A: u32 = 0x00_03_09_06;
+const TERM_BG_B: u32 = 0x00_01_04_02;
+const TERM_BG_C: u32 = 0x00_06_0F_09;
+const FG_OUTPUT: u32 = 0x00_B8_F3_CE;
+const FG_PROMPT: u32 = 0x00_00_FF_88;
+const FG_INPUT: u32 = 0x00_E4_FF_F1;
+const FG_ACCENT: u32 = 0x00_55_FF_FF;
+const FG_DIM: u32 = 0x00_58_8A_70;
+const FG_ERROR: u32 = 0x00_FF_72_72;
+
 pub struct TerminalApp {
     pub window: Window,
     cmd_buf:    String,
@@ -24,6 +31,7 @@ pub struct TerminalApp {
     row:        usize,
     cols:       usize,
     rows:       usize,
+    fg:         u32,
 }
 
 impl TerminalApp {
@@ -41,9 +49,14 @@ impl TerminalApp {
             row: 0,
             cols,
             rows,
+            fg: FG_OUTPUT,
         };
-        for b in t.window.buf.iter_mut() { *b = BG; }
-        t.print_str("> ");
+        t.fill_background();
+        t.set_fg(FG_ACCENT);
+        t.print_str("coolOS phosphor shell\n");
+        t.set_fg(FG_DIM);
+        t.print_str("type help, usb, exec /bin/hello\n\n");
+        t.print_prompt();
         t
     }
 
@@ -75,12 +88,16 @@ impl TerminalApp {
 
     fn run_command(&mut self, input: &str) {
         let mut words = input.split_whitespace();
+        self.set_fg(FG_OUTPUT);
         match words.next() {
             Some("help") => {
-                self.print_str("Commands: help clear reboot echo exec ipc keydemo term info uptime usb\n");
+                self.set_fg(FG_ACCENT);
+                self.print_str("Commands");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(": help clear reboot echo exec ipc keydemo term info uptime usb\n");
             }
             Some("clear") => {
-                for b in self.window.buf.iter_mut() { *b = BG; }
+                self.fill_background();
                 self.col = 0;
                 self.row = 0;
             }
@@ -95,7 +112,9 @@ impl TerminalApp {
                         let args: Vec<&str> = words.collect();
                         match crate::elf::spawn_elf_process_with_args(path, &args) {
                             Ok(()) => {
+                                self.set_fg(FG_ACCENT);
                                 self.print_str("Spawned ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(path);
                                 if !args.is_empty() {
                                     self.print_str(" with args");
@@ -103,13 +122,20 @@ impl TerminalApp {
                                 self.print_char('\n');
                             }
                             Err(err) => {
+                                self.set_fg(FG_ERROR);
                                 self.print_str("exec failed: ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(err.as_str());
                                 self.print_char('\n');
                             }
                         }
                     }
-                    None => self.print_str("usage: exec /bin/hello [args...]\n"),
+                    None => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("usage: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str("exec /bin/hello [args...]\n");
+                    }
                 }
             }
             Some("ipc") => {
@@ -130,21 +156,31 @@ impl TerminalApp {
 
                         match (reader, writer) {
                             (Ok(()), Ok(())) => {
+                                self.set_fg(FG_ACCENT);
                                 self.print_str("Spawned shared pipe demo\n");
                             }
                             (Err(err), _) => {
+                                self.set_fg(FG_ERROR);
                                 self.print_str("ipc failed: ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(err.as_str());
                                 self.print_char('\n');
                             }
                             (_, Err(err)) => {
+                                self.set_fg(FG_ERROR);
                                 self.print_str("ipc failed: ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(err.as_str());
                                 self.print_char('\n');
                             }
                         }
                     }
-                    None => self.print_str("ipc unavailable: no pipe slots\n"),
+                    None => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("ipc unavailable: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str("no pipe slots\n");
+                    }
                 }
             }
             Some("keydemo") => {
@@ -158,18 +194,26 @@ impl TerminalApp {
                             Ok(()) => {
                                 crate::vfs::vfs_close(read_fd);
                                 self.pending_key_sink_fd = Some(write_fd);
+                                self.set_fg(FG_ACCENT);
                                 self.print_str("keydemo active; type into the terminal, `~` ends input\n");
                             }
                             Err(err) => {
                                 crate::vfs::vfs_close(read_fd);
                                 crate::vfs::vfs_close(write_fd);
+                                self.set_fg(FG_ERROR);
                                 self.print_str("keydemo failed: ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(err.as_str());
                                 self.print_char('\n');
                             }
                         }
                     }
-                    None => self.print_str("keydemo unavailable: no pipe slots\n"),
+                    None => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("keydemo unavailable: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str("no pipe slots\n");
+                    }
                 }
             }
             Some("term") => {
@@ -182,32 +226,46 @@ impl TerminalApp {
                         ) {
                             Ok(()) => {
                                 self.pending_key_sink_fd = Some(write_fd);
+                                self.set_fg(FG_ACCENT);
                                 self.print_str("userspace terminal started; type commands, Ctrl+D ends\n");
                             }
                             Err(err) => {
                                 crate::vfs::vfs_close(read_fd);
                                 crate::vfs::vfs_close(write_fd);
+                                self.set_fg(FG_ERROR);
                                 self.print_str("term failed: ");
+                                self.set_fg(FG_OUTPUT);
                                 self.print_str(err.as_str());
                                 self.print_char('\n');
                             }
                         }
                     }
-                    None => self.print_str("term unavailable: no pipe slots\n"),
+                    None => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("term unavailable: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str("no pipe slots\n");
+                    }
                 }
             }
             Some("uptime") => {
+                self.set_fg(FG_ACCENT);
                 self.print_str("Uptime: ");
+                self.set_fg(FG_OUTPUT);
                 self.print_u64(crate::interrupts::ticks());
                 self.print_str(" ticks\n");
             }
             Some("info") => {
+                self.set_fg(FG_ACCENT);
                 self.print_str("Heap: ");
+                self.set_fg(FG_OUTPUT);
                 self.print_u64(crate::allocator::heap_used() as u64);
                 self.print_str(" bytes\n");
                 let cpuid = raw_cpuid::CpuId::new();
                 if let Some(v) = cpuid.get_vendor_info() {
+                    self.set_fg(FG_ACCENT);
                     self.print_str("CPU: ");
+                    self.set_fg(FG_OUTPUT);
                     self.print_str(v.as_str());
                     self.print_char('\n');
                 }
@@ -215,22 +273,30 @@ impl TerminalApp {
             Some("usb") => {
                 let lines = crate::usb::status_lines();
                 if lines.is_empty() {
-                    self.print_str("USB: no probe data\n");
+                    self.set_fg(FG_ERROR);
+                    self.print_str("USB: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str("no probe data\n");
                 } else {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("USB STATUS\n");
                     for line in lines {
+                        self.set_fg(FG_OUTPUT);
                         self.print_str(&line);
                         self.print_char('\n');
                     }
                 }
             }
             Some(unknown) => {
+                self.set_fg(FG_ERROR);
                 self.print_str("Unknown: ");
+                self.set_fg(FG_OUTPUT);
                 self.print_str(unknown);
                 self.print_char('\n');
             }
             None => {}
         }
-        self.print_str("> ");
+        self.print_prompt();
     }
 
     pub fn print_char(&mut self, c: char) {
@@ -261,7 +327,10 @@ impl TerminalApp {
         let total = self.window.buf.len();
         self.window.buf.copy_within(row_pixels..total, 0);
         let last = total - row_pixels;
-        for b in self.window.buf[last..].iter_mut() { *b = BG; }
+        for idx in last..total {
+            let py = idx / stride;
+            self.window.buf[idx] = Self::bg_at(py);
+        }
     }
 
     fn draw_char_at(&mut self, col: usize, row: usize, c: char) {
@@ -273,14 +342,45 @@ impl TerminalApp {
         let stride = self.window.width as usize;
         for (gy, &byte) in glyph.iter().enumerate() {
             for bit in 0..8usize {
-                let color = if byte & (1 << bit) != 0 { FG } else { BG };
                 let px = px0 + bit;
                 let py = py0 + gy;
                 let idx = py * stride + px;
                 if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
+                    self.window.buf[idx] = if byte & (1 << bit) != 0 {
+                        self.fg
+                    } else {
+                        Self::bg_at(py)
+                    };
                 }
             }
+        }
+    }
+
+    fn set_fg(&mut self, color: u32) {
+        self.fg = color;
+    }
+
+    fn print_prompt(&mut self) {
+        self.set_fg(FG_PROMPT);
+        self.print_str("cool");
+        self.set_fg(FG_ACCENT);
+        self.print_str("> ");
+        self.set_fg(FG_INPUT);
+    }
+
+    fn fill_background(&mut self) {
+        let stride = self.window.width as usize;
+        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
+            let py = idx / stride;
+            *pixel = Self::bg_at(py);
+        }
+    }
+
+    fn bg_at(py: usize) -> u32 {
+        match py % 6 {
+            0 => TERM_BG_C,
+            1 | 2 => TERM_BG_A,
+            _ => TERM_BG_B,
         }
     }
 }

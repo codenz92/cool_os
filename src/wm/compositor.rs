@@ -15,7 +15,8 @@ use crate::wm::window::{Window, TITLE_H};
 
 const TASKBAR_H: i32 = 40; // Win11: 40px tall taskbar
 const START_BTN_W: i32 = 86; // 5 chars × 16px + 4px pad each side
-const TASKBAR_CLOCK_W: i32 = 108; // "00:00" (5×16=80) + padding; "coolOS" (6×16=96) + padding
+const TASKBAR_CLOCK_W: i32 = 170; // tray + time readout + brand
+const TASKBAR_TRAY_W: i32 = 54;
 const BUTTON_W: i32 = 160;
 const WIN_BTN_W: i32 = crate::wm::window::WIN_BTN_W;
 const SCROLLBAR_W: i32 = crate::wm::window::SCROLLBAR_W;
@@ -103,6 +104,36 @@ const CURSOR_OUTLINE: [u16; CURSOR_H] = [
     0b1100111000000000,
     0b0000111000000000,
     0b0000111100000000,
+];
+
+const CURSOR_RESIZE_SHAPE: [u16; CURSOR_H] = [
+    0b0000000000000000,
+    0b0000000000110000,
+    0b0000000001111000,
+    0b0000000011111100,
+    0b0000000110110100,
+    0b0000001100110000,
+    0b0000011001100000,
+    0b0000110011000000,
+    0b0001101101100000,
+    0b0011111101111000,
+    0b0001111000110000,
+    0b0000110000000000,
+];
+
+const CURSOR_RESIZE_OUTLINE: [u16; CURSOR_H] = [
+    0b0000000000110000,
+    0b0000000001111000,
+    0b0000000011111100,
+    0b0000000111111110,
+    0b0000001111111110,
+    0b0000011111111100,
+    0b0000111111111000,
+    0b0001111111110000,
+    0b0011111111111000,
+    0b0111111111111100,
+    0b0011111111111000,
+    0b0001111000110000,
 ];
 
 // ── Context menu ──────────────────────────────────────────────────────────────
@@ -828,6 +859,14 @@ impl WindowManager {
             let desk_pixels = taskbar_y as usize * sw;
             self.shadow[..desk_pixels].copy_from_slice(&self.wallpaper[..desk_pixels]);
         }
+        let resize_hover = self.resize.is_some()
+            || self
+                .front_to_back_hit(mx_i, my_i)
+                .map(|z_pos| {
+                    let wi = self.z_order[z_pos];
+                    wi < self.windows.len() && self.windows[wi].window().hit_resize(mx_i, my_i)
+                })
+                .unwrap_or(false);
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
@@ -1529,6 +1568,25 @@ match i {
 
             let clk_x = clock_sep_x + 4;
             let clk_w = TASKBAR_CLOCK_W - 4;
+            let tray_x = clk_x + 6;
+            let tray_y = taskbar_y + 7;
+            let tray_icon_gap = 16;
+            let clock_box_x = clk_x + TASKBAR_TRAY_W;
+            let clock_box_w = clk_w - TASKBAR_TRAY_W;
+            let usb_lines = crate::usb::status_lines();
+            let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
+            let usb_present = !usb_lines.is_empty();
+            let usb_active = usb_lines.iter().any(|line| line.contains("active init ready"));
+            let pulse = ((current_tick as u32 / 6) % 28) as u32;
+            let usb_col = if usb_active {
+                blend_color(0x00_00_EE_FF, ACCENT_HOV, pulse * 4)
+            } else if usb_present {
+                0x00_55_AA_DD
+            } else {
+                0x00_22_44_66
+            };
+            let kbd_col = if usb_keyboard { 0x00_00_FF_88 } else { 0x00_33_55_44 };
+            let mouse_col = if usb_mouse { 0x00_FF_DD_55 } else { 0x00_55_55_44 };
 
             // Clock hover tint
             let clk_hot = mx_i >= clk_x
@@ -1558,6 +1616,14 @@ match i {
                 );
             }
 
+            // Small tray icons: controller, keyboard, mouse.
+            draw_usb_tray_icon(s, sw, tray_x, tray_y, usb_col);
+            draw_keyboard_tray_icon(s, sw, tray_x + tray_icon_gap, tray_y, kbd_col);
+            draw_mouse_tray_icon(s, sw, tray_x + tray_icon_gap * 2, tray_y, mouse_col);
+
+            // Separator between icons and clock.
+            s_fill(s, sw, clock_box_x - 5, taskbar_y + 7, 1, TASKBAR_H - 14, 0x00_00_33_66);
+
             // Two-line clock: uptime HH:MM on top, brand below.
             {
                 let secs = current_tick / 60;
@@ -1572,7 +1638,7 @@ match i {
                 ];
                 if let Ok(time_str) = core::str::from_utf8(&buf) {
                     let time_w = 5 * 8;
-                    let time_x = clk_x + (clk_w - time_w) / 2;
+                    let time_x = clock_box_x + (clock_box_w - time_w) / 2;
                     s_draw_str_small(
                         s,
                         sw,
@@ -1581,13 +1647,13 @@ match i {
                         time_str,
                         0x00_00_EE_FF, // phosphor cyan clock digits
                         clk_bg,
-                        clk_x + clk_w,
+                        clock_box_x + clock_box_w,
                     );
                 }
             }
             {
                 let brand_w = 6 * 8;
-                let brand_x = clk_x + (clk_w - brand_w) / 2;
+                let brand_x = clock_box_x + (clock_box_w - brand_w) / 2;
                 s_draw_str_small(
                     s,
                     sw,
@@ -1596,7 +1662,7 @@ match i {
                     "coolOS",
                     0x00_00_66_99,
                     clk_bg,
-                    clk_x + clk_w,
+                    clock_box_x + clock_box_w,
                 );
             }
 
@@ -1654,8 +1720,9 @@ match i {
                 );
 
                 // Per-app accent colours, matching the desktop icon set
-                const CTX_ACCENTS: [u32; 4] =
-                    [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC];
+                const CTX_ACCENTS: [u32; 5] =
+                    [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC, 0x00_55_DD_FF];
+                const CTX_GLYPHS: [&str; 5] = [">_", "M#", "Tx", "CP", "Fm"];
 
                 for (i, &label) in CTX_ITEMS.iter().enumerate() {
                     let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;
@@ -1672,10 +1739,22 @@ match i {
                         s_fill(s, sw, cm.x + 1, item_y + 5, 3, CTX_ITEM_H - 11, ACCENT);
                     }
 
-                    // Coloured accent pip (4×4) identifying the app
-                    let pip_x = cm.x + 10;
-                    let pip_y = item_y + (CTX_ITEM_H - 4) / 2;
-                    s_fill(s, sw, pip_x, pip_y, 4, 4, acc);
+                    // Coloured icon tile identifying the app.
+                    let icon_x = cm.x + 8;
+                    let icon_y = item_y + 5;
+                    let icon_bg = blend_color(0x00_00_0B_20, acc, 65);
+                    s_fill(s, sw, icon_x, icon_y, 20, 20, icon_bg);
+                    draw_rect_border(s, sw, icon_x, icon_y, 20, 20, blend_color(acc, WHITE, 90));
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        icon_x + 4,
+                        icon_y + 6,
+                        CTX_GLYPHS[i],
+                        acc,
+                        icon_bg,
+                        icon_x + 18,
+                    );
 
                     // Label
                     let text_col = if hot { WHITE } else { 0x00_88_CC_FF };
@@ -1683,7 +1762,7 @@ match i {
                     s_draw_str_small(
                         s,
                         sw,
-                        cm.x + 20,
+                        cm.x + 34,
                         item_y + (CTX_ITEM_H - 8) / 2,
                         label,
                         text_col,
@@ -1707,9 +1786,15 @@ match i {
                 }
             }
 
-            // ── Cursor — Windows-style arrow with black outline ───────────────────
+            // ── Cursor — switches to resize cursor over resize handles ────────────
+            let (cursor_outline, cursor_shape) = if resize_hover {
+                (&CURSOR_RESIZE_OUTLINE, &CURSOR_RESIZE_SHAPE)
+            } else {
+                (&CURSOR_OUTLINE, &CURSOR_SHAPE)
+            };
+
             // Draw outline first (black), then fill (white)
-            for (row, &mask) in CURSOR_OUTLINE.iter().enumerate() {
+            for (row, &mask) in cursor_outline.iter().enumerate() {
                 for bit in 0..16usize {
                     if mask & (0x8000u16 >> bit) != 0 {
                         s_put(
@@ -1723,7 +1808,7 @@ match i {
                     }
                 }
             }
-            for (row, &mask) in CURSOR_SHAPE.iter().enumerate() {
+            for (row, &mask) in cursor_shape.iter().enumerate() {
                 for bit in 0..16usize {
                     if mask & (0x8000u16 >> bit) != 0 {
                         s_put(
@@ -1841,9 +1926,22 @@ match i {
             s_fill_alpha(s, sw, w.x + d, w.y - d, w.width, 1, shadow_col);
         }
 
+        if focused {
+            let glow = blend_color(ACCENT, BLACK, 110);
+            draw_rect_border(s, sw, w.x - 2, w.y - 2, w.width + 4, w.height + 4, glow);
+        }
+
         // ── Title bar — CRT phosphor chrome ──────────────────────────────────
         let title_bg = if focused { WIN_BAR_F } else { WIN_BAR_U };
-        s_fill(s, sw, w.x, w.y, w.width, TITLE_H, title_bg);
+        let title_top = if focused {
+            blend_color(ACCENT, WIN_BAR_F, 210)
+        } else {
+            blend_color(WIN_BAR_F, WIN_BAR_U, 90)
+        };
+        for row in 0..TITLE_H {
+            let shade = blend_color(title_top, title_bg, ((row * 255) / TITLE_H.max(1)) as u32);
+            s_fill(s, sw, w.x, w.y + row, w.width, 1, shade);
+        }
 
         // ── Window border ─────────────────────────────────────────────────────
         let bord = if focused { WIN_BDR_F } else { WIN_BDR_U };
@@ -2179,6 +2277,31 @@ fn draw_rect_border(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, co
     s_fill(s, sw, x, y + h - 1, w, 1, color); // bottom
     s_fill(s, sw, x, y, 1, h, color); // left
     s_fill(s, sw, x + w - 1, y, 1, h, color); // right
+}
+
+fn draw_usb_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
+    s_fill(s, sw, x + 5, y, 2, 4, color);
+    s_fill(s, sw, x + 3, y + 3, 6, 2, color);
+    s_fill(s, sw, x + 2, y + 5, 2, 4, color);
+    s_fill(s, sw, x + 8, y + 5, 2, 4, color);
+    s_fill(s, sw, x + 4, y + 7, 4, 2, color);
+    s_fill(s, sw, x + 5, y + 9, 2, 3, color);
+    s_fill(s, sw, x + 4, y + 11, 4, 1, blend_color(color, WHITE, 110));
+}
+
+fn draw_keyboard_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
+    draw_rect_border(s, sw, x, y + 2, 13, 8, color);
+    s_fill(s, sw, x + 2, y + 4, 9, 1, color);
+    s_fill(s, sw, x + 2, y + 6, 2, 1, color);
+    s_fill(s, sw, x + 5, y + 6, 2, 1, color);
+    s_fill(s, sw, x + 8, y + 6, 2, 1, color);
+    s_fill(s, sw, x + 3, y + 10, 7, 2, color);
+}
+
+fn draw_mouse_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
+    draw_rect_border(s, sw, x + 2, y, 9, 12, color);
+    s_fill(s, sw, x + 6, y + 2, 1, 2, color);
+    s_fill(s, sw, x + 3, y + 4, 7, 1, color);
 }
 
 /// Blend two u32 colours: t=0 → a, t=255 → b.

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use alloc::string::String as String2;
 
 use crate::fat32::DirEntryInfo;
-use crate::framebuffer::{BLACK, DARK_GRAY, GRAY, LIGHT_CYAN, LIGHT_GRAY, SELECTED_BG, WHITE};
+use crate::framebuffer::{BLACK, DARK_GRAY, GRAY, LIGHT_CYAN, LIGHT_GRAY, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const FILEMAN_W: i32 = 640;
@@ -14,9 +14,22 @@ pub const FILEMAN_H: i32 = 440;
 const CW: usize = 8;
 const TOOLBAR_H: i32 = 24;
 const COL_HDR_H: i32 = 16;
+const STATUS_H: i32 = 18;
 const NAME_COL_W: i32 = 260;
 const SIZE_COL_W: i32 = 80;
 const ROW_H: i32 = 16;
+
+const FM_BG: u32 = 0x00_02_07_12;
+const FM_PANEL: u32 = 0x00_00_0A_1C;
+const FM_PANEL_ALT: u32 = 0x00_00_0E_24;
+const FM_BORDER: u32 = 0x00_00_44_88;
+const FM_ACCENT: u32 = 0x00_00_99_FF;
+const FM_ROW_ALT: u32 = 0x00_00_0B_18;
+const FM_ROW_SEL: u32 = 0x00_00_24_46;
+const FM_STATUS: u32 = 0x00_00_08_14;
+const FOLDER_ICON: u32 = 0x00_55_DD_FF;
+const FILE_ICON: u32 = 0x00_AA_FF_CC;
+const TEXT_MUTED: u32 = 0x00_66_AA_DD;
 
 const COL_SIZE: usize = NAME_COL_W as usize;
 const COL_TYPE: usize = NAME_COL_W as usize + SIZE_COL_W as usize;
@@ -88,18 +101,19 @@ impl FileManagerApp {
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
+        let content_bottom = toolbar_bottom + self.view_h;
         if ly < toolbar_bottom {
             if ly < TOOLBAR_H {
-                if lx >= 4 && lx < 4 + 16 && ly >= 4 && ly < 4 + 16 {
+                if lx >= 6 && lx < 6 + 18 && ly >= 3 && ly < 3 + 18 {
                     if self.path.len() > 1 {
                         let parent = self.parent_path();
                         self.load_dir(&parent);
                     }
                     return;
                 }
-                if lx >= 20 && lx < 20 + (FILEMAN_W - 24) {
-                    let rel_x = (lx - 20) as usize;
-                    let path_chars = (FILEMAN_W as usize - 24) / CW;
+                if lx >= 32 && lx < 32 + (FILEMAN_W - 42) {
+                    let rel_x = (lx - 32) as usize;
+                    let path_chars = (FILEMAN_W as usize - 44) / CW;
                     let clicked_char = rel_x / CW;
                     let path_start = self.path.len().saturating_sub(path_chars);
                     let clicked = if path_start + clicked_char < self.path.len() {
@@ -112,6 +126,9 @@ impl FileManagerApp {
                     }
                 }
             }
+            return;
+        }
+        if ly >= content_bottom {
             return;
         }
 
@@ -129,7 +146,7 @@ impl FileManagerApp {
 
     pub fn handle_dbl_click(&mut self, _lx: i32, ly: i32) {
         let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
-        if ly <= toolbar_bottom {
+        if ly <= toolbar_bottom || ly >= toolbar_bottom + self.view_h {
             return;
         }
         let content_y = ly - toolbar_bottom;
@@ -162,7 +179,7 @@ impl FileManagerApp {
         let expected = self.offset as i32 * ROW_H;
         if self.window.scroll.offset != expected {
             let content_area_h = (self.window.height - TITLE_H) as i32;
-            let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H).max(0);
+            let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
             let visible_rows = (entries_area_h / ROW_H) as usize;
             let max_row = self.entries.len().saturating_sub(visible_rows);
             self.offset = ((self.window.scroll.offset / ROW_H) as usize).min(max_row);
@@ -294,57 +311,55 @@ impl FileManagerApp {
         let h = (FILEMAN_H - TITLE_H) as usize;
 
         for p in self.window.buf.iter_mut() {
-            *p = BLACK;
+            *p = FM_BG;
         }
 
         let stride = w;
-        self.view_h = h as i32 - TOOLBAR_H - COL_HDR_H;
+        self.view_h = h as i32 - TOOLBAR_H - COL_HDR_H - STATUS_H;
         self.total_rows = (self.view_h as usize) / ROW_H as usize;
 
         // Sync scroll state so the compositor draws the scrollbar in the right position.
-        self.window.scroll.content_h = self.entries.len() as i32 * ROW_H + TOOLBAR_H + COL_HDR_H;
+        self.window.scroll.content_h = self.entries.len() as i32 * ROW_H;
         self.window.scroll.offset = self.offset as i32 * ROW_H;
-        self.window.scroll.clamp(FILEMAN_H - TITLE_H);
+        self.window.scroll.clamp(self.view_h);
 
         self.draw_toolbar(stride);
         self.draw_column_header(stride);
         self.draw_entries(stride);
+        self.draw_status_bar(stride);
     }
 
     fn draw_toolbar(&mut self, stride: usize) {
-        let bg = 0x00_00_00_40u32;
-        for y in 0..TOOLBAR_H as usize {
-            for px in 0..FILEMAN_W as usize {
-                let idx = y * stride + px;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = bg;
-                }
-            }
-        }
+        self.fill_rect(stride, 0, 0, FILEMAN_W as usize, TOOLBAR_H as usize, FM_PANEL_ALT);
+        self.fill_rect(stride, 0, 0, FILEMAN_W as usize, 2, FM_ACCENT);
+        self.fill_rect(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_PANEL);
+        self.draw_rect_border(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_BORDER);
 
-        self.draw_up_button(4, 4);
+        self.draw_up_button(stride, 6, 3);
 
         let path_str = self.path.clone();
-        self.draw_address_bar(&path_str, 20, 0, stride);
+        self.draw_address_bar(&path_str, 38, 0, stride);
     }
 
-    fn draw_up_button(&mut self, px: usize, py: usize) {
+    fn draw_up_button(&mut self, stride: usize, px: usize, py: usize) {
+        self.fill_rect(stride, px, py, 18, 18, FM_PANEL);
+        self.draw_rect_border(stride, px, py, 18, 18, FM_BORDER);
         for gy in 0..8 {
             for gx in 0..8 {
-                let arrow_y = py + gy;
-                let arrow_x = px + gx;
-                let on_arrow = if arrow_y == py {
+                let arrow_x = px + 5 + gx;
+                let arrow_y = py + 5 + gy;
+                let on_arrow = if gy == 0 {
                     gx == 3 || gx == 4
-                } else if arrow_y == py + 1 {
+                } else if gy == 1 {
                     gx == 2 || gx == 3 || gx == 4 || gx == 5
-                } else if arrow_y == py + 2 {
+                } else if gy == 2 {
                     gx == 1 || gx == 2 || gx == 3 || gx == 4 || gx == 5 || gx == 6
-                } else if arrow_y == py + 3 {
+                } else if gy == 3 {
                     gx <= 7
                 } else {
                     false
                 };
-                let color = if on_arrow { LIGHT_GRAY } else { BLACK };
+                let color = if on_arrow { WHITE } else { continue };
                 let idx = arrow_y * (FILEMAN_W as usize) + arrow_x;
                 if idx < self.window.buf.len() {
                     self.window.buf[idx] = color;
@@ -354,25 +369,21 @@ impl FileManagerApp {
     }
 
     fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, _stride: usize) {
-        let avail = (FILEMAN_W as usize - 24) - x0;
+        let avail = (FILEMAN_W as usize - 44) - x0;
         let display = if path_str.len() * CW > avail {
             let start = path_str.len() - avail / CW;
             &path_str[start..]
         } else {
             path_str
         };
-        self.put_str(x0, y0 + 4, display, WHITE);
+        self.put_str(x0, y0 + 6, display, WHITE);
     }
 
     fn draw_column_header(&mut self, stride: usize) {
         let y = TOOLBAR_H as usize;
-        for px in 0..FILEMAN_W as usize {
-            let idx = y * stride + px;
-            if idx < self.window.buf.len() {
-                self.window.buf[idx] = DARK_GRAY;
-            }
-        }
-        self.put_str(4, y + 3, "Name", GRAY);
+        self.fill_rect(stride, 0, y, FILEMAN_W as usize, COL_HDR_H as usize, FM_PANEL);
+        self.fill_rect(stride, 0, y + COL_HDR_H as usize - 1, FILEMAN_W as usize, 1, FM_BORDER);
+        self.put_str(8, y + 4, "Name", TEXT_MUTED);
         self.put_str(COL_SIZE, y + 3, "Size", GRAY);
         self.put_str(COL_TYPE, y + 3, "Type", GRAY);
     }
@@ -393,39 +404,83 @@ impl FileManagerApp {
             let entry_idx_val = row;
 
             let is_selected = self.selected == Some(entry_idx_val);
+            let row_bg = if is_selected {
+                FM_ROW_SEL
+            } else if visual_row % 2 == 0 {
+                FM_BG
+            } else {
+                FM_ROW_ALT
+            };
+            self.fill_rect(stride, 0, py, FILEMAN_W as usize, ROW_H as usize, row_bg);
             if is_selected {
-                for px in 0..FILEMAN_W as usize {
-                    let idx = py * stride + px;
-                    if idx < self.window.buf.len() {
-                        self.window.buf[idx] = SELECTED_BG;
-                    }
-                }
+                self.fill_rect(stride, 0, py, 3, ROW_H as usize, FM_ACCENT);
             }
 
             let et = Self::entry_type(entry_idx_val, &entries_copy);
+            self.draw_entry_icon(stride, 8, py + 3, et);
             match et {
                 EntryType::Folder => {
-                    self.put_str(4, py + 3, &entry.name, LIGHT_CYAN);
+                    self.put_str(24, py + 3, &entry.name, LIGHT_CYAN);
                     self.put_str(COL_SIZE, py + 3, "", GRAY);
-                    self.put_str(COL_TYPE, py + 3, "Folder", GRAY);
+                    self.put_str(COL_TYPE, py + 3, "Folder", if is_selected { WHITE } else { GRAY });
                 }
                 EntryType::File => {
-                    self.put_str(4, py + 3, &entry.name, LIGHT_GRAY);
+                    self.put_str(24, py + 3, &entry.name, if is_selected { WHITE } else { LIGHT_GRAY });
                     let size_str = Self::format_size(entry.size);
-                    self.put_str(COL_SIZE, py + 3, &size_str, GRAY);
+                    self.put_str(COL_SIZE, py + 3, &size_str, if is_selected { WHITE } else { GRAY });
                     let ext = Self::file_ext(&entry.name);
-                    self.put_str(COL_TYPE, py + 3, &ext, GRAY);
+                    self.put_str(COL_TYPE, py + 3, &ext, if is_selected { WHITE } else { GRAY });
                 }
                 EntryType::Unknown => {}
             }
+            self.fill_rect(stride, 8, py + ROW_H as usize - 1, FILEMAN_W as usize - 16, 1, DARK_GRAY);
         }
+    }
 
-        let separator_y = y0 + self.total_rows * ROW_H as usize;
-        for px in 0..FILEMAN_W as usize {
-            let idx = separator_y * stride + px;
-            if idx < self.window.buf.len() {
-                self.window.buf[idx] = DARK_GRAY;
+    fn draw_status_bar(&mut self, stride: usize) {
+        let y = (TOOLBAR_H + COL_HDR_H + self.view_h) as usize;
+        self.fill_rect(stride, 0, y, FILEMAN_W as usize, STATUS_H as usize, FM_STATUS);
+        self.fill_rect(stride, 0, y, FILEMAN_W as usize, 1, FM_BORDER);
+
+        let mut left = String2::from("items ");
+        let mut count_buf = [0u8; 20];
+        let count = self.entries.len();
+        let mut n = count;
+        let mut i = 20usize;
+        if n == 0 {
+            i -= 1;
+            count_buf[i] = b'0';
+        } else {
+            while n > 0 {
+                i -= 1;
+                count_buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
             }
+        }
+        if let Ok(count_str) = core::str::from_utf8(&count_buf[i..]) {
+            left.push_str(count_str);
+        }
+        self.put_str(8, y + 5, &left, TEXT_MUTED);
+
+        if let Some(selected) = self.selected.and_then(|idx| self.entries.get(idx)) {
+            let label = if selected.is_dir { "selected folder" } else { "selected file" };
+            self.put_str(FILEMAN_W as usize - 140, y + 5, label, LIGHT_GRAY);
+        }
+    }
+
+    fn draw_entry_icon(&mut self, stride: usize, x: usize, y: usize, et: EntryType) {
+        match et {
+            EntryType::Folder => {
+                self.fill_rect(stride, x + 1, y, 6, 2, FOLDER_ICON);
+                self.fill_rect(stride, x, y + 2, 10, 6, FOLDER_ICON);
+                self.fill_rect(stride, x + 1, y + 3, 8, 4, blend_color(FOLDER_ICON, BLACK, 140));
+            }
+            EntryType::File => {
+                self.fill_rect(stride, x + 1, y, 8, 10, FILE_ICON);
+                self.draw_rect_border(stride, x + 1, y, 8, 10, blend_color(FILE_ICON, BLACK, 120));
+                self.fill_rect(stride, x + 5, y, 4, 3, WHITE);
+            }
+            EntryType::Unknown => {}
         }
     }
 
@@ -448,7 +503,9 @@ impl FileManagerApp {
                 .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
             for (gi, &byte) in glyph.iter().enumerate() {
                 for bit in 0..8 {
-                    let color = if byte & (1 << bit) != 0 { color } else { BLACK };
+                    if byte & (1 << bit) == 0 {
+                        continue;
+                    }
                     let px = px + ci * CW + bit;
                     let py = py + gi;
                     let idx = py * stride + px;
@@ -459,4 +516,48 @@ impl FileManagerApp {
             }
         }
     }
+
+    fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        for row in y..(y + h).min(FILEMAN_H as usize) {
+            let base = row * stride;
+            for col in x..(x + w).min(FILEMAN_W as usize) {
+                let idx = base + col;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
+                }
+            }
+        }
+    }
+
+    fn draw_rect_border(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        color: u32,
+    ) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.fill_rect(stride, x, y, w, 1, color);
+        self.fill_rect(stride, x, y + h - 1, w, 1, color);
+        self.fill_rect(stride, x, y, 1, h, color);
+        self.fill_rect(stride, x + w - 1, y, 1, h, color);
+    }
+}
+
+fn blend_color(a: u32, b: u32, t: u32) -> u32 {
+    let lerp = |ca: u32, cb: u32| -> u32 {
+        if cb >= ca {
+            (ca + (cb - ca) * t / 255).min(255)
+        } else {
+            ca - (ca - cb) * t / 255
+        }
+    };
+    let r = lerp((a >> 16) & 0xFF, (b >> 16) & 0xFF);
+    let g = lerp((a >> 8) & 0xFF, (b >> 8) & 0xFF);
+    let bl = lerp(a & 0xFF, b & 0xFF);
+    (r << 16) | (g << 8) | bl
 }

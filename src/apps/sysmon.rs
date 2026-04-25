@@ -1,8 +1,5 @@
-use crate::framebuffer::{
-    BLACK, GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW,
-};
+use crate::framebuffer::{GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::Window;
-/// System Monitor — shows CPU vendor, heap usage, and uptime.
 use font8x8::UnicodeFonts;
 
 pub const SYSMON_W: i32 = 520;
@@ -10,6 +7,17 @@ pub const SYSMON_H: i32 = 300;
 
 const CHAR_W_SMALL: usize = 8;
 const CHAR_H_SMALL: usize = 8;
+
+const BG: u32 = 0x00_03_08_16;
+const BG_ALT: u32 = 0x00_01_04_0B;
+const PANEL_BG: u32 = 0x00_00_0A_1C;
+const PANEL_ALT: u32 = 0x00_00_0E_24;
+const PANEL_BORDER: u32 = 0x00_00_44_88;
+const PANEL_INNER: u32 = 0x00_00_18_30;
+const LABEL: u32 = 0x00_66_AA_DD;
+const MUTED: u32 = 0x00_55_7A_92;
+const USB_GOOD: u32 = 0x00_00_DD_99;
+const USB_WARN: u32 = 0x00_DD_AA_44;
 
 pub struct SysMonApp {
     pub window: Window,
@@ -25,84 +33,216 @@ impl SysMonApp {
     }
 
     pub fn update(&mut self) {
-        for b in self.window.buf.iter_mut() {
-            *b = BLACK;
-        }
-
         let stride = SYSMON_W as usize;
-        let mut row = 0usize;
+        self.fill_background(stride);
 
-        self.put_str(stride, row, "CPU vendor:", WHITE);
-        row += 1;
         let cpuid = raw_cpuid::CpuId::new();
-        if let Some(v) = cpuid.get_vendor_info() {
-            self.put_str(stride, row, v.as_str(), GREEN);
-        } else {
-            self.put_str(stride, row, "unknown", LIGHT_GRAY);
-        }
-        row += 2;
+        let vendor_info = cpuid.get_vendor_info();
+        let vendor = vendor_info.as_ref().map(|v| v.as_str()).unwrap_or("unknown");
 
-        self.put_str(stride, row, "Heap used:", WHITE);
-        row += 1;
         let used = crate::allocator::heap_used();
-        let mut line = NumberLine::new();
-        line.push_usize(used);
-        line.push_str(" / ");
-        line.push_usize(crate::allocator::HEAP_SIZE);
-        line.push_str(" B");
-        self.put_str(stride, row, line.as_str(), YELLOW);
-        row += 2;
+        let heap_total = crate::allocator::HEAP_SIZE;
+        let heap_ratio = if heap_total > 0 {
+            (used.saturating_mul(100) / heap_total).min(100)
+        } else {
+            0
+        };
 
-        self.put_str(stride, row, "Uptime:", WHITE);
-        row += 1;
         let ticks = crate::interrupts::ticks();
-        let mut line = NumberLine::new();
-        line.push_u64(ticks);
-        line.push_str(" ticks (~");
-        line.push_u64(ticks / 18);
-        line.push_str("s)");
-        self.put_str(stride, row, line.as_str(), YELLOW);
-        row += 2;
+        let secs = ticks / 18;
+        let hrs = (secs / 3600) % 24;
+        let mins = (secs / 60) % 60;
+        let secs_only = secs % 60;
 
-        self.put_str(stride, row, "Scheduler:", WHITE);
-        row += 1;
         let counter =
             crate::scheduler::BACKGROUND_COUNTER.load(core::sync::atomic::Ordering::Relaxed);
-        let mut line = NumberLine::new();
-        line.push_u64(counter);
-        self.put_str(stride, row, line.as_str(), LIGHT_CYAN);
-        row += 2;
-
-        self.put_str(stride, row, "USB:", WHITE);
-        row += 1;
         let usb_lines = crate::usb::status_lines();
+        let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
+        let usb_present = !usb_lines.is_empty();
+        let usb_active = usb_lines.iter().any(|line| line.contains("active init ready"));
+
+        self.put_str_px(stride, 18, 14, "SYSTEM DASHBOARD", LABEL);
+        self.put_str_px(stride, 18, 26, "runtime view for scheduler, memory, and USB", MUTED);
+
+        let card_w = 236usize;
+        let card_h = 58usize;
+        self.draw_card_frame(stride, 16, 44, card_w, card_h, 0x00_00_EE_FF);
+        self.draw_card_frame(stride, 268, 44, card_w, card_h, 0x00_FF_DD_55);
+        self.draw_card_frame(stride, 16, 114, card_w, card_h, 0x00_55_FF_BB);
+        self.draw_card_frame(stride, 268, 114, card_w, card_h, 0x00_66_BB_FF);
+        self.draw_card_frame(stride, 16, 184, 488, 98, 0x00_00_CC_FF);
+
+        self.put_str_px(stride, 28, 58, "CPU VENDOR", LABEL);
+        self.put_str_px(stride, 28, 76, vendor, GREEN);
+
+        self.put_str_px(stride, 280, 58, "HEAP LOAD", LABEL);
+        let mut heap_line = NumberLine::new();
+        heap_line.push_usize(used);
+        heap_line.push_str(" / ");
+        heap_line.push_usize(heap_total);
+        heap_line.push_str(" B");
+        self.put_str_px(stride, 280, 76, heap_line.as_str(), YELLOW);
+        self.draw_bar(stride, 280, 90, 200, 6, heap_ratio, 0x00_11_22_33, 0x00_FF_DD_55);
+
+        self.put_str_px(stride, 28, 128, "UPTIME", LABEL);
+        let time = [
+            b'0' + (hrs / 10) as u8,
+            b'0' + (hrs % 10) as u8,
+            b':',
+            b'0' + (mins / 10) as u8,
+            b'0' + (mins % 10) as u8,
+            b':',
+            b'0' + (secs_only / 10) as u8,
+            b'0' + (secs_only % 10) as u8,
+        ];
+        if let Ok(time_str) = core::str::from_utf8(&time) {
+            self.put_str_px(stride, 28, 146, time_str, LIGHT_CYAN);
+        }
+        let mut tick_line = NumberLine::new();
+        tick_line.push_u64(ticks);
+        tick_line.push_str(" ticks");
+        self.put_str_px(stride, 116, 146, tick_line.as_str(), MUTED);
+
+        self.put_str_px(stride, 280, 128, "SCHEDULER", LABEL);
+        let mut counter_line = NumberLine::new();
+        counter_line.push_u64(counter);
+        self.put_str_px(stride, 280, 146, counter_line.as_str(), LIGHT_CYAN);
+        let pulse = ((counter as usize / 64) % 100).max(8);
+        self.draw_bar(stride, 280, 160, 200, 6, pulse, 0x00_11_22_33, 0x00_66_BB_FF);
+
+        self.put_str_px(stride, 28, 198, "USB RUNTIME", LABEL);
+        self.draw_status_pill(stride, 28, 214, "CTRL", usb_present, if usb_present { LIGHT_CYAN } else { MUTED });
+        self.draw_status_pill(stride, 90, 214, "ACTIVE", usb_active, if usb_active { USB_GOOD } else { USB_WARN });
+        self.draw_status_pill(stride, 164, 214, "KBD", usb_keyboard, if usb_keyboard { USB_GOOD } else { MUTED });
+        self.draw_status_pill(stride, 220, 214, "MOUSE", usb_mouse, if usb_mouse { USB_GOOD } else { MUTED });
+
+        let mut row = 234usize;
         if usb_lines.is_empty() {
-            self.put_str(stride, row, "USB: no probe data", LIGHT_GRAY);
+            self.put_str_px(stride, 28, row, "USB: no probe data", LIGHT_GRAY);
         } else {
-            let max_rows = SYSMON_H as usize / CHAR_H_SMALL;
             for line in usb_lines {
-                if row >= max_rows {
+                if row + CHAR_H_SMALL > 278 {
                     break;
                 }
-                self.put_str(stride, row, &line, LIGHT_CYAN);
-                row += 1;
+                self.put_str_px(stride, 28, row, &line, LIGHT_CYAN);
+                row += 10;
             }
         }
     }
 
-    fn put_str(&mut self, stride: usize, text_row: usize, s: &str, color: u32) {
-        let py = text_row * CHAR_H_SMALL;
+    fn fill_background(&mut self, stride: usize) {
+        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
+            let py = idx / stride;
+            *pixel = if py % 12 < 6 { BG } else { BG_ALT };
+        }
+    }
+
+    fn draw_card_frame(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        accent: u32,
+    ) {
+        self.fill_rect(stride, x, y, w, h, PANEL_BG);
+        self.fill_rect(stride, x, y, w, 3, accent);
+        self.fill_rect(stride, x + 1, y + 1, w - 2, h - 2, PANEL_ALT);
+        self.draw_rect_border(stride, x, y, w, h, PANEL_BORDER);
+        self.draw_rect_border(stride, x + 1, y + 1, w - 2, h - 2, PANEL_INNER);
+    }
+
+    fn draw_bar(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        percent: usize,
+        track: u32,
+        fill: u32,
+    ) {
+        self.fill_rect(stride, x, y, w, h, track);
+        self.draw_rect_border(stride, x, y, w, h, PANEL_INNER);
+        let fill_w = (w.saturating_sub(2) * percent.min(100)) / 100;
+        if fill_w > 0 {
+            self.fill_rect(stride, x + 1, y + 1, fill_w, h.saturating_sub(2), fill);
+        }
+    }
+
+    fn draw_status_pill(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        label: &str,
+        active: bool,
+        accent: u32,
+    ) {
+        let w = label.len() * CHAR_W_SMALL + 18;
+        let bg = if active { PANEL_ALT } else { PANEL_BG };
+        self.fill_rect(stride, x, y, w, 14, bg);
+        self.draw_rect_border(
+            stride,
+            x,
+            y,
+            w,
+            14,
+            if active { accent } else { PANEL_INNER },
+        );
+        self.fill_rect(
+            stride,
+            x + 4,
+            y + 4,
+            4,
+            4,
+            if active { accent } else { 0x00_33_44_55 },
+        );
+        self.put_str_px(stride, x + 12, y + 3, label, if active { WHITE } else { MUTED });
+    }
+
+    fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        for row in y..(y + h).min(SYSMON_H as usize) {
+            let base = row * stride;
+            for col in x..(x + w).min(SYSMON_W as usize) {
+                let idx = base + col;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
+                }
+            }
+        }
+    }
+
+    fn draw_rect_border(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        color: u32,
+    ) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.fill_rect(stride, x, y, w, 1, color);
+        self.fill_rect(stride, x, y + h - 1, w, 1, color);
+        self.fill_rect(stride, x, y, 1, h, color);
+        self.fill_rect(stride, x + w - 1, y, 1, h, color);
+    }
+
+    fn put_str_px(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {
         for (ci, c) in s.chars().enumerate() {
-            let px = ci * CHAR_W_SMALL;
-            if px + CHAR_W_SMALL > stride {
+            let gx = px + ci * CHAR_W_SMALL;
+            if gx + CHAR_W_SMALL > stride {
                 break;
             }
-            put_char_buf(&mut self.window.buf, stride, px, py, c, color, BLACK);
+            put_char_buf_transparent(&mut self.window.buf, stride, gx, py, c, color);
         }
     }
 }
-
-// ── Number formatting helper ──────────────────────────────────────────────────
 
 struct NumberLine {
     buf: [u8; 64],
@@ -116,6 +256,7 @@ impl NumberLine {
             len: 0,
         }
     }
+
     fn push_str(&mut self, s: &str) {
         for b in s.bytes() {
             if self.len < 64 {
@@ -124,6 +265,7 @@ impl NumberLine {
             }
         }
     }
+
     fn push_u64(&mut self, mut n: u64) {
         if n == 0 {
             self.push_str("0");
@@ -143,28 +285,30 @@ impl NumberLine {
             }
         }
     }
+
     fn push_usize(&mut self, n: usize) {
         self.push_u64(n as u64);
     }
+
     fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
 
-// ── Shared glyph helper ───────────────────────────────────────────────────────
-
-fn put_char_buf(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32, bg: u32) {
+fn put_char_buf_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
-            let color = if byte & (1 << bit) != 0 { fg } else { bg };
+            if byte & (1 << bit) == 0 {
+                continue;
+            }
             let px = px0 + bit;
             let py = py0 + gy;
             let idx = py * stride + px;
             if idx < buf.len() {
-                buf[idx] = color;
+                buf[idx] = fg;
             }
         }
     }

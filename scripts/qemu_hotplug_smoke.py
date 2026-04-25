@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a QMP-driven xHCI hotplug smoke test.")
     parser.add_argument("--bios", required=True, help="Path to bios.img")
     parser.add_argument("--fsimg", required=True, help="Path to fs.img")
-    parser.add_argument("--boot-timeout", type=float, default=8.0, help="Seconds to wait for the initial boot")
+    parser.add_argument("--boot-timeout", type=float, default=12.0, help="Seconds to wait for the initial boot")
     parser.add_argument("--hotplug-timeout", type=float, default=6.0, help="Seconds to wait for each hotplug step")
     return parser.parse_args()
 

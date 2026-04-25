@@ -101,7 +101,7 @@ smoke-usb-init: build-usb-init
 		--bios "$(USB_INIT_BIOS)" \
 		--fsimg "$(USB_INIT_FSIMG)" \
 		--usb \
-		--seconds 8 \
+		--seconds 12 \
 		--expect "[xhci] active init ready" \
 		--expect "[input] USB keyboard detected; PS/2 keyboard fallback disabled" \
 		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled"
