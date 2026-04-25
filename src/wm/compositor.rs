@@ -207,6 +207,28 @@ fn desktop_icons() -> [DesktopIcon; 5] {
     ]
 }
 
+fn window_accent(title: &str) -> u32 {
+    match title {
+        "Terminal" => ICON_TERM_ACC,
+        "System Monitor" => ICON_MON_ACC,
+        "Text Viewer" => ICON_TXT_ACC,
+        "Color Picker" => ICON_COL_ACC,
+        "File Manager" => 0x00_55_DD_FF,
+        _ => ACCENT,
+    }
+}
+
+fn window_glyph(title: &str) -> &'static str {
+    match title {
+        "Terminal" => "T>",
+        "System Monitor" => "M#",
+        "Text Viewer" => "Tx",
+        "Color Picker" => "CP",
+        "File Manager" => "Fm",
+        _ => "[]",
+    }
+}
+
 // ── Drag state ────────────────────────────────────────────────────────────────
 
 struct DragState {
@@ -397,6 +419,26 @@ impl WindowManager {
                 let fb = (bb * scan / 255).saturating_add(dot_boost).min(255);
 
                 wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
+            }
+        }
+
+        if taskbar_y > 0 && w > 0 {
+            let mut seed = 0xC001_D00Du32;
+            let star_count = ((w * taskbar_y) / 18_000).max(36);
+            for _ in 0..star_count {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let sx = (seed as usize) % w;
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let sy = (seed as usize) % taskbar_y;
+                let core = if seed & 1 == 0 { 0x00_EE_FF_FF } else { 0x00_88_CC_FF };
+                let glow = blend_color(core, DESK_TR, 180);
+                wallpaper[sy * w + sx] = core;
+                if sx + 1 < w {
+                    wallpaper[sy * w + sx + 1] = glow;
+                }
+                if sy + 1 < taskbar_y {
+                    wallpaper[(sy + 1) * w + sx] = glow;
+                }
             }
         }
 
@@ -1464,9 +1506,6 @@ match i {
                 None
             };
 
-            // App accent colours for taskbar icons (matches desktop tiles)
-            const BTN_ACCENTS: [u32; 4] = [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC];
-
             for i in 0..self.windows.len() {
                 let bx = taskbar_btn_x0 + i as i32 * (BUTTON_W + 6);
                 if bx + BUTTON_W > sw as i32 - TASKBAR_CLOCK_W - 4 {
@@ -1476,7 +1515,9 @@ match i {
                 let focused = self.focused == Some(i);
                 let minimized = self.windows[i].is_minimized();
                 let hovered = hovered_btn == Some(i);
-                let accent = BTN_ACCENTS[i % BTN_ACCENTS.len()];
+                let title = self.windows[i].window().title;
+                let accent = window_accent(title);
+                let glyph = window_glyph(title);
 
                 let bh = TASKBAR_H - 4;
                 let by = taskbar_y + 2;
@@ -1525,10 +1566,20 @@ match i {
                     );
                 }
 
-                // Title text — centred, no accent strip offset
-                let title = self.windows[i].window().title;
-                let trunc = if title.len() > 10 {
-                    &title[..10]
+                // Icon tile + title text.
+                let icon_x = bx + 10;
+                let icon_y = by + (bh - 16) / 2;
+                let icon_bg = if focused || hovered {
+                    blend_color(bg, accent, 70)
+                } else {
+                    blend_color(0x00_00_0B_20, accent, 65)
+                };
+                s_fill(s, sw, icon_x, icon_y, 16, 16, icon_bg);
+                draw_rect_border(s, sw, icon_x, icon_y, 16, 16, blend_color(accent, WHITE, 80));
+                s_draw_str_small(s, sw, icon_x + 3, icon_y + 4, glyph, accent, icon_bg, icon_x + 14);
+
+                let trunc = if title.len() > 9 {
+                    &title[..9]
                 } else {
                     title
                 };
@@ -1540,7 +1591,7 @@ match i {
                     0x00_44_88_BB // was 0x00_00_66_99 — too dark to read on frosted glass
                 };
                 let text_w = trunc.len() as i32 * 8;
-                let text_x = bx + (BUTTON_W - text_w).max(0) / 2;
+                let text_x = (icon_x + 24).max(bx + 8);
                 s_draw_str_small(
                     s,
                     sw,
@@ -1549,7 +1600,7 @@ match i {
                     trunc,
                     tcol,
                     bg,
-                    bx + BUTTON_W - 4,
+                    (text_x + text_w).min(bx + BUTTON_W - 8),
                 );
             }
 
@@ -1950,7 +2001,16 @@ match i {
         s_fill(s, sw, w.x - 1, w.y, 1, w.height, bord); // left
         s_fill(s, sw, w.x + w.width, w.y, 1, w.height, bord); // right
 
-        // ── Title text ────────────────────────────────────────────────────────
+        // ── Title icon + text ─────────────────────────────────────────────────
+        let accent = window_accent(w.title);
+        let glyph = window_glyph(w.title);
+        let icon_x = w.x + 8;
+        let icon_y = w.y + 4;
+        let icon_bg = blend_color(title_bg, accent, if focused { 110 } else { 70 });
+        s_fill(s, sw, icon_x, icon_y, 16, 14, icon_bg);
+        draw_rect_border(s, sw, icon_x, icon_y, 16, 14, blend_color(accent, WHITE, 90));
+        s_draw_str_small(s, sw, icon_x + 3, icon_y + 3, glyph, accent, icon_bg, icon_x + 14);
+
         let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 10;
         let title_fg = if focused {
             0x00_AA_DD_FF
@@ -1960,7 +2020,7 @@ match i {
         s_draw_str_small(
             s,
             sw,
-            w.x + 8,
+            w.x + 30,
             w.y + (TITLE_H - 8) / 2,
             w.title,
             title_fg,

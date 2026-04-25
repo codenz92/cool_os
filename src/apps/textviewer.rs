@@ -2,10 +2,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::framebuffer::{DARK_GRAY, LIGHT_GRAY, WHITE, YELLOW};
+use crate::framebuffer::{LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
-/// Text Viewer — scrollable read-only document display.
-/// Press 'j' to scroll down, 'k' to scroll up.
 use font8x8::UnicodeFonts;
 
 pub const VIEWER_W: i32 = 640;
@@ -13,6 +11,18 @@ pub const VIEWER_H: i32 = 480;
 
 const CHAR_W: usize = 8;
 const CHAR_H: usize = 8;
+const HEADER_H: usize = 42;
+const FOOTER_H: usize = 18;
+const PAD_X: usize = 18;
+
+const BG_A: u32 = 0x00_03_08_15;
+const BG_B: u32 = 0x00_01_03_0A;
+const PANEL: u32 = 0x00_00_0A_1C;
+const PANEL_ALT: u32 = 0x00_00_0E_24;
+const PANEL_BORDER: u32 = 0x00_00_44_88;
+const ACCENT: u32 = 0x00_00_DD_FF;
+const SUBTLE: u32 = 0x00_66_AA_DD;
+const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
     " coolOS v1.16",
@@ -53,18 +63,21 @@ pub struct TextViewerApp {
     scroll: usize,
     rows: usize,
     cols: usize,
+    heading: String,
+    subheading: String,
 }
 
 impl TextViewerApp {
     pub fn new(x: i32, y: i32) -> Self {
         let window = Window::new(x, y, VIEWER_W, VIEWER_H, "Text Viewer");
-        let content_h = (VIEWER_H - TITLE_H) as usize;
         let mut app = TextViewerApp {
             window,
             lines: ABOUT.iter().map(|line| String::from(*line)).collect(),
             scroll: 0,
-            rows: content_h / CHAR_H,
-            cols: VIEWER_W as usize / CHAR_W,
+            rows: 0,
+            cols: 0,
+            heading: String::from("About coolOS"),
+            subheading: String::from("system notes, controls, and current milestone"),
         };
         app.render();
         app
@@ -79,6 +92,8 @@ impl TextViewerApp {
         } else {
             text.lines().map(String::from).collect()
         };
+        app.heading = String::from("Text document");
+        app.subheading = String::from(path);
         app.scroll = 0;
         app.render();
         Ok(app)
@@ -122,73 +137,160 @@ impl TextViewerApp {
 
     fn render(&mut self) {
         let stride = VIEWER_W as usize;
-        for b in self.window.buf.iter_mut() {
-            *b = DARK_GRAY;
-        }
+        self.fill_background(stride);
+
+        let content_h = (VIEWER_H - TITLE_H) as usize;
+        let text_y0 = HEADER_H + 8;
+        let text_h = content_h.saturating_sub(HEADER_H + FOOTER_H + 10);
+        self.rows = text_h / CHAR_H;
+        self.cols = (VIEWER_W as usize).saturating_sub(PAD_X * 2 + 8) / CHAR_W;
         self.window.scroll.content_h = (self.lines.len() * CHAR_H) as i32;
         self.window.scroll.offset = self.scroll as i32 * CHAR_H as i32;
         self.window.scroll.clamp((self.rows * CHAR_H) as i32);
+
+        self.fill_rect(stride, 0, 0, VIEWER_W as usize, HEADER_H, PANEL_ALT);
+        self.fill_rect(stride, 0, 0, VIEWER_W as usize, 3, ACCENT);
+        self.fill_rect(stride, 0, HEADER_H - 1, VIEWER_W as usize, 1, PANEL_BORDER);
+        self.fill_rect(stride, 0, content_h - FOOTER_H, VIEWER_W as usize, FOOTER_H, PANEL);
+        self.fill_rect(stride, 0, content_h - FOOTER_H, VIEWER_W as usize, 1, PANEL_BORDER);
+        self.fill_rect(stride, PAD_X - 10, text_y0 - 2, 2, text_h, ACCENT);
+
+        let heading = self.heading.clone();
+        let subheading = self.subheading.clone();
+        self.put_str(stride, PAD_X, 12, &heading, WHITE);
+        self.put_str(stride, PAD_X, 24, &subheading, SUBTLE);
 
         for screen_row in 0..self.rows {
             let doc_row = self.scroll + screen_row;
             if doc_row >= self.lines.len() {
                 break;
             }
-            let line = &self.lines[doc_row];
-            let py = screen_row * CHAR_H;
+            let line = self.lines[doc_row].clone();
+            let py = text_y0 + screen_row * CHAR_H;
+            let fg = if line.starts_with(" ==") {
+                YELLOW
+            } else if line.starts_with("  ") {
+                LIGHT_GRAY
+            } else {
+                WHITE
+            };
+            if line.starts_with(" ==") {
+                self.fill_rect(stride, PAD_X - 6, py + 1, 3, 6, YELLOW);
+            }
             for (ci, c) in line.chars().enumerate() {
                 if ci >= self.cols {
                     break;
                 }
-                let px = ci * CHAR_W;
-                let fg = if line.starts_with(" ==") {
-                    YELLOW
-                } else if line.starts_with("  ") {
-                    LIGHT_GRAY
-                } else {
-                    WHITE
-                };
-                put_char(&mut self.window.buf, stride, px, py, c, fg);
+                let px = PAD_X + ci * CHAR_W;
+                put_char_transparent(&mut self.window.buf, stride, px, py, c, fg);
             }
         }
 
-        // Scroll indicators.
-        let top_color = if self.scroll > 0 {
-            LIGHT_GRAY
+        let mut footer = String::from("j/k scroll");
+        footer.push_str("   line ");
+        let current_line = self.scroll + 1;
+        push_number(&mut footer, current_line);
+        footer.push('/');
+        push_number(&mut footer, self.lines.len().max(1));
+        self.put_str(stride, PAD_X, content_h - FOOTER_H + 5, &footer, MUTED);
+
+        let progress = if self.lines.is_empty() {
+            0
         } else {
-            DARK_GRAY
+            ((self.scroll + self.rows).min(self.lines.len()) * 100) / self.lines.len()
         };
-        let bot_color = if self.scroll + self.rows < self.lines.len() {
-            LIGHT_GRAY
-        } else {
-            DARK_GRAY
-        };
-        let hint_row = (self.rows - 1) * CHAR_H;
-        for px in 0..stride {
-            if self.window.buf[px] != DARK_GRAY {
-                self.window.buf[px] = top_color;
+        self.draw_bar(
+            stride,
+            VIEWER_W as usize - 170,
+            content_h - FOOTER_H + 6,
+            140,
+            6,
+            progress,
+            0x00_11_22_33,
+            ACCENT,
+        );
+    }
+
+    fn fill_background(&mut self, stride: usize) {
+        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
+            let py = idx / stride;
+            *pixel = if py % 12 < 6 { BG_A } else { BG_B };
+        }
+    }
+
+    fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        let content_h = (VIEWER_H - TITLE_H) as usize;
+        for row in y..(y + h).min(content_h) {
+            let base = row * stride;
+            for col in x..(x + w).min(VIEWER_W as usize) {
+                let idx = base + col;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
+                }
             }
-            let idx = hint_row * stride + px;
-            if idx < self.window.buf.len() {
-                self.window.buf[idx] = bot_color;
+        }
+    }
+
+    fn draw_bar(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        percent: usize,
+        track: u32,
+        fill: u32,
+    ) {
+        self.fill_rect(stride, x, y, w, h, track);
+        let fill_w = (w.saturating_sub(2) * percent.min(100)) / 100;
+        if fill_w > 0 {
+            self.fill_rect(stride, x + 1, y + 1, fill_w, h.saturating_sub(2), fill);
+        }
+    }
+
+    fn put_str(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {
+        for (ci, c) in s.chars().enumerate() {
+            let gx = px + ci * CHAR_W;
+            if gx + CHAR_W > stride {
+                break;
             }
+            put_char_transparent(&mut self.window.buf, stride, gx, py, c, color);
         }
     }
 }
 
-fn put_char(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
+fn push_number(out: &mut String, mut n: usize) {
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    while n > 0 {
+        digits[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    for i in (0..len).rev() {
+        out.push(digits[i] as char);
+    }
+}
+
+fn put_char_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
-            if byte & (1 << bit) != 0 {
-                let px = px0 + bit;
-                let py = py0 + gy;
-                let idx = py * stride + px;
-                if idx < buf.len() {
-                    buf[idx] = fg;
-                }
+            if byte & (1 << bit) == 0 {
+                continue;
+            }
+            let px = px0 + bit;
+            let py = py0 + gy;
+            let idx = py * stride + px;
+            if idx < buf.len() {
+                buf[idx] = fg;
             }
         }
     }
