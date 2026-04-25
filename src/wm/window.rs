@@ -3,13 +3,13 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 /// Height of the title bar in pixels.
-pub const TITLE_H: i32 = 22;
+pub const TITLE_H: i32 = 28;
 /// Width of each window control button.
-pub const WIN_BTN_W: i32 = 18;
+pub const WIN_BTN_W: i32 = 22;
 /// Width of the scrollbar strip along the right edge of the content area.
-pub const SCROLLBAR_W: i32 = 10;
+pub const SCROLLBAR_W: i32 = 12;
 /// Width/height of the resize grab corner (bottom-right).
-pub const RESIZE_HANDLE: i32 = 8;
+pub const RESIZE_HANDLE: i32 = 10;
 
 // ── Scroll state ──────────────────────────────────────────────────────────────
 

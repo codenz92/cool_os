@@ -31,22 +31,22 @@ const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 
 // Taskbar / shell
 // Accent (CRT phosphor blue)
-const ACCENT: u32 = 0x00_00_99_FF; // #0099FF  bright phosphor blue
-const ACCENT_HOV: u32 = 0x00_33_BB_FF; // #33BBFF  lit hover
-const ACCENT_PRESS: u32 = 0x00_00_66_CC; // #0066CC  depressed
+const ACCENT: u32 = 0x00_00_BB_FF; // #00BBFF  bright phosphor blue (boosted)
+const ACCENT_HOV: u32 = 0x00_44_CC_FF; // #44CCFF  lit hover (richer)
+const ACCENT_PRESS: u32 = 0x00_00_77_CC; // #0077CC  depressed
 
 // Window chrome (CRT dark mode)
-const WIN_BAR_F: u32 = 0x00_00_10_28; // #001028  focused title bar — deep navy
+const WIN_BAR_F: u32 = 0x00_00_12_2E; // #00122E  focused title bar — richer navy
 const WIN_BAR_U: u32 = 0x00_00_07_14; // #000714  unfocused — near-black
 const WIN_CONTENT: u32 = 0x00_00_09_1C; // #00091C  window body
-const WIN_BDR_F: u32 = 0x00_00_99_FF; // #0099FF  focused border — phosphor glow
+const WIN_BDR_F: u32 = 0x00_00_BB_FF; // #00BBFF  focused border — full phosphor glow
 const WIN_BDR_U: u32 = 0x00_00_33_66; // #003366  unfocused — dim blue
 
 // Window caption buttons
-const CAP_NORMAL: u32 = 0x00_00_10_28; // same as title bar
-const CAP_HOV: u32 = 0x00_00_22_44; // slightly lighter navy
-const CLOSE_REST: u32 = 0x00_00_10_28; // close resting
-const CLOSE_HOV: u32 = 0x00_BB_11_11; // #BB1111  red-CRT close
+const CAP_NORMAL: u32 = 0x00_00_12_2E; // same as title bar
+const CAP_HOV: u32 = 0x00_00_26_4E; // slightly lighter navy
+const CLOSE_REST: u32 = 0x00_00_12_2E; // close resting
+const CLOSE_HOV: u32 = 0x00_CC_11_11; // #CC1111  red-CRT close (deeper red)
 
 /// Sentinel stored in window content buffers to mean "render the window background here".
 /// Apps that genuinely need to paint pure black should write `0x00_00_00_01` instead
@@ -59,7 +59,7 @@ const DESK_TR: u32 = 0x00_00_03_0C; // top-right
 const DESK_BL: u32 = 0x00_00_01_06; // bottom-left
 const DESK_BR: u32 = 0x00_00_02_0A; // bottom-right
                                     // CRT phosphor glow toward screen centre
-const BLOOM_1: u32 = 0x00_00_44_AA; // primary phosphor blue bloom
+const BLOOM_1: u32 = 0x00_00_55_CC; // primary phosphor blue bloom (richer)
 
 // Desktop icons — CRT phosphor colour set
 const ICON_TERM_BG: u32 = 0x00_00_16_08; // terminal — dark green-black
@@ -421,21 +421,21 @@ impl WindowManager {
                 let dx = tx - 0.50;
                 let dy = ty - 0.45;
                 let dist_sq = dx * dx + dy * dy;
-                let t_b = 1.0f32 - (dist_sq / 0.3025f32).min(1.0f32);
-                let bloom = t_b * t_b * t_b;
+                let t_b = 1.0f32 - (dist_sq / 0.20f32).min(1.0f32); // tighter, brighter bloom
+                let bloom = t_b * t_b * t_b * 1.4f32; // boosted bloom intensity
                 let br = (r as f32 + bloom * ((BLOOM_1 >> 16) as u8 as f32)).min(255.0) as u32;
                 let bg = (g as f32 + bloom * ((BLOOM_1 >> 8) as u8 as f32)).min(255.0) as u32;
                 let bb = (b as f32 + bloom * (BLOOM_1 as u8 as f32)).min(255.0) as u32;
 
-                // ── CRT scanline — 3-step soft falloff mimics phosphor edge roll-off ─
+                // ── CRT scanline — stronger 3-step phosphor falloff ─────────────
                 let scan: u32 = match y % 3 {
-                    0 => 255, // bright line
-                    1 => 232, // soft shoulder
-                    _ => 212, // dim valley
+                    0 => 255, // bright phosphor line
+                    1 => 210, // soft shoulder (stronger shadow vs before)
+                    _ => 175, // dim valley (deeper shadow for contrast)
                 };
 
                 // ── Phosphor triad dot-mask — column 2 of every 3 gets blue boost ─
-                let dot_boost: u32 = if x % 3 == 2 { 10 } else { 0 };
+                let dot_boost: u32 = if x % 3 == 2 { 14 } else { 0 };
 
                 let fr = br * scan / 255;
                 let fg = bg * scan / 255;
@@ -447,21 +447,27 @@ impl WindowManager {
 
         if taskbar_y > 0 && w > 0 {
             let mut seed = 0xC001_D00Du32;
-            let star_count = ((w * taskbar_y) / 18_000).max(36);
+            let star_count = ((w * taskbar_y) / 12_000).max(48); // denser star field
             for _ in 0..star_count {
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                 let sx = (seed as usize) % w;
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                 let sy = (seed as usize) % taskbar_y;
-                let core = if seed & 1 == 0 { 0x00_EE_FF_FF } else { 0x00_88_CC_FF };
-                let glow = blend_color(core, DESK_TR, 180);
+                let core = if seed & 3 == 0 {
+                    0x00_FF_FF_FF // bright white star
+                } else if seed & 3 == 1 {
+                    0x00_EE_FF_FF // cool white
+                } else {
+                    0x00_88_CC_FF // blue phosphor
+                };
+                let glow = blend_color(core, DESK_TR, 160);
+                let dim_glow = blend_color(core, DESK_TR, 210);
                 wallpaper[sy * w + sx] = core;
-                if sx + 1 < w {
-                    wallpaper[sy * w + sx + 1] = glow;
-                }
-                if sy + 1 < taskbar_y {
-                    wallpaper[(sy + 1) * w + sx] = glow;
-                }
+                // 4-point cross halo
+                if sx + 1 < w { wallpaper[sy * w + sx + 1] = glow; }
+                if sx > 0 { wallpaper[sy * w + sx - 1] = dim_glow; }
+                if sy + 1 < taskbar_y { wallpaper[(sy + 1) * w + sx] = glow; }
+                if sy > 0 { wallpaper[(sy - 1) * w + sx] = dim_glow; }
             }
         }
 
@@ -1003,13 +1009,22 @@ impl WindowManager {
                     );
                 }
 
-                // Tile background
-                let tile_bg = if selected || hot {
-                    blend_color(icon_bg, 0x00_FF_FF_FF, 30)
+                // Tile background — vertical gradient from lighter top to darker bottom
+                let tile_top = if selected || hot {
+                    blend_color(icon_bg, 0x00_FF_FF_FF, 40)
                 } else {
-                    icon_bg
+                    blend_color(icon_bg, 0x00_FF_FF_FF, 10)
                 };
-                s_fill(s, sw, icon.x, icon.y, ICON_SIZE, ICON_SIZE, tile_bg);
+                let tile_bot = if selected || hot {
+                    blend_color(icon_bg, BLACK, 60)
+                } else {
+                    blend_color(icon_bg, BLACK, 80)
+                };
+                for gy in 0..ICON_SIZE {
+                    let t = (gy * 255 / ICON_SIZE.max(1)) as u32;
+                    let row_col = blend_color(tile_top, tile_bot, t);
+                    s_fill(s, sw, icon.x, icon.y + gy, ICON_SIZE, 1, row_col);
+                }
                 draw_rect_border(
                     s,
                     sw,
@@ -1026,10 +1041,10 @@ impl WindowManager {
                     icon.y + 1,
                     ICON_SIZE - 2,
                     ICON_SIZE - 2,
-                    blend_color(tile_bg, icon_acc, 120),
+                    blend_color(tile_top, icon_acc, 100),
                 );
 
-                // Accent top band
+                // Accent top band + bottom edge line
                 s_fill(s, sw, icon.x, icon.y, ICON_SIZE, 4, icon_acc);
                 s_fill(
                     s,
@@ -1038,7 +1053,7 @@ impl WindowManager {
                     icon.y + ICON_SIZE - 5,
                     ICON_SIZE - 12,
                     2,
-                    blend_color(icon_acc, tile_bg, 80),
+                    blend_color(icon_acc, tile_bot, 80),
                 );
 
                 // ── Per-app pixel-art icon ────────────────────────────────────────
@@ -1200,23 +1215,24 @@ match i {
             }
 
             // ── Taskbar — frosted glass panel ────────────────────────────────────
-            // Step 1: Darken + blue-tint the wallpaper underneath to fake frosted glass.
+            // Step 1: Darken + strong blue-tint the wallpaper underneath to fake frosted glass.
             {
                 let t0 = taskbar_y as usize;
                 let t1 = (t0 + TASKBAR_H as usize).min(s.len() / sw);
                 for row in t0..t1 {
                     for col in 0..sw {
                         let p = s[row * sw + col];
-                        let r = ((p >> 16) & 0xFF) * 16 / 100;
-                        let g = ((p >> 8) & 0xFF) * 18 / 100;
-                        let b = ((p & 0xFF) * 28 / 100).saturating_add(22).min(255);
+                        // Crush red/green heavily, preserve and boost blue
+                        let r = ((p >> 16) & 0xFF) * 10 / 100;
+                        let g = ((p >> 8) & 0xFF) * 12 / 100;
+                        let b = ((p & 0xFF) * 35 / 100).saturating_add(28).min(255);
                         s[row * sw + col] = (r << 16) | (g << 8) | b;
                     }
                 }
             }
             // Step 2: Bright 2-px top accent border — phosphor blue glow line.
-            s_fill(s, sw, 0, taskbar_y, sw as i32, 1, 0x00_00_99_EE);
-            s_fill(s, sw, 0, taskbar_y + 1, sw as i32, 1, 0x00_00_33_66);
+            s_fill(s, sw, 0, taskbar_y, sw as i32, 2, 0x00_00_BB_EE);
+            s_fill(s, sw, 0, taskbar_y + 2, sw as i32, 1, 0x00_00_55_88);
 
             // ── Start / home button — layered launcher control ───────────────────
             let start_hot =
@@ -1225,20 +1241,22 @@ match i {
             let start_active = self.start_menu_open || start_pressed;
 
             let pill_x = 8i32;
-            let pill_y = taskbar_y + 5;
+            let pill_y = taskbar_y + 4;
             let pill_w = START_BTN_W - 16;
-            let pill_h = TASKBAR_H - 10;
+            let pill_h = TASKBAR_H - 8;
             let start_bg = if start_active {
                 ACCENT_PRESS
             } else if start_hot {
-                0x00_00_20_48
+                0x00_00_22_48
             } else {
-                0x00_00_0C_20
+                0x00_00_0E_22
             };
+            // Outer shadow/glow when active
             if start_active {
-                s_fill(s, sw, pill_x - 2, pill_y - 1, pill_w + 4, pill_h + 2, 0x00_00_22_44);
+                s_fill(s, sw, pill_x - 2, pill_y - 2, pill_w + 4, pill_h + 4, blend_color(ACCENT, BLACK, 160));
             }
             s_fill(s, sw, pill_x, pill_y, pill_w, pill_h, start_bg);
+            // Double border for depth
             draw_rect_border(
                 s,
                 sw,
@@ -1255,15 +1273,17 @@ match i {
                 pill_y + 1,
                 pill_w - 2,
                 pill_h - 2,
-                0x00_00_22_44,
+                if start_active { blend_color(ACCENT, WIN_BAR_F, 200) } else { 0x00_00_22_44 },
             );
 
             let tile_x = pill_x + 8;
             let tile_y = pill_y + 5;
-            let tile_bg = if start_active { 0x00_00_12_24 } else { 0x00_00_08_18 };
+            let tile_bg = if start_active { 0x00_00_16_2E } else { 0x00_00_0A_1C };
             s_fill(s, sw, tile_x, tile_y, 18, 18, tile_bg);
-            draw_rect_border(s, sw, tile_x, tile_y, 18, 18, 0x00_00_55_99);
+            s_fill(s, sw, tile_x, tile_y, 18, 3, if start_active { ACCENT } else { blend_color(ACCENT, BLACK, 160) });
+            draw_rect_border(s, sw, tile_x, tile_y, 18, 18, if start_active { ACCENT } else { 0x00_00_55_99 });
             let home_col = if start_active { WHITE } else { ACCENT_HOV };
+            // Home icon glyphs (roof + walls + door)
             s_fill(s, sw, tile_x + 4, tile_y + 6, 10, 2, home_col);
             s_fill(s, sw, tile_x + 2, tile_y + 8, 2, 2, home_col);
             s_fill(s, sw, tile_x + 14, tile_y + 8, 2, 2, home_col);
@@ -1274,9 +1294,9 @@ match i {
                 s,
                 sw,
                 pill_x + 34,
-                pill_y + 7,
+                pill_y + 6,
                 "HOME",
-                if start_active { WHITE } else { 0x00_CC_EE_FF },
+                if start_active { WHITE } else { 0x00_DD_EE_FF },
                 start_bg,
                 pill_x + pill_w - 18,
             );
@@ -1284,7 +1304,7 @@ match i {
                 s,
                 sw,
                 pill_x + 34,
-                pill_y + 18,
+                pill_y + 17,
                 "start",
                 if start_hot { 0x00_88_CC_FF } else { 0x00_44_88_BB },
                 start_bg,
@@ -1301,7 +1321,8 @@ match i {
 
             // Taskbar separators and desktop capsule.
             let sep_x = START_BTN_W + 2;
-            s_fill(s, sw, sep_x, taskbar_y + 4, 1, TASKBAR_H - 8, 0x00_00_66_AA);
+            s_fill(s, sw, sep_x, taskbar_y + 3, 1, TASKBAR_H - 6, 0x00_00_88_CC);
+            s_fill(s, sw, sep_x + 1, taskbar_y + 3, 1, TASKBAR_H - 6, 0x00_00_22_44);
 
             let taskbar_home_x = sep_x + 6;
             let taskbar_home_y = taskbar_y + 6;
@@ -1844,9 +1865,9 @@ match i {
                 let bh = TASKBAR_H - 4;
                 let by = taskbar_y + 2;
                 let bg = if focused {
-                    0x00_00_22_4A
+                    0x00_00_28_55
                 } else if hovered {
-                    0x00_00_14_30
+                    0x00_00_16_32
                 } else {
                     0x00_00_00_00
                 };
@@ -1855,20 +1876,22 @@ match i {
                     s_fill(s, sw, bx, by, BUTTON_W, bh, bg);
                 }
                 if focused {
-                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 2, BUTTON_W, 2, accent);
-                    s_fill(s, sw, bx, taskbar_y + 2, BUTTON_W, 1, 0x00_00_55_99);
+                    // 3px bottom accent bar
+                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 3, BUTTON_W, 3, accent);
+                    // Subtle top glow line
+                    s_fill(s, sw, bx, taskbar_y + 2, BUTTON_W, 1, blend_color(accent, BLACK, 170));
                 } else if hovered {
-                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 2, BUTTON_W, 1, 0x00_00_44_88);
+                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 2, BUTTON_W, 1, 0x00_00_55_99);
                 }
                 if minimized {
                     s_fill(
                         s,
                         sw,
-                        bx + BUTTON_W / 2 - 3,
-                        taskbar_y + TASKBAR_H - 5,
-                        6,
+                        bx + BUTTON_W / 2 - 4,
+                        taskbar_y + TASKBAR_H - 4,
+                        8,
                         2,
-                        0x00_00_55_99,
+                        0x00_00_66_AA,
                     );
                 }
 
@@ -2032,13 +2055,24 @@ match i {
                 if let Ok(time_str) = core::str::from_utf8(&buf) {
                     let time_w = 5 * 8;
                     let time_x = clock_box_x + (clock_box_w - time_w) / 2;
+                    // Phosphor glow — dim halo 1px around digits
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        time_x - 1,
+                        taskbar_y + 7,
+                        time_str,
+                        0x00_00_44_77, // dim glow behind
+                        clk_bg,
+                        clock_box_x + clock_box_w,
+                    );
                     s_draw_str_small(
                         s,
                         sw,
                         time_x,
                         taskbar_y + 8,
                         time_str,
-                        0x00_00_EE_FF, // phosphor cyan clock digits
+                        0x00_00_FF_FF, // bright cyan phosphor clock digits
                         clk_bg,
                         clock_box_x + clock_box_w,
                     );
@@ -2053,7 +2087,7 @@ match i {
                     brand_x,
                     taskbar_y + 22,
                     "coolOS",
-                    0x00_00_66_99,
+                    0x00_00_88_BB,
                     clk_bg,
                     clock_box_x + clock_box_w,
                 );
@@ -2063,11 +2097,14 @@ match i {
             if let Some(ref cm) = self.context_menu {
                 let menu_h = CTX_HEADER_H + CTX_PAD * 2 + CTX_ITEM_H * CTX_ITEMS.len() as i32;
 
-                // Background
-                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_07_18);
+                // Drop shadow
+                s_fill(s, sw, cm.x + 4, cm.y + 4, CTX_W, menu_h, 0x00_00_00_24);
+
+                // Background — darker, richer navy
+                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_09_1E);
 
                 // Outer border + inner inset
-                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_66_BB);
+                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_BB_EE);
                 draw_rect_border(
                     s,
                     sw,
@@ -2075,7 +2112,7 @@ match i {
                     cm.y + 1,
                     CTX_W - 2,
                     menu_h - 2,
-                    0x00_00_22_44,
+                    0x00_00_33_55,
                 );
 
                 // ── Header strip ──────────────────────────────────────────────────
@@ -2302,43 +2339,62 @@ match i {
         cursor_y: i32,
     ) {
         // ── Drop shadow ───────────────────────────────────────────────────────
-        // Four-sided soft shadow: 6px offset, fades with distance
-        const SHADOW_R: i32 = 6;
+        // Six-sided soft shadow with smooth cubic falloff
+        const SHADOW_R: i32 = 8;
         for d in 1..=SHADOW_R {
-            let alpha = ((SHADOW_R - d + 1) as u32 * 6).min(40);
-            let shadow_col = alpha << 24; // pure black with varying alpha weight
+            let t = (SHADOW_R - d + 1) as u32;
+            let alpha = (t * t * 3 / SHADOW_R as u32).min(48); // cubic falloff
+            let shadow_col = alpha << 24;
             let sx = w.x + w.width + d - 1;
             let sy = w.y + w.height + d - 1;
-            // Right edge
             s_fill_alpha(s, sw, sx, w.y + d, 1, w.height, shadow_col);
-            // Bottom edge
             s_fill_alpha(s, sw, w.x + d, sy, w.width, 1, shadow_col);
-            // Left edge
             s_fill_alpha(s, sw, w.x - d, w.y + d, 1, w.height, shadow_col);
-            // Top edge
             s_fill_alpha(s, sw, w.x + d, w.y - d, w.width, 1, shadow_col);
         }
 
         if focused {
-            let glow = blend_color(ACCENT, BLACK, 110);
+            // Outer dim glow ring (3px out)
+            let outer_glow = blend_color(ACCENT, BLACK, 190);
+            draw_rect_border(s, sw, w.x - 3, w.y - 3, w.width + 6, w.height + 6, outer_glow);
+            // Inner bright 2px border
+            let glow = blend_color(ACCENT, BLACK, 100);
             draw_rect_border(s, sw, w.x - 2, w.y - 2, w.width + 4, w.height + 4, glow);
+            draw_rect_border(s, sw, w.x - 1, w.y - 1, w.width + 2, w.height + 2, WIN_BDR_F);
         }
 
         // ── Title bar — CRT phosphor chrome ──────────────────────────────────
         let title_bg = if focused { WIN_BAR_F } else { WIN_BAR_U };
+        // 3-stop gradient: highlight → mid navy → base
         let title_top = if focused {
-            blend_color(ACCENT, WIN_BAR_F, 210)
+            blend_color(ACCENT, WIN_BAR_F, 180) // bright phosphor highlight
         } else {
-            blend_color(WIN_BAR_F, WIN_BAR_U, 90)
+            blend_color(WIN_BAR_F, WIN_BAR_U, 80)
+        };
+        let title_mid = if focused {
+            blend_color(ACCENT, WIN_BAR_F, 230)
+        } else {
+            WIN_BAR_U
         };
         for row in 0..TITLE_H {
-            let shade = blend_color(title_top, title_bg, ((row * 255) / TITLE_H.max(1)) as u32);
+            let t = (row * 255 / TITLE_H.max(1)) as u32;
+            let shade = if t < 128 {
+                blend_color(title_top, title_mid, t * 2)
+            } else {
+                blend_color(title_mid, title_bg, (t - 128) * 2)
+            };
             s_fill(s, sw, w.x, w.y + row, w.width, 1, shade);
         }
 
         // ── Window border ─────────────────────────────────────────────────────
         let bord = if focused { WIN_BDR_F } else { WIN_BDR_U };
-        s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, 1, bord); // top
+        let bord_inner = if focused {
+            blend_color(ACCENT, WIN_BAR_F, 210)
+        } else {
+            blend_color(WIN_BDR_U, BLACK, 160)
+        };
+        s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, 1, bord); // top outer
+        s_fill(s, sw, w.x, w.y, w.width, 1, bord_inner);         // top inner shine
         s_fill(s, sw, w.x - 1, w.y + w.height, w.width + 2, 1, bord); // bottom
         s_fill(s, sw, w.x - 1, w.y, 1, w.height, bord); // left
         s_fill(s, sw, w.x + w.width, w.y, 1, w.height, bord); // right
@@ -2347,22 +2403,24 @@ match i {
         let accent = window_accent(w.title);
         let glyph = window_glyph(w.title);
         let icon_x = w.x + 8;
-        let icon_y = w.y + 4;
-        let icon_bg = blend_color(title_bg, accent, if focused { 110 } else { 70 });
-        s_fill(s, sw, icon_x, icon_y, 16, 14, icon_bg);
-        draw_rect_border(s, sw, icon_x, icon_y, 16, 14, blend_color(accent, WHITE, 90));
-        s_draw_str_small(s, sw, icon_x + 3, icon_y + 3, glyph, accent, icon_bg, icon_x + 14);
+        let icon_y = w.y + 5;
+        let icon_bg = blend_color(title_bg, accent, if focused { 120 } else { 75 });
+        // Slightly taller icon badge to fill the taller title bar
+        s_fill(s, sw, icon_x, icon_y, 18, 18, icon_bg);
+        s_fill(s, sw, icon_x, icon_y, 18, 3, accent); // accent top stripe on badge
+        draw_rect_border(s, sw, icon_x, icon_y, 18, 18, blend_color(accent, WHITE, 80));
+        s_draw_str_small(s, sw, icon_x + 4, icon_y + 5, glyph, accent, icon_bg, icon_x + 16);
 
         let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 10;
         let title_fg = if focused {
-            0x00_AA_DD_FF
+            0x00_CC_EE_FF
         } else {
             0x00_00_55_88
         };
         s_draw_str_small(
             s,
             sw,
-            w.x + 30,
+            w.x + 34,
             w.y + (TITLE_H - 8) / 2,
             w.title,
             title_fg,
@@ -2475,15 +2533,24 @@ match i {
 
         // Accent stripe drawn last so it runs end-to-end over the caption buttons too
         if focused {
-            s_fill(s, sw, w.x, w.y, w.width, 2, ACCENT);
+            s_fill(s, sw, w.x, w.y, w.width, 3, ACCENT); // 3px bright stripe
             s_fill(
                 s,
                 sw,
                 w.x,
-                w.y + 2,
+                w.y + 3,
                 w.width,
                 2,
-                blend_color(ACCENT, WIN_BAR_F, 180),
+                blend_color(ACCENT, WIN_BAR_F, 160),
+            );
+            s_fill(
+                s,
+                sw,
+                w.x,
+                w.y + 5,
+                w.width,
+                1,
+                blend_color(ACCENT, WIN_BAR_F, 220),
             );
         }
 
@@ -2498,11 +2565,21 @@ match i {
                 let py = content_y + row as i32;
                 if px >= 0 && py >= 0 && (px as usize) < sw && (py as usize) < s.len() / sw {
                     let pixel = w.buf[row * cw + col];
-                    s[(py as usize) * sw + (px as usize)] = if pixel == WIN_TRANSPARENT {
+                    let base = if pixel == WIN_TRANSPARENT {
                         WIN_CONTENT
                     } else {
                         pixel
                     };
+                    // Subtle CRT scanline in content area — dims every 3rd row slightly
+                    let scanned = if row % 3 == 2 {
+                        let r = ((base >> 16) & 0xFF) * 220 / 255;
+                        let g = ((base >> 8) & 0xFF) * 220 / 255;
+                        let b = (base & 0xFF) * 220 / 255;
+                        (r << 16) | (g << 8) | b
+                    } else {
+                        base
+                    };
+                    s[(py as usize) * sw + (px as usize)] = scanned;
                 }
             }
         }
@@ -2514,15 +2591,22 @@ match i {
             let track_h = view_h;
             // Track background
             s_fill(s, sw, sb_x, content_y, SCROLLBAR_W, track_h, 0x00_00_03_0A);
-            // Left edge separator
-            s_fill(s, sw, sb_x, content_y, 1, track_h, 0x00_00_11_22);
+            // Left edge separator (2px with gradient)
+            s_fill(s, sw, sb_x, content_y, 1, track_h, 0x00_00_22_44);
+            s_fill(s, sw, sb_x + 1, content_y, 1, track_h, 0x00_00_0C_18);
             // Thumb
             let (thumb_y, thumb_h) = w.scroll.thumb_rect(view_h, track_h);
             let thumb_col = if focused {
-                0x00_00_44_88
+                0x00_00_55_AA
             } else {
-                0x00_00_22_44
+                0x00_00_28_55
             };
+            let thumb_highlight = if focused {
+                0x00_00_88_DD
+            } else {
+                0x00_00_44_77
+            };
+            // Thumb body
             s_fill(
                 s,
                 sw,
@@ -2532,6 +2616,21 @@ match i {
                 thumb_h,
                 thumb_col,
             );
+            // Thumb center highlight stripe
+            if thumb_h >= 4 {
+                s_fill(
+                    s,
+                    sw,
+                    sb_x + SCROLLBAR_W / 2 - 1,
+                    content_y + thumb_y + 2,
+                    2,
+                    thumb_h - 4,
+                    thumb_highlight,
+                );
+            }
+            // Thumb top/bottom edge lines
+            s_fill(s, sw, sb_x + 2, content_y + thumb_y, SCROLLBAR_W - 4, 1, thumb_highlight);
+            s_fill(s, sw, sb_x + 2, content_y + thumb_y + thumb_h - 1, SCROLLBAR_W - 4, 1, blend_color(thumb_col, BLACK, 80));
         }
 
         // ── Resize handle — diagonal dot-grip in bottom-right corner ──────────
@@ -2539,14 +2638,17 @@ match i {
             let hx = w.x + w.width - RESIZE_HANDLE;
             let hy = w.y + w.height - RESIZE_HANDLE;
             let gc = if focused {
-                0x00_00_55_99
+                0x00_00_77_BB
             } else {
-                0x00_00_22_44
+                0x00_00_2A_55
             };
-            // Three 2×2 dots stair-stepping toward the corner
-            s_fill(s, sw, hx + 5, hy + 5, 2, 2, gc);
-            s_fill(s, sw, hx + 3, hy + 5, 2, 2, gc);
-            s_fill(s, sw, hx + 5, hy + 3, 2, 2, gc);
+            let gc_dim = if focused { 0x00_00_33_66 } else { 0x00_00_14_28 };
+            // Four 2×2 dots — stair-stepping toward corner
+            s_fill(s, sw, hx + 7, hy + 7, 2, 2, gc);
+            s_fill(s, sw, hx + 5, hy + 7, 2, 2, gc_dim);
+            s_fill(s, sw, hx + 7, hy + 5, 2, 2, gc_dim);
+            s_fill(s, sw, hx + 3, hy + 7, 2, 2, gc_dim);
+            s_fill(s, sw, hx + 7, hy + 3, 2, 2, gc_dim);
         }
     }
 }
