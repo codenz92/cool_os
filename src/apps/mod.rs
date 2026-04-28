@@ -8,7 +8,7 @@ pub mod textviewer;
 
 pub use colorpicker::ColorPickerApp;
 pub use displaysettings::DisplaySettingsApp;
-pub use filemanager::FileManagerApp;
+pub use filemanager::{FileManagerApp, FileManagerOpenRequest};
 pub use personalize::PersonalizeApp;
 pub use sysmon::SysMonApp;
 pub use terminal::TerminalApp;

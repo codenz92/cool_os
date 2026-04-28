@@ -8,8 +8,8 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::apps::{
-    ColorPickerApp, DisplaySettingsApp, FileManagerApp, PersonalizeApp, SysMonApp, TerminalApp,
-    TextViewerApp,
+    ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest, PersonalizeApp,
+    SysMonApp, TerminalApp, TextViewerApp,
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
@@ -465,12 +465,17 @@ impl AppWindow {
             _ => {}
         }
     }
+    pub fn handle_secondary_click(&mut self, lx: i32, ly: i32) {
+        if let AppWindow::FileManager(fm) = self {
+            fm.handle_secondary_click(lx, ly);
+        }
+    }
     pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
         if let AppWindow::FileManager(fm) = self {
             fm.handle_dbl_click(lx, ly);
         }
     }
-    pub fn take_open_request(&mut self) -> Option<alloc::string::String> {
+    pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
         match self {
             AppWindow::FileManager(fm) => fm.take_open_request(),
             _ => None,
@@ -643,6 +648,44 @@ impl WindowManager {
             FileManagerApp::new_at_path(wx, wy, dir)
         };
         self.add_window(AppWindow::FileManager(app));
+    }
+
+    fn consume_window_open_request(&mut self, win_idx: usize, sw: usize, taskbar_y: i32) {
+        let Some(request) = self
+            .windows
+            .get_mut(win_idx)
+            .and_then(AppWindow::take_open_request)
+        else {
+            return;
+        };
+
+        match request {
+            FileManagerOpenRequest::File(path) => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (20 + off).min(sw as i32 - 220);
+                let wy = (20 + off).min(taskbar_y - 120);
+                match TextViewerApp::open_file(wx, wy, &path) {
+                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
+                    Err(err) => {
+                        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                            AppWindow::Terminal(t) => Some(t),
+                            _ => None,
+                        }) {
+                            term.print_str("open failed: ");
+                            term.print_str(err);
+                            term.print_char('\n');
+                        }
+                    }
+                }
+            }
+            FileManagerOpenRequest::App(app) => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(sw as i32 - 220);
+                let wy = (10 + off).min(taskbar_y - 120);
+                self.launch_app(app, wx, wy);
+            }
+        }
+        crate::wm::request_repaint();
     }
 
     fn desktop_icons(&self) -> Vec<DesktopIcon> {
@@ -977,8 +1020,22 @@ impl WindowManager {
             crate::wm::request_repaint();
         }
 
-        if right_pressed && my_i < taskbar_y && self.front_to_back_hit(mx_i, my_i).is_none() {
-            self.open_context_menu(mx_i, my_i, sw as i32, taskbar_y);
+        if right_pressed && my_i < taskbar_y {
+            if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
+                let win_idx = self.z_order[z_pos];
+                self.z_order.remove(z_pos);
+                self.z_order.push(win_idx);
+                self.focused = Some(win_idx);
+                self.context_menu = None;
+                let lx = mx_i - self.windows[win_idx].window().x;
+                let ly = my_i - (self.windows[win_idx].window().y + TITLE_H);
+                self.windows[win_idx].handle_secondary_click(lx, ly);
+                self.consume_window_open_request(win_idx, sw, taskbar_y);
+                crate::wm::request_repaint();
+            } else {
+                self.open_context_menu(mx_i, my_i, sw as i32, taskbar_y);
+                crate::wm::request_repaint();
+            }
         }
 
         if self.context_menu.is_some() {
@@ -1065,6 +1122,7 @@ impl WindowManager {
                             }
                         }
                         self.windows[win_idx].handle_click(lx, ly);
+                        self.consume_window_open_request(win_idx, sw, taskbar_y);
                         let is_double_click = self.last_click_window == Some(win_idx)
                             && uptime_ticks.wrapping_sub(self.last_click_tick)
                                 <= crate::interrupts::ticks_for_millis(500)
@@ -1072,27 +1130,7 @@ impl WindowManager {
                             && (self.last_click_y - ly).abs() <= 6;
                         if is_double_click {
                             self.windows[win_idx].handle_dbl_click(lx, ly);
-                            if let Some(path) = self.windows[win_idx].take_open_request() {
-                                let off = self.windows.len() as i32 * 16;
-                                let wx = (20 + off).min(sw as i32 - 220);
-                                let wy = (20 + off).min(taskbar_y - 120);
-                                match TextViewerApp::open_file(wx, wy, &path) {
-                                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
-                                    Err(err) => {
-                                        if let Some(term) =
-                                            self.windows.iter_mut().find_map(|w| match w {
-                                                AppWindow::Terminal(t) => Some(t),
-                                                _ => None,
-                                            })
-                                        {
-                                            term.print_str("open failed: ");
-                                            term.print_str(err);
-                                            term.print_char('\n');
-                                        }
-                                    }
-                                }
-                                crate::wm::request_repaint();
-                            }
+                            self.consume_window_open_request(win_idx, sw, taskbar_y);
                         }
                         self.last_click_tick = uptime_ticks;
                         self.last_click_window = Some(win_idx);

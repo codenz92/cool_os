@@ -160,6 +160,7 @@ impl Bpb {
 
 // ── Directory entry ───────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
 struct DirEntry {
     name: [u8; 11],
     attr: u8,
@@ -233,6 +234,13 @@ impl DirEntry {
     fn matches(&self, component: &[u8]) -> bool {
         self.name == name_to_83(component)
     }
+}
+
+#[derive(Clone, Copy)]
+struct DirEntryLocation {
+    entry: DirEntry,
+    lba: u32,
+    offset: usize,
 }
 
 fn name_to_83(s: &[u8]) -> [u8; 11] {
@@ -380,6 +388,72 @@ pub fn create_dir(path: &str) -> Result<(), FsError> {
     Ok(())
 }
 
+pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
+    let (parent_path, old_name) = split_parent_and_name(path)?;
+    if old_name.eq_ignore_ascii_case(new_name) {
+        return Ok(());
+    }
+    let new_name83 = name_to_83_checked(new_name)?;
+    let bpb = Bpb::load().ok_or(FsError::Io)?;
+    let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
+    if find_entry(&bpb, parent_cluster, new_name.as_bytes()).is_some() {
+        return Err(FsError::AlreadyExists);
+    }
+    let location =
+        find_entry_location(&bpb, parent_cluster, old_name.as_bytes()).ok_or(FsError::NotFound)?;
+    let mut sec = [0u8; SECTOR_SIZE];
+    read_sector_exact(location.lba, &mut sec)?;
+    sec[location.offset..location.offset + 11].copy_from_slice(&new_name83);
+    write_sector_exact(location.lba, &sec)
+}
+
+pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    let (parent_path, name) = split_parent_and_name(path)?;
+    let bpb = Bpb::load().ok_or(FsError::Io)?;
+    let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
+    let location =
+        find_entry_location(&bpb, parent_cluster, name.as_bytes()).ok_or(FsError::NotFound)?;
+    if location.entry.is_dir() {
+        return Err(FsError::InvalidPath);
+    }
+
+    let old_first_cluster = location.entry.first_cluster();
+    let mut new_first_cluster = 0u32;
+    let mut new_chain = Vec::new();
+    if !data.is_empty() {
+        let sectors_needed = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
+        let clusters_needed = (sectors_needed + bpb.sectors_per_cluster as usize - 1)
+            / bpb.sectors_per_cluster as usize;
+        new_chain = alloc_cluster_chain(&bpb, clusters_needed)?;
+        new_first_cluster = new_chain[0];
+        if let Err(err) = write_data_to_clusters(&bpb, &new_chain, data) {
+            free_cluster_list(&bpb, &new_chain)?;
+            return Err(err);
+        }
+    }
+
+    let mut sec = [0u8; SECTOR_SIZE];
+    read_sector_exact(location.lba, &mut sec)?;
+    sec[location.offset + 20..location.offset + 22]
+        .copy_from_slice(&((new_first_cluster >> 16) as u16).to_le_bytes());
+    sec[location.offset + 26..location.offset + 28]
+        .copy_from_slice(&(new_first_cluster as u16).to_le_bytes());
+    sec[location.offset + 28..location.offset + 32]
+        .copy_from_slice(&(data.len() as u32).to_le_bytes());
+    if let Err(err) = write_sector_exact(location.lba, &sec) {
+        if !new_chain.is_empty() {
+            let _ = free_cluster_list(&bpb, &new_chain);
+        }
+        return Err(err);
+    }
+
+    if old_first_cluster >= 2 {
+        free_cluster_chain(&bpb, old_first_cluster)?;
+    }
+
+    Ok(())
+}
+
 // ── Path + lookup helpers ─────────────────────────────────────────────────────
 
 fn trim_abs_path(path: &str) -> Result<&str, FsError> {
@@ -448,6 +522,10 @@ fn find_in_dir(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<(u32, bool)> 
 }
 
 fn find_entry(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEntry> {
+    find_entry_location(bpb, dir_cluster, name).map(|location| location.entry)
+}
+
+fn find_entry_location(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEntryLocation> {
     let sectors = bpb.cluster_chain_sectors(dir_cluster);
     let mut buf = [0u8; SECTOR_SIZE];
     for lba in sectors {
@@ -457,7 +535,7 @@ fn find_entry(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEntry> {
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
             if let Some(entry) = DirEntry::from_bytes(&buf[offset..]) {
                 if entry.matches(name) {
-                    return Some(entry);
+                    return Some(DirEntryLocation { entry, lba, offset });
                 }
             } else if buf[offset] == 0x00 {
                 return None;
@@ -512,6 +590,54 @@ fn alloc_cluster(bpb: &Bpb) -> Result<u32, FsError> {
 
 fn free_single_cluster(bpb: &Bpb, cluster: u32) -> Result<(), FsError> {
     fat_write_entry(bpb, cluster, FAT_FREE)
+}
+
+fn alloc_cluster_chain(bpb: &Bpb, count: usize) -> Result<Vec<u32>, FsError> {
+    let mut chain = Vec::new();
+    for _ in 0..count {
+        match alloc_cluster(bpb) {
+            Ok(cluster) => chain.push(cluster),
+            Err(err) => {
+                free_cluster_list(bpb, &chain)?;
+                return Err(err);
+            }
+        }
+    }
+    for pair in chain.windows(2) {
+        fat_write_entry(bpb, pair[0], pair[1])?;
+    }
+    Ok(chain)
+}
+
+fn write_data_to_clusters(bpb: &Bpb, chain: &[u32], data: &[u8]) -> Result<(), FsError> {
+    let cluster_bytes = bpb.sectors_per_cluster as usize * SECTOR_SIZE;
+    let mut sector = [0u8; SECTOR_SIZE];
+    for (cluster_idx, &cluster) in chain.iter().enumerate() {
+        let cluster_start = cluster_idx * cluster_bytes;
+        let base_lba = bpb.cluster_lba(cluster);
+        for sector_idx in 0..bpb.sectors_per_cluster as usize {
+            sector.fill(0);
+            let chunk_start = cluster_start + sector_idx * SECTOR_SIZE;
+            if chunk_start < data.len() {
+                let chunk_end = (chunk_start + SECTOR_SIZE).min(data.len());
+                sector[..chunk_end - chunk_start].copy_from_slice(&data[chunk_start..chunk_end]);
+            }
+            write_sector_exact(base_lba + sector_idx as u32, &sector)?;
+        }
+    }
+    Ok(())
+}
+
+fn free_cluster_list(bpb: &Bpb, clusters: &[u32]) -> Result<(), FsError> {
+    for &cluster in clusters {
+        fat_write_entry(bpb, cluster, FAT_FREE)?;
+    }
+    Ok(())
+}
+
+fn free_cluster_chain(bpb: &Bpb, start: u32) -> Result<(), FsError> {
+    let chain = bpb.cluster_chain_clusters(start);
+    free_cluster_list(bpb, &chain)
 }
 
 fn fat_write_entry(bpb: &Bpb, cluster: u32, value: u32) -> Result<(), FsError> {

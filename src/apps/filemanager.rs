@@ -33,6 +33,12 @@ const BACK_BTN_W: i32 = 24;
 const BACK_BTN_GAP: i32 = 8;
 const BREAD_SEG_PAD: i32 = 10;
 const BREAD_SEG_GAP: i32 = 6;
+const MENU_W: i32 = 138;
+const MENU_ROW_H: i32 = 20;
+const DIALOG_W: i32 = 320;
+const DIALOG_H: i32 = 140;
+const EDITOR_W: i32 = 468;
+const EDITOR_H: i32 = 286;
 const QUICK_ACCESS_FOLDERS: [&str; 7] = [
     "Documents",
     "Downloads",
@@ -52,6 +58,13 @@ const START_MENU_FOLDERS: [&str; 9] = [
     "Home",
     "Shared",
     "Trash",
+];
+const DESKTOP_APP_LINKS: [(&str, &str); 5] = [
+    ("Terminal", "Terminal"),
+    ("Monitor", "System Monitor"),
+    ("Files", "File Manager"),
+    ("Viewer", "Text Viewer"),
+    ("Colors", "Color Picker"),
 ];
 
 const FM_BG_TOP: u32 = 0x00_06_0C_18;
@@ -148,20 +161,81 @@ struct SidebarItem {
     icon: SidebarIcon,
 }
 
+#[derive(Clone, Copy)]
+enum EntryKind {
+    Fs,
+    DesktopApp(&'static str),
+}
+
+#[derive(Clone, Copy)]
+enum ContextAction {
+    Open,
+    NewFile,
+    NewFolder,
+    Rename,
+    EditText,
+    Refresh,
+}
+
+struct ContextMenuState {
+    x: i32,
+    y: i32,
+    target: Option<usize>,
+}
+
+#[derive(Clone)]
+enum NameDialogMode {
+    NewFile,
+    NewFolder,
+    Rename(usize),
+}
+
+#[derive(Clone)]
+struct NameDialogState {
+    mode: NameDialogMode,
+    input: String,
+    cursor: usize,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct TextEditorState {
+    entry_idx: usize,
+    path: String,
+    text: String,
+    cursor: usize,
+    scroll_line: usize,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+enum ModalState {
+    Name(NameDialogState),
+    TextEditor(TextEditorState),
+}
+
+pub enum FileManagerOpenRequest {
+    File(String),
+    App(&'static str),
+}
+
 pub struct FileManagerApp {
     pub window: Window,
     entries: Vec<DirEntryInfo>,
+    entry_kinds: Vec<EntryKind>,
     path: String,
     offset: usize,
     view_h: i32,
     selected: Option<usize>,
     total_rows: usize,
-    pending_open: Option<String>,
+    pending_open: Option<FileManagerOpenRequest>,
     status_note: Option<String>,
     last_width: i32,
     last_height: i32,
     sort_column: SortColumn,
     sort_desc: bool,
+    context_menu: Option<ContextMenuState>,
+    modal: Option<ModalState>,
 }
 
 impl FileManagerApp {
@@ -173,6 +247,7 @@ impl FileManagerApp {
         let mut app = FileManagerApp {
             window: Window::new(x, y, FILEMAN_W, FILEMAN_H, "File Manager"),
             entries: Vec::new(),
+            entry_kinds: Vec::new(),
             path: String::from("/"),
             offset: 0,
             view_h: 0,
@@ -184,6 +259,8 @@ impl FileManagerApp {
             last_height: FILEMAN_H,
             sort_column: SortColumn::Name,
             sort_desc: false,
+            context_menu: None,
+            modal: None,
         };
         app.load_dir(dir);
         app
@@ -208,9 +285,15 @@ impl FileManagerApp {
     ) {
         self.path.clear();
         self.path.push_str(dir);
-        let mut new_entries = crate::fat32::list_dir(dir).unwrap_or_default();
-        Self::sort_entries(&mut new_entries, self.sort_column, self.sort_desc);
+        let (mut new_entries, mut entry_kinds) = self.load_entries_for_path(dir);
+        Self::sort_entries(
+            &mut new_entries,
+            &mut entry_kinds,
+            self.sort_column,
+            self.sort_desc,
+        );
         self.entries = new_entries;
+        self.entry_kinds = entry_kinds;
         self.selected = selected_name.and_then(|name| {
             self.entries
                 .iter()
@@ -223,19 +306,36 @@ impl FileManagerApp {
         let max_offset = self.entries.len().saturating_sub(visible_rows.max(1));
         self.offset = preferred_offset.unwrap_or(0).min(max_offset);
         self.ensure_selected_visible();
+        self.context_menu = None;
         self.status_note = None;
         self.render();
     }
 
-    pub fn handle_key(&mut self, _c: char) {}
+    pub fn handle_key(&mut self, c: char) {
+        if self.handle_modal_key(c) {
+            self.render();
+        }
+    }
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
+        if self.handle_modal_click(lx, ly) {
+            self.render();
+            return;
+        }
+
+        if self.handle_context_menu_click(lx, ly) {
+            self.render();
+            return;
+        }
+
         if let Some(path) = self.hit_navigation(lx, ly) {
+            self.context_menu = None;
             self.load_dir(&path);
             return;
         }
 
         if ly >= COMMAND_H && ly < COMMAND_H + PATHBAR_H {
+            self.context_menu = None;
             if self.back_button_rect().hit(lx, ly) {
                 if self.path != "/" {
                     let parent = self.parent_path();
@@ -250,24 +350,47 @@ impl FileManagerApp {
         }
 
         if let Some(column) = self.hit_file_header_column(lx, ly) {
+            self.context_menu = None;
             self.change_sort(column);
             return;
         }
 
+        self.context_menu = None;
         if let Some(idx) = self.hit_main_entry(lx, ly) {
             self.selected = Some(idx);
             self.render();
         }
     }
 
+    pub fn handle_secondary_click(&mut self, lx: i32, ly: i32) {
+        if self.modal.is_some() {
+            return;
+        }
+        let layout = self.layout();
+        if lx < layout.main_x || ly < COMMAND_H + PATHBAR_H || ly >= layout.status_y {
+            self.context_menu = None;
+            self.render();
+            return;
+        }
+        let target = self.hit_main_entry(lx, ly);
+        if let Some(idx) = target {
+            self.selected = Some(idx);
+        }
+        self.context_menu = Some(self.clamp_context_menu(lx, ly, target));
+        self.render();
+    }
+
     pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
+        if self.modal.is_some() || self.context_menu.is_some() {
+            return;
+        }
         if let Some(idx) = self.hit_main_entry(lx, ly) {
             self.selected = Some(idx);
             self.open_selected();
         }
     }
 
-    pub fn take_open_request(&mut self) -> Option<String> {
+    pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
         self.pending_open.take()
     }
 
@@ -320,11 +443,15 @@ impl FileManagerApp {
         if sel >= self.entries.len() {
             return;
         }
+        if let Some(app) = self.desktop_app_for_idx(sel) {
+            self.pending_open = Some(FileManagerOpenRequest::App(app));
+            return;
+        }
         let abs = self.make_abs(sel);
         if self.is_dir_idx(sel) {
             self.load_dir(&abs);
         } else {
-            self.pending_open = Some(abs);
+            self.pending_open = Some(FileManagerOpenRequest::File(abs));
         }
     }
 
@@ -440,6 +567,17 @@ impl FileManagerApp {
         }
     }
 
+    fn type_label_for_kind(entry: &DirEntryInfo, kind: EntryKind) -> &'static str {
+        match kind {
+            EntryKind::Fs => Self::type_label(&entry.name, entry.is_dir),
+            EntryKind::DesktopApp(_) => "Application",
+        }
+    }
+
+    fn is_editable_text_name(name: &str) -> bool {
+        matches!(Self::file_ext(name), "TXT" | "MD" | "LOG" | "RST" | "CSV")
+    }
+
     fn selected_name(&self) -> Option<String> {
         self.selected
             .and_then(|idx| self.entries.get(idx))
@@ -456,8 +594,16 @@ impl FileManagerApp {
         (list_h / LIST_ROW_H) as usize
     }
 
-    fn sort_entries(entries: &mut [DirEntryInfo], sort_column: SortColumn, sort_desc: bool) {
-        entries.sort_by(|a, b| {
+    fn sort_entries(
+        entries: &mut [DirEntryInfo],
+        entry_kinds: &mut [EntryKind],
+        sort_column: SortColumn,
+        sort_desc: bool,
+    ) {
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        order.sort_by(|&a_idx, &b_idx| {
+            let a = &entries[a_idx];
+            let b = &entries[b_idx];
             if a.is_dir != b.is_dir {
                 return if a.is_dir {
                     core::cmp::Ordering::Less
@@ -476,8 +622,8 @@ impl FileManagerApp {
                         .to_ascii_lowercase()
                         .cmp(&b.name.to_ascii_lowercase())
                 }),
-                SortColumn::Type => Self::type_label(&a.name, a.is_dir)
-                    .cmp(Self::type_label(&b.name, b.is_dir))
+                SortColumn::Type => Self::type_label_for_kind(a, entry_kinds[a_idx])
+                    .cmp(Self::type_label_for_kind(b, entry_kinds[b_idx]))
                     .then_with(|| {
                         a.name
                             .to_ascii_lowercase()
@@ -491,11 +637,23 @@ impl FileManagerApp {
                 base
             }
         });
+
+        let old_entries = entries.to_vec();
+        let old_kinds = entry_kinds.to_vec();
+        for (dst, src) in order.into_iter().enumerate() {
+            entries[dst] = old_entries[src].clone();
+            entry_kinds[dst] = old_kinds[src];
+        }
     }
 
     fn resort_entries(&mut self, note: &str) {
         let selected = self.selected_name();
-        Self::sort_entries(&mut self.entries, self.sort_column, self.sort_desc);
+        Self::sort_entries(
+            &mut self.entries,
+            &mut self.entry_kinds,
+            self.sort_column,
+            self.sort_desc,
+        );
         self.selected = selected.and_then(|name| {
             self.entries
                 .iter()
@@ -523,6 +681,61 @@ impl FileManagerApp {
         self.resort_entries(&note);
     }
 
+    fn load_entries_for_path(&self, dir: &str) -> (Vec<DirEntryInfo>, Vec<EntryKind>) {
+        let mut entries = crate::fat32::list_dir(dir).unwrap_or_default();
+        let mut entry_kinds = alloc::vec![EntryKind::Fs; entries.len()];
+
+        if dir.eq_ignore_ascii_case("/Desktop") {
+            for (label, app) in DESKTOP_APP_LINKS {
+                if entries
+                    .iter()
+                    .any(|entry| entry.name.eq_ignore_ascii_case(label))
+                {
+                    continue;
+                }
+                entries.push(DirEntryInfo {
+                    name: String::from(label),
+                    is_dir: false,
+                    size: 0,
+                });
+                entry_kinds.push(EntryKind::DesktopApp(app));
+            }
+        }
+
+        (entries, entry_kinds)
+    }
+
+    fn desktop_app_for_idx(&self, idx: usize) -> Option<&'static str> {
+        match self.entry_kinds.get(idx).copied() {
+            Some(EntryKind::DesktopApp(app)) => Some(app),
+            _ => None,
+        }
+    }
+
+    fn entry_kind(&self, idx: usize) -> EntryKind {
+        self.entry_kinds.get(idx).copied().unwrap_or(EntryKind::Fs)
+    }
+
+    fn entry_can_rename(&self, idx: usize) -> bool {
+        matches!(self.entry_kind(idx), EntryKind::Fs)
+    }
+
+    fn entry_can_edit_text(&self, idx: usize) -> bool {
+        matches!(self.entry_kind(idx), EntryKind::Fs)
+            && self
+                .entries
+                .get(idx)
+                .map(|entry| !entry.is_dir && Self::is_editable_text_name(&entry.name))
+                .unwrap_or(false)
+    }
+
+    fn ensure_current_dir_exists(&self) -> Result<(), &'static str> {
+        if self.path == "/" || crate::fat32::list_dir(&self.path).is_some() {
+            return Ok(());
+        }
+        crate::fat32::create_dir(&self.path).map_err(|err| err.as_str())
+    }
+
     fn render(&mut self) {
         let layout = self.layout();
         self.last_width = self.window.width;
@@ -542,6 +755,150 @@ impl FileManagerApp {
         }
         self.draw_detail_panel(layout);
         self.draw_status_bar(layout);
+        self.draw_context_menu();
+        self.draw_modal();
+    }
+
+    fn context_menu_items(&self, target: Option<usize>) -> Vec<(&'static str, ContextAction)> {
+        let mut items = Vec::new();
+        if let Some(idx) = target {
+            items.push(("Open", ContextAction::Open));
+            if self.entry_can_edit_text(idx) {
+                items.push(("Edit Text", ContextAction::EditText));
+            }
+            if self.entry_can_rename(idx) {
+                items.push(("Rename", ContextAction::Rename));
+            }
+        }
+        items.push(("New File", ContextAction::NewFile));
+        items.push(("New Folder", ContextAction::NewFolder));
+        items.push(("Refresh", ContextAction::Refresh));
+        items
+    }
+
+    fn context_menu_rect(&self, menu: &ContextMenuState) -> Rect {
+        let items = self.context_menu_items(menu.target);
+        Rect {
+            x: menu.x,
+            y: menu.y,
+            w: MENU_W,
+            h: items.len() as i32 * MENU_ROW_H + 6,
+        }
+    }
+
+    fn clamp_context_menu(&self, lx: i32, ly: i32, target: Option<usize>) -> ContextMenuState {
+        let layout = self.layout();
+        let temp = ContextMenuState {
+            x: lx,
+            y: ly,
+            target,
+        };
+        let rect = self.context_menu_rect(&temp);
+        ContextMenuState {
+            x: lx.clamp(
+                layout.main_x + 4,
+                (layout.width - rect.w - 4).max(layout.main_x + 4),
+            ),
+            y: ly.clamp(
+                COMMAND_H + PATHBAR_H + 4,
+                (layout.status_y - rect.h - 4).max(COMMAND_H + PATHBAR_H + 4),
+            ),
+            target,
+        }
+    }
+
+    fn handle_context_menu_click(&mut self, lx: i32, ly: i32) -> bool {
+        let Some(menu) = self.context_menu.as_ref() else {
+            return false;
+        };
+        let items = self.context_menu_items(menu.target);
+        let rect = self.context_menu_rect(menu);
+        if !rect.hit(lx, ly) {
+            self.context_menu = None;
+            return true;
+        }
+
+        let rel_y = ly - rect.y - 3;
+        if rel_y < 0 {
+            return true;
+        }
+        let idx = (rel_y / MENU_ROW_H) as usize;
+        if let Some((_, action)) = items.get(idx).copied() {
+            let target = menu.target;
+            self.context_menu = None;
+            self.run_context_action(action, target);
+        }
+        true
+    }
+
+    fn run_context_action(&mut self, action: ContextAction, target: Option<usize>) {
+        match action {
+            ContextAction::Open => {
+                if let Some(idx) = target {
+                    self.selected = Some(idx);
+                    self.open_selected();
+                }
+            }
+            ContextAction::NewFile => {
+                self.modal = Some(ModalState::Name(NameDialogState {
+                    mode: NameDialogMode::NewFile,
+                    input: String::from("NEWFILE.TXT"),
+                    cursor: "NEWFILE.TXT".len(),
+                    error: None,
+                }));
+            }
+            ContextAction::NewFolder => {
+                self.modal = Some(ModalState::Name(NameDialogState {
+                    mode: NameDialogMode::NewFolder,
+                    input: String::from("NEWDIR"),
+                    cursor: "NEWDIR".len(),
+                    error: None,
+                }));
+            }
+            ContextAction::Rename => {
+                if let Some(idx) = target {
+                    if let Some(entry) = self.entries.get(idx) {
+                        let name = entry.name.clone();
+                        self.modal = Some(ModalState::Name(NameDialogState {
+                            mode: NameDialogMode::Rename(idx),
+                            input: name.clone(),
+                            cursor: name.len(),
+                            error: None,
+                        }));
+                    }
+                }
+            }
+            ContextAction::EditText => {
+                if let Some(idx) = target {
+                    self.open_text_editor(idx);
+                }
+            }
+            ContextAction::Refresh => self.refresh_current_dir(),
+        }
+    }
+
+    fn handle_modal_key(&mut self, c: char) -> bool {
+        let changed = match self.modal.as_mut() {
+            Some(ModalState::Name(state)) => Self::handle_name_dialog_key(state, c),
+            Some(ModalState::TextEditor(state)) => Self::handle_text_editor_key(state, c),
+            None => false,
+        };
+        if changed {
+            self.sync_modal_state();
+        }
+        changed
+    }
+
+    fn handle_modal_click(&mut self, lx: i32, ly: i32) -> bool {
+        let handled = match self.modal.clone() {
+            Some(ModalState::Name(_)) => self.handle_name_dialog_click(lx, ly),
+            Some(ModalState::TextEditor(_)) => self.handle_text_editor_click(lx, ly),
+            None => false,
+        };
+        if handled {
+            self.sync_modal_state();
+        }
+        handled
     }
 
     fn layout(&self) -> Layout {
@@ -618,6 +975,548 @@ impl FileManagerApp {
             w: 156,
             h: 22,
         }
+    }
+
+    fn draw_context_menu(&mut self) {
+        if self.modal.is_some() {
+            return;
+        }
+        let Some(menu) = self.context_menu.as_ref() else {
+            return;
+        };
+        let items = self.context_menu_items(menu.target);
+        let rect = self.context_menu_rect(menu);
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        for (idx, (label, _)) in items.iter().enumerate() {
+            let row_y = rect.y + 3 + idx as i32 * MENU_ROW_H;
+            self.fill_rect(rect.x + 1, row_y, rect.w - 2, MENU_ROW_H, FM_PANEL);
+            self.put_str((rect.x + 10) as usize, (row_y + 6) as usize, label, FM_TEXT);
+            if idx + 1 < items.len() {
+                self.fill_rect(
+                    rect.x + 8,
+                    row_y + MENU_ROW_H - 1,
+                    rect.w - 16,
+                    1,
+                    FM_BORDER_SOFT,
+                );
+            }
+        }
+    }
+
+    fn draw_modal(&mut self) {
+        let Some(modal) = self.modal.clone() else {
+            return;
+        };
+        match modal {
+            ModalState::Name(state) => self.draw_name_dialog(&state),
+            ModalState::TextEditor(state) => self.draw_text_editor(&state),
+        }
+    }
+
+    fn draw_name_dialog(&mut self, state: &NameDialogState) {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, DIALOG_W, DIALOG_H);
+        let input = self.name_dialog_input_rect(rect);
+        let save = self.dialog_save_button_rect(rect);
+        let cancel = self.dialog_cancel_button_rect(rect);
+        let title = match state.mode {
+            NameDialogMode::NewFile => "Create New File",
+            NameDialogMode::NewFolder => "Create New Folder",
+            NameDialogMode::Rename(_) => "Rename Item",
+        };
+
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 12) as usize,
+            title,
+            FM_TEXT,
+        );
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 28) as usize,
+            "8.3 names only",
+            FM_TEXT_MUTED,
+        );
+
+        self.fill_rect(input.x, input.y, input.w, input.h, FM_SEARCH);
+        self.draw_rect_border(input.x, input.y, input.w, input.h, FM_BORDER_SOFT);
+        let max_chars = ((input.w - 16).max(8) as usize) / CW;
+        self.put_str(
+            (input.x + 8) as usize,
+            (input.y + 8) as usize,
+            &Self::clip_text(&state.input, max_chars),
+            FM_TEXT,
+        );
+
+        let cursor_char = state.cursor.min(state.input.chars().count());
+        let cursor_x = input.x + 8 + (cursor_char as i32 * CW as i32).min(input.w - 14);
+        self.fill_rect(cursor_x, input.y + 6, 2, input.h - 12, FM_SELECTION_GLOW);
+
+        if let Some(error) = state.error.as_ref() {
+            self.put_str(
+                (rect.x + 14) as usize,
+                (rect.y + 76) as usize,
+                &Self::clip_text(error, ((rect.w - 28).max(0) as usize) / CW),
+                blend(FM_ACCENT, WHITE, 72),
+            );
+        }
+
+        self.draw_dialog_button(save, "Save");
+        self.draw_dialog_button(cancel, "Cancel");
+    }
+
+    fn draw_text_editor(&mut self, state: &TextEditorState) {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, EDITOR_W, EDITOR_H);
+        let text_rect = self.editor_text_rect(rect);
+        let save = self.editor_save_button_rect(rect);
+        let cancel = self.editor_cancel_button_rect(rect);
+        let visible_lines = ((text_rect.h - 12).max(12) as usize) / 12;
+        let (cursor_line, cursor_col) = Self::text_cursor_line_col(&state.text, state.cursor);
+        let lines = Self::text_lines(&state.text);
+
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 12) as usize,
+            "Edit Text File",
+            FM_TEXT,
+        );
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 28) as usize,
+            &Self::clip_text(&state.path, ((rect.w - 28).max(0) as usize) / CW),
+            FM_TEXT_MUTED,
+        );
+
+        self.fill_rect(
+            text_rect.x,
+            text_rect.y,
+            text_rect.w,
+            text_rect.h,
+            FM_SEARCH,
+        );
+        self.draw_rect_border(
+            text_rect.x,
+            text_rect.y,
+            text_rect.w,
+            text_rect.h,
+            FM_BORDER_SOFT,
+        );
+        let max_chars = ((text_rect.w - 18).max(8) as usize) / CW;
+        for screen_line in 0..visible_lines {
+            let doc_line = state.scroll_line + screen_line;
+            let Some(line) = lines.get(doc_line) else {
+                break;
+            };
+            self.put_str(
+                (text_rect.x + 8) as usize,
+                (text_rect.y + 8 + screen_line as i32 * 12) as usize,
+                &Self::clip_text(line, max_chars),
+                FM_TEXT,
+            );
+        }
+        if cursor_line >= state.scroll_line && cursor_line < state.scroll_line + visible_lines {
+            let cursor_x = text_rect.x + 8 + (cursor_col.min(max_chars) as i32 * CW as i32);
+            let cursor_y = text_rect.y + 8 + ((cursor_line - state.scroll_line) as i32 * 12);
+            self.fill_rect(cursor_x, cursor_y, 2, 10, FM_SELECTION_GLOW);
+        }
+
+        if let Some(error) = state.error.as_ref() {
+            self.put_str(
+                (rect.x + 14) as usize,
+                (rect.y + rect.h - 52) as usize,
+                &Self::clip_text(error, ((rect.w - 28).max(0) as usize) / CW),
+                blend(FM_ACCENT, WHITE, 72),
+            );
+        }
+
+        self.draw_dialog_button(save, "Save");
+        self.draw_dialog_button(cancel, "Cancel");
+    }
+
+    fn draw_dialog_button(&mut self, rect: Rect, label: &str) {
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        let label_x = rect.x + ((rect.w - label.len() as i32 * CW as i32) / 2).max(6);
+        self.put_str(label_x as usize, (rect.y + 7) as usize, label, FM_TEXT);
+    }
+
+    fn centered_rect(layout: Layout, w: i32, h: i32) -> Rect {
+        Rect {
+            x: ((layout.width - w) / 2).max(14),
+            y: ((layout.status_y - h) / 2).max(PATHBAR_H + 14),
+            w,
+            h,
+        }
+    }
+
+    fn name_dialog_input_rect(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x + 14,
+            y: rect.y + 46,
+            w: rect.w - 28,
+            h: 26,
+        }
+    }
+
+    fn dialog_save_button_rect(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x + rect.w - 156,
+            y: rect.y + rect.h - 36,
+            w: 64,
+            h: 24,
+        }
+    }
+
+    fn dialog_cancel_button_rect(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x + rect.w - 82,
+            y: rect.y + rect.h - 36,
+            w: 68,
+            h: 24,
+        }
+    }
+
+    fn editor_text_rect(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x + 14,
+            y: rect.y + 46,
+            w: rect.w - 28,
+            h: rect.h - 94,
+        }
+    }
+
+    fn editor_save_button_rect(&self, rect: Rect) -> Rect {
+        self.dialog_save_button_rect(rect)
+    }
+
+    fn editor_cancel_button_rect(&self, rect: Rect) -> Rect {
+        self.dialog_cancel_button_rect(rect)
+    }
+
+    fn handle_name_dialog_key(state: &mut NameDialogState, c: char) -> bool {
+        match c {
+            '\u{0008}' => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                    let byte = Self::char_to_byte_index(&state.input, state.cursor);
+                    let next = Self::char_to_byte_index(&state.input, state.cursor + 1);
+                    state.input.replace_range(byte..next, "");
+                    state.error = None;
+                    return true;
+                }
+            }
+            '\u{F702}' => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                    return true;
+                }
+            }
+            '\u{F703}' => {
+                let len = state.input.chars().count();
+                if state.cursor < len {
+                    state.cursor += 1;
+                    return true;
+                }
+            }
+            _ if !c.is_control() => {
+                let byte = Self::char_to_byte_index(&state.input, state.cursor);
+                state.input.insert(byte, c);
+                state.cursor += 1;
+                state.error = None;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_text_editor_key(state: &mut TextEditorState, c: char) -> bool {
+        match c {
+            '\u{0008}' => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                    let byte = Self::char_to_byte_index(&state.text, state.cursor);
+                    let next = Self::char_to_byte_index(&state.text, state.cursor + 1);
+                    state.text.replace_range(byte..next, "");
+                    state.error = None;
+                    return true;
+                }
+            }
+            '\n' => {
+                let byte = Self::char_to_byte_index(&state.text, state.cursor);
+                state.text.insert(byte, '\n');
+                state.cursor += 1;
+                state.error = None;
+                return true;
+            }
+            '\t' => {
+                for _ in 0..4 {
+                    let byte = Self::char_to_byte_index(&state.text, state.cursor);
+                    state.text.insert(byte, ' ');
+                    state.cursor += 1;
+                }
+                state.error = None;
+                return true;
+            }
+            '\u{F702}' => {
+                if state.cursor > 0 {
+                    state.cursor -= 1;
+                    return true;
+                }
+            }
+            '\u{F703}' => {
+                let len = state.text.chars().count();
+                if state.cursor < len {
+                    state.cursor += 1;
+                    return true;
+                }
+            }
+            '\u{F700}' => {
+                let (line, col) = Self::text_cursor_line_col(&state.text, state.cursor);
+                if line > 0 {
+                    state.cursor = Self::text_cursor_from_line_col(&state.text, line - 1, col);
+                    return true;
+                }
+            }
+            '\u{F701}' => {
+                let (line, col) = Self::text_cursor_line_col(&state.text, state.cursor);
+                state.cursor = Self::text_cursor_from_line_col(&state.text, line + 1, col);
+                return true;
+            }
+            _ if !c.is_control() => {
+                let byte = Self::char_to_byte_index(&state.text, state.cursor);
+                state.text.insert(byte, c);
+                state.cursor += 1;
+                state.error = None;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_name_dialog_click(&mut self, lx: i32, ly: i32) -> bool {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, DIALOG_W, DIALOG_H);
+        let save = self.dialog_save_button_rect(rect);
+        let cancel = self.dialog_cancel_button_rect(rect);
+        let input = self.name_dialog_input_rect(rect);
+        if save.hit(lx, ly) {
+            self.save_name_dialog();
+            return true;
+        }
+        if cancel.hit(lx, ly) {
+            self.modal = None;
+            return true;
+        }
+        if input.hit(lx, ly) {
+            if let Some(ModalState::Name(state)) = self.modal.as_mut() {
+                state.cursor = state.input.chars().count();
+                state.error = None;
+            }
+            return true;
+        }
+        true
+    }
+
+    fn handle_text_editor_click(&mut self, lx: i32, ly: i32) -> bool {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, EDITOR_W, EDITOR_H);
+        let save = self.editor_save_button_rect(rect);
+        let cancel = self.editor_cancel_button_rect(rect);
+        let text_rect = self.editor_text_rect(rect);
+        if save.hit(lx, ly) {
+            self.save_text_editor();
+            return true;
+        }
+        if cancel.hit(lx, ly) {
+            self.modal = None;
+            return true;
+        }
+        if text_rect.hit(lx, ly) {
+            if let Some(ModalState::TextEditor(state)) = self.modal.as_mut() {
+                let max_chars = ((text_rect.w - 18).max(8) as usize) / CW;
+                let line = state.scroll_line + ((ly - text_rect.y - 8).max(0) / 12) as usize;
+                let col = ((lx - text_rect.x - 8).max(0) as usize / CW).min(max_chars);
+                state.cursor = Self::text_cursor_from_line_col(&state.text, line, col);
+                state.error = None;
+            }
+            return true;
+        }
+        true
+    }
+
+    fn save_name_dialog(&mut self) {
+        let Some(ModalState::Name(mut state)) = self.modal.take() else {
+            return;
+        };
+        let trimmed = state.input.trim();
+        if trimmed.is_empty() {
+            state.error = Some(String::from("name required"));
+            self.modal = Some(ModalState::Name(state));
+            return;
+        }
+
+        let result = match state.mode {
+            NameDialogMode::NewFile => self.ensure_current_dir_exists().and_then(|_| {
+                crate::fat32::create_file(&self.join_child_path(trimmed))
+                    .map_err(|err| err.as_str())
+            }),
+            NameDialogMode::NewFolder => self.ensure_current_dir_exists().and_then(|_| {
+                crate::fat32::create_dir(&self.join_child_path(trimmed)).map_err(|err| err.as_str())
+            }),
+            NameDialogMode::Rename(idx) => {
+                crate::fat32::rename(&self.make_abs(idx), trimmed).map_err(|err| err.as_str())
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                let current = self.path.clone();
+                self.modal = None;
+                self.load_dir_with_state(&current, Some(trimmed), Some(self.offset));
+                self.status_note = Some(String::from("saved changes"));
+            }
+            Err(err) => {
+                state.error = Some(String::from(err));
+                self.modal = Some(ModalState::Name(state));
+            }
+        }
+    }
+
+    fn open_text_editor(&mut self, idx: usize) {
+        let path = self.make_abs(idx);
+        match crate::fat32::read_file(&path) {
+            Some(bytes) => match core::str::from_utf8(&bytes) {
+                Ok(text) => {
+                    self.modal = Some(ModalState::TextEditor(TextEditorState {
+                        entry_idx: idx,
+                        path,
+                        text: String::from(text),
+                        cursor: text.chars().count(),
+                        scroll_line: 0,
+                        error: None,
+                    }));
+                }
+                Err(_) => {
+                    self.status_note = Some(String::from("file is not UTF-8 text"));
+                }
+            },
+            None => {
+                self.status_note = Some(String::from("file not found"));
+            }
+        }
+    }
+
+    fn save_text_editor(&mut self) {
+        let Some(ModalState::TextEditor(mut state)) = self.modal.take() else {
+            return;
+        };
+        match crate::fat32::write_file(&state.path, state.text.as_bytes()) {
+            Ok(()) => {
+                let current = self.path.clone();
+                let selected_name = self
+                    .entries
+                    .get(state.entry_idx)
+                    .map(|entry| entry.name.clone());
+                self.modal = None;
+                self.load_dir_with_state(&current, selected_name.as_deref(), Some(self.offset));
+                self.status_note = Some(String::from("text saved"));
+            }
+            Err(err) => {
+                state.error = Some(String::from(err.as_str()));
+                self.modal = Some(ModalState::TextEditor(state));
+            }
+        }
+    }
+
+    fn sync_modal_state(&mut self) {
+        let layout = self.layout();
+        let editor_rect = Self::centered_rect(layout, EDITOR_W, EDITOR_H);
+        let text_rect = self.editor_text_rect(editor_rect);
+        let visible_lines = ((text_rect.h - 12).max(12) as usize) / 12;
+        if let Some(ModalState::TextEditor(state)) = self.modal.as_mut() {
+            let (cursor_line, _) = Self::text_cursor_line_col(&state.text, state.cursor);
+            if cursor_line < state.scroll_line {
+                state.scroll_line = cursor_line;
+            } else if cursor_line >= state.scroll_line + visible_lines {
+                state.scroll_line = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+            }
+        }
+    }
+
+    fn text_lines(text: &str) -> Vec<String> {
+        if text.is_empty() {
+            return alloc::vec![String::new()];
+        }
+        text.split('\n').map(String::from).collect()
+    }
+
+    fn text_cursor_line_col(text: &str, cursor: usize) -> (usize, usize) {
+        let mut line = 0usize;
+        let mut col = 0usize;
+        for (idx, ch) in text.chars().enumerate() {
+            if idx >= cursor {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn text_cursor_from_line_col(text: &str, target_line: usize, target_col: usize) -> usize {
+        let mut line = 0usize;
+        let mut col = 0usize;
+        let mut cursor = 0usize;
+        for ch in text.chars() {
+            if line == target_line && col == target_col {
+                return cursor;
+            }
+            if ch == '\n' {
+                if line == target_line {
+                    return cursor;
+                }
+                line += 1;
+                col = 0;
+            } else if line == target_line {
+                col += 1;
+            }
+            cursor += 1;
+        }
+        cursor
+    }
+
+    fn char_to_byte_index(text: &str, char_idx: usize) -> usize {
+        if char_idx == 0 {
+            return 0;
+        }
+        text.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or(text.len())
+    }
+
+    fn join_child_path(&self, name: &str) -> String {
+        let mut path = self.path.clone();
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(name);
+        path
     }
 
     fn draw_sidebar(&mut self, layout: Layout) {
@@ -970,12 +1869,16 @@ impl FileManagerApp {
                 .map(|entry| (entry.name.clone(), entry.is_dir, entry.size))
             {
                 let full_path = self.make_abs(idx);
-                let detail_type = if is_dir {
-                    "Folder"
-                } else {
-                    Self::type_label(&name, false)
-                };
-                let size_text = if is_dir {
+                let detail_type = self
+                    .entries
+                    .get(idx)
+                    .map(|entry| Self::type_label_for_kind(entry, self.entry_kind(idx)))
+                    .unwrap_or("File");
+                let size_text = if let Some(app) = self.desktop_app_for_idx(idx) {
+                    let mut s = String::from("Launch ");
+                    s.push_str(app);
+                    s
+                } else if is_dir {
                     String::from("Open container")
                 } else {
                     Self::format_size(size)
@@ -1001,14 +1904,18 @@ impl FileManagerApp {
                     detail.x + 12,
                     detail.y + 140,
                     "Action",
-                    if is_dir {
-                        "Enter to open"
+                    if self.desktop_app_for_idx(idx).is_some() {
+                        "Launch application"
+                    } else if is_dir {
+                        "Open folder"
                     } else {
-                        "Open in viewer"
+                        "Open or edit file"
                     },
                 );
 
-                let note = if is_dir {
+                let note = if self.desktop_app_for_idx(idx).is_some() {
+                    "Desktop launchers mirror the shell icons."
+                } else if is_dir {
                     "Folders stay in the shell view."
                 } else {
                     "Files open with the default app."
@@ -1374,7 +2281,10 @@ impl FileManagerApp {
             self.put_str(
                 columns.type_x as usize,
                 (row_y + 5) as usize,
-                Self::type_label(&full_name, false),
+                self.entries
+                    .get(entry_idx)
+                    .map(|entry| Self::type_label_for_kind(entry, self.entry_kind(entry_idx)))
+                    .unwrap_or("File"),
                 FM_TEXT_MUTED,
             );
             let size = Self::format_size(size);
@@ -1421,8 +2331,8 @@ impl FileManagerApp {
                 let entry_size = entry.size;
                 let mut right = String::from(&entry_name);
                 right.push_str("  ");
-                right.push_str(Self::type_label(&entry_name, entry_is_dir));
-                if !entry_is_dir {
+                right.push_str(Self::type_label_for_kind(entry, self.entry_kind(idx)));
+                if !entry_is_dir && self.desktop_app_for_idx(idx).is_none() {
                     right.push_str("  ");
                     right.push_str(&Self::format_size(entry_size));
                 }
@@ -1726,7 +2636,10 @@ impl FileManagerApp {
             let detail = if entry_is_dir {
                 "Folder root"
             } else {
-                Self::type_label(&entry_name, false)
+                self.entries
+                    .get(entry_idx)
+                    .map(|entry| Self::type_label_for_kind(entry, self.entry_kind(entry_idx)))
+                    .unwrap_or("File")
             };
             self.put_str(
                 (rect.x + 46) as usize,
