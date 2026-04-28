@@ -16,6 +16,10 @@ pub fn compose_if_needed() {
     }
 }
 
+pub fn prepare() {
+    drop(compositor::WM.lock());
+}
+
 pub fn init() {
     request_repaint();
 }

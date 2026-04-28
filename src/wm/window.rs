@@ -148,15 +148,37 @@ impl Window {
 
     // ── Resize ────────────────────────────────────────────────────────────────
 
+    fn resize_buffer(&mut self, new_w: i32, new_h: i32) {
+        let old_w = self.width.max(0) as usize;
+        let old_content_h = (self.height - TITLE_H).max(0) as usize;
+        let new_w_usize = new_w.max(0) as usize;
+        let new_content_h = (new_h - TITLE_H).max(0) as usize;
+
+        let old_buf = core::mem::take(&mut self.buf);
+        let mut new_buf = alloc::vec![crate::framebuffer::DARK_GRAY; new_w_usize * new_content_h];
+        let copy_w = old_w.min(new_w_usize);
+        let copy_h = old_content_h.min(new_content_h);
+
+        for row in 0..copy_h {
+            let old_start = row * old_w;
+            let new_start = row * new_w_usize;
+            new_buf[new_start..new_start + copy_w]
+                .copy_from_slice(&old_buf[old_start..old_start + copy_w]);
+        }
+
+        self.width = new_w;
+        self.height = new_h;
+        self.buf = new_buf;
+    }
+
     /// Resize the window, clamping to sensible minimums, and reallocate the back-buffer.
     pub fn resize_to(&mut self, new_w: i32, new_h: i32) {
         const MIN_W: i32 = 120;
         const MIN_H: i32 = TITLE_H + 40;
-        self.width = new_w.max(MIN_W);
-        self.height = new_h.max(MIN_H);
-        let content_h = (self.height - TITLE_H).max(0) as usize;
-        self.buf = alloc::vec![crate::framebuffer::DARK_GRAY; self.width as usize * content_h];
-        self.scroll.clamp(content_h as i32);
+        let new_w = new_w.max(MIN_W);
+        let new_h = new_h.max(MIN_H);
+        self.resize_buffer(new_w, new_h);
+        self.scroll.clamp((new_h - TITLE_H).max(0));
     }
 
     // ── Minimize / maximize / restore ─────────────────────────────────────────
@@ -176,10 +198,8 @@ impl Window {
             self.minimized = false;
             self.x = self.saved_x;
             self.y = self.saved_y;
-            self.width = self.saved_width;
-            self.height = self.saved_height;
-            let content_h = (self.height - TITLE_H).max(0) as usize;
-            self.buf = alloc::vec![crate::framebuffer::DARK_GRAY; self.width as usize * content_h];
+            self.resize_buffer(self.saved_width, self.saved_height);
+            self.scroll.clamp((self.saved_height - TITLE_H).max(0));
         }
     }
 
@@ -188,8 +208,8 @@ impl Window {
             // toggle: restore saved geometry
             self.x = self.saved_x;
             self.y = self.saved_y;
-            self.width = self.saved_width;
-            self.height = self.saved_height;
+            self.resize_buffer(self.saved_width, self.saved_height);
+            self.scroll.clamp((self.saved_height - TITLE_H).max(0));
         } else {
             self.saved_x = self.x;
             self.saved_y = self.y;
@@ -197,11 +217,8 @@ impl Window {
             self.saved_height = self.height;
             self.x = 0;
             self.y = 0;
-            self.width = sw;
-            self.height = sh;
+            self.resize_buffer(sw, sh);
+            self.scroll.clamp((sh - TITLE_H).max(0));
         }
-        let content_h = (self.height - TITLE_H).max(0) as usize;
-        self.buf = alloc::vec![crate::framebuffer::DARK_GRAY; self.width as usize * content_h];
-        self.scroll.clamp(content_h as i32);
     }
 }

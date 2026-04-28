@@ -14,5 +14,5 @@ name = "fs-image"
 path = "src/fs_image.rs"
 
 [dependencies]
-bootloader = { version = "0.11", features = ["bios"] }
+bootloader = { path = "../vendor/bootloader", default-features = false, features = ["bios"] }
 fatfs = "0.3"

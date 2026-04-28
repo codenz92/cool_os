@@ -344,10 +344,11 @@ impl AppWindow {
     }
     pub fn update(&mut self) {
         match self {
+            AppWindow::Terminal(t) => t.update(),
             AppWindow::SysMon(s) => s.update(),
             AppWindow::TextViewer(v) => v.update(),
+            AppWindow::ColorPicker(c) => c.update(),
             AppWindow::FileManager(f) => f.update(),
-            _ => {}
         }
     }
     pub fn is_minimized(&self) -> bool {
@@ -392,9 +393,39 @@ impl WindowManager {
         let w = crate::framebuffer::width();
         let h = crate::framebuffer::height();
         let taskbar_y = h - TASKBAR_H as usize;
+        crate::boot_splash::show(
+            "allocating desktop buffers",
+            15,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
         let mut wallpaper = alloc::vec![0u32; w * h];
+        crate::boot_splash::show(
+            "painting desktop background",
+            16,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
         let (fw, fh) = (w as f32, taskbar_y as f32);
+        let glow_mark = taskbar_y / 3;
+        let scanline_mark = taskbar_y * 2 / 3;
+        let mut glow_stage_shown = false;
+        let mut scanline_stage_shown = false;
         for y in 0..taskbar_y {
+            if !glow_stage_shown && y >= glow_mark {
+                crate::boot_splash::show(
+                    "charging phosphor glow",
+                    17,
+                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
+                );
+                glow_stage_shown = true;
+            }
+            if !scanline_stage_shown && y >= scanline_mark {
+                crate::boot_splash::show(
+                    "laying scanlines",
+                    18,
+                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
+                );
+                scanline_stage_shown = true;
+            }
             let ty = y as f32 / fh;
             for x in 0..w {
                 let tx = x as f32 / fw;
@@ -448,8 +479,18 @@ impl WindowManager {
                 wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
             }
         }
+        crate::boot_splash::show(
+            "finishing wallpaper",
+            19,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
 
         if taskbar_y > 0 && w > 0 {
+            crate::boot_splash::show(
+                "placing starfield",
+                20,
+                crate::boot_splash::BOOT_PROGRESS_TOTAL,
+            );
             let mut seed = 0xC001_D00Du32;
             let star_count = ((w * taskbar_y) / 12_000).max(48); // denser star field
             for _ in 0..star_count {
@@ -482,6 +523,17 @@ impl WindowManager {
                 }
             }
         }
+        crate::boot_splash::show(
+            "allocating render buffer",
+            21,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
+        let shadow = alloc::vec![0u32; w * h];
+        crate::boot_splash::show(
+            "finalizing shell",
+            22,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
 
         WindowManager {
             windows: Vec::new(),
@@ -503,7 +555,7 @@ impl WindowManager {
             last_click_x: 0,
             last_click_y: 0,
             tick: 0,
-            shadow: alloc::vec![0u32; w * h],
+            shadow,
             shadow_width: w,
             shadow_height: h,
             wallpaper,
@@ -1201,10 +1253,10 @@ impl WindowManager {
             let start_pressed = left && start_hot;
             let start_active = self.start_menu_open || start_pressed;
 
-            let btn_x = 8i32;
-            let btn_y = taskbar_y + 4;
-            let btn_w = TASKBAR_H - 8;
-            let btn_h = TASKBAR_H - 8;
+            let btn_x = 10i32;
+            let btn_y = taskbar_y + 6;
+            let btn_w = TASKBAR_H - 12;
+            let btn_h = TASKBAR_H - 12;
             let start_bg = if start_active {
                 ACCENT_PRESS
             } else if start_hot {
@@ -1249,8 +1301,8 @@ impl WindowManager {
                 },
             );
 
-            let tile_x = btn_x + 7;
-            let tile_y = btn_y + 7;
+            let tile_x = btn_x + 5;
+            let tile_y = btn_y + 5;
             let tile_bg = if start_active {
                 0x00_00_16_2E
             } else {

@@ -51,6 +51,8 @@ pub struct FileManagerApp {
     selected: Option<usize>,
     total_rows: usize,
     pending_open: Option<String>,
+    last_width: i32,
+    last_height: i32,
 }
 
 impl FileManagerApp {
@@ -64,6 +66,8 @@ impl FileManagerApp {
             selected: None,
             total_rows: 0,
             pending_open: None,
+            last_width: FILEMAN_W,
+            last_height: FILEMAN_H,
         };
         app.load_dir("/");
         app
@@ -115,9 +119,10 @@ impl FileManagerApp {
                     }
                     return;
                 }
-                if lx >= 32 && lx < 32 + (FILEMAN_W - 42) {
+                let window_w = self.window.width.max(0);
+                if lx >= 32 && lx < 32 + (window_w - 42).max(0) {
                     let rel_x = (lx - 32) as usize;
-                    let path_chars = (FILEMAN_W as usize - 44) / CW;
+                    let path_chars = (window_w as usize).saturating_sub(44) / CW;
                     let clicked_char = rel_x / CW;
                     let path_start = self.path.len().saturating_sub(path_chars);
                     if path_start + clicked_char < self.path.len() {
@@ -172,9 +177,16 @@ impl FileManagerApp {
     }
 
     pub fn update(&mut self) {
+        if self.window.width != self.last_width || self.window.height != self.last_height {
+            self.last_width = self.window.width;
+            self.last_height = self.window.height;
+            self.render();
+            return;
+        }
+
         let expected = self.offset as i32 * ROW_H;
         if self.window.scroll.offset != expected {
-            let content_area_h = (self.window.height - TITLE_H) as i32;
+            let content_area_h = (self.window.height - TITLE_H).max(0);
             let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
             let visible_rows = (entries_area_h / ROW_H) as usize;
             let max_row = self.entries.len().saturating_sub(visible_rows);
@@ -374,14 +386,14 @@ impl FileManagerApp {
 
     fn render(&mut self) {
         let w = self.window.width as usize;
-        let h = ((self.window.height - TITLE_H) as usize).max(0);
+        let h = (self.window.height - TITLE_H).max(0) as usize;
         let stride = w;
 
         for p in self.window.buf.iter_mut() {
             *p = FM_BG;
         }
 
-        self.view_h = h as i32 - TOOLBAR_H - COL_HDR_H - STATUS_H;
+        self.view_h = (h as i32 - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
         self.total_rows = (self.view_h as usize) / ROW_H as usize;
 
         self.window.scroll.content_h = self.entries.len() as i32 * ROW_H;
@@ -395,17 +407,12 @@ impl FileManagerApp {
     }
 
     fn draw_toolbar(&mut self, stride: usize) {
-        self.fill_rect(
-            stride,
-            0,
-            0,
-            FILEMAN_W as usize,
-            TOOLBAR_H as usize,
-            FM_PANEL_ALT,
-        );
-        self.fill_rect(stride, 0, 0, FILEMAN_W as usize, 2, FM_ACCENT);
-        self.fill_rect(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_PANEL);
-        self.draw_rect_border(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_BORDER);
+        let window_w = self.window.width.max(0) as usize;
+        let address_w = window_w.saturating_sub(38);
+        self.fill_rect(stride, 0, 0, window_w, TOOLBAR_H as usize, FM_PANEL_ALT);
+        self.fill_rect(stride, 0, 0, window_w, 2, FM_ACCENT);
+        self.fill_rect(stride, 30, 3, address_w, 18, FM_PANEL);
+        self.draw_rect_border(stride, 30, 3, address_w, 18, FM_BORDER);
         self.draw_up_button(stride, 6, 3);
         let path_str = self.path.clone();
         self.draw_address_bar(&path_str, 38, 0, stride);
@@ -432,7 +439,7 @@ impl FileManagerApp {
             (6, 8),
         ];
         for (gx, gy) in arrow {
-            let idx = (py + gy) * FILEMAN_W as usize + (px + gx);
+            let idx = (py + gy) * stride + (px + gx);
             if idx < self.window.buf.len() {
                 self.window.buf[idx] = WHITE;
             }
@@ -440,7 +447,7 @@ impl FileManagerApp {
         // Stem
         for gy in 9..13 {
             for gx in 5..7 {
-                let idx = (py + gy) * FILEMAN_W as usize + (px + gx);
+                let idx = (py + gy) * stride + (px + gx);
                 if idx < self.window.buf.len() {
                     self.window.buf[idx] = WHITE;
                 }
@@ -449,7 +456,9 @@ impl FileManagerApp {
     }
 
     fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, _stride: usize) {
-        let avail = (FILEMAN_W as usize - 44).saturating_sub(x0);
+        let avail = (self.window.width.max(0) as usize)
+            .saturating_sub(44)
+            .saturating_sub(x0);
         let display = if path_str.len() * CW > avail {
             let start = path_str.len() - avail / CW;
             &path_str[start..]
@@ -460,20 +469,14 @@ impl FileManagerApp {
     }
 
     fn draw_column_header(&mut self, stride: usize) {
+        let window_w = self.window.width.max(0) as usize;
         let y = TOOLBAR_H as usize;
-        self.fill_rect(
-            stride,
-            0,
-            y,
-            FILEMAN_W as usize,
-            COL_HDR_H as usize,
-            FM_PANEL,
-        );
+        self.fill_rect(stride, 0, y, window_w, COL_HDR_H as usize, FM_PANEL);
         self.fill_rect(
             stride,
             0,
             y + COL_HDR_H as usize - 1,
-            FILEMAN_W as usize,
+            window_w,
             1,
             FM_BORDER,
         );
@@ -503,6 +506,7 @@ impl FileManagerApp {
 
     fn draw_entries(&mut self, stride: usize) {
         let y0 = (TOOLBAR_H + COL_HDR_H) as usize;
+        let window_w = self.window.width.max(0) as usize;
         let entries_copy: Vec<DirEntryInfo> = self.entries.clone();
         let dir_count = entries_copy.iter().filter(|e| e.is_dir).count();
         let _ = dir_count; // used in status bar only
@@ -510,7 +514,7 @@ impl FileManagerApp {
         if entries_copy.is_empty() {
             let msg_y = y0 + self.view_h as usize / 2 - 4;
             self.put_str(
-                FILEMAN_W as usize / 2 - 32,
+                window_w.saturating_sub(64) / 2,
                 msg_y,
                 "(empty folder)",
                 TEXT_MUTED,
@@ -535,7 +539,7 @@ impl FileManagerApp {
             } else {
                 FM_ROW_ALT
             };
-            self.fill_rect(stride, 0, py, FILEMAN_W as usize, ROW_H as usize, row_bg);
+            self.fill_rect(stride, 0, py, window_w, ROW_H as usize, row_bg);
             if is_sel {
                 self.fill_rect(stride, 0, py, 3, ROW_H as usize, FM_ACCENT);
             }
@@ -599,7 +603,7 @@ impl FileManagerApp {
                 stride,
                 8,
                 py + ROW_H as usize - 1,
-                FILEMAN_W as usize - 16,
+                window_w.saturating_sub(16),
                 1,
                 DARK_GRAY,
             );
@@ -607,16 +611,10 @@ impl FileManagerApp {
     }
 
     fn draw_status_bar(&mut self, stride: usize) {
+        let window_w = self.window.width.max(0) as usize;
         let y = (TOOLBAR_H + COL_HDR_H + self.view_h) as usize;
-        self.fill_rect(
-            stride,
-            0,
-            y,
-            FILEMAN_W as usize,
-            STATUS_H as usize,
-            FM_STATUS,
-        );
-        self.fill_rect(stride, 0, y, FILEMAN_W as usize, 1, FM_BORDER);
+        self.fill_rect(stride, 0, y, window_w, STATUS_H as usize, FM_STATUS);
+        self.fill_rect(stride, 0, y, window_w, 1, FM_BORDER);
 
         // Left: item counts
         let n_dirs = self.entries.iter().filter(|e| e.is_dir).count();
@@ -638,14 +636,14 @@ impl FileManagerApp {
                     let sz = Self::format_size(e.size);
                     right.push_str(&sz);
                 }
-                let right_x = FILEMAN_W as usize - right.len() * CW - 10;
+                let right_x = window_w.saturating_sub(right.len() * CW + 10);
                 self.put_str(right_x, y + 5, &right, LIGHT_GRAY);
             }
         }
 
         // Keyboard hints (centre)
         let hint = "^/v select  Enter open  BS up";
-        let hint_x = (FILEMAN_W as usize - hint.len() * CW) / 2;
+        let hint_x = window_w.saturating_sub(hint.len() * CW) / 2;
         self.put_str(hint_x, y + 5, hint, FM_BORDER);
     }
 

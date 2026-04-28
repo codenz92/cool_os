@@ -3,10 +3,13 @@
 /// Used by the `print!`/`println!` macros and the panic handler.
 /// Writes directly to the hardware framebuffer (not through the WM shadow).
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::framebuffer;
+
+static FRAMEBUFFER_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub struct Writer {
     col: usize,
@@ -37,7 +40,9 @@ impl Writer {
                 if self.col >= cols {
                     self.new_line();
                 }
-                framebuffer::draw_char(self.col, self.row, byte as char, self.fg, self.bg);
+                if framebuffer_output_enabled() {
+                    framebuffer::draw_char(self.col, self.row, byte as char, self.fg, self.bg);
+                }
                 self.col += 1;
             }
         }
@@ -47,6 +52,10 @@ impl Writer {
         self.col = 0;
         let rows = framebuffer::rows();
         if rows == 0 {
+            return;
+        }
+        if !framebuffer_output_enabled() {
+            self.row = (self.row + 1).min(rows.saturating_sub(1));
             return;
         }
         if self.row + 1 < rows {
@@ -76,6 +85,21 @@ lazy_static! {
         fg: framebuffer::YELLOW,
         bg: framebuffer::BLACK,
     });
+}
+
+#[inline]
+fn framebuffer_output_enabled() -> bool {
+    FRAMEBUFFER_OUTPUT_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_framebuffer_output(enabled: bool) {
+    FRAMEBUFFER_OUTPUT_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn reset_cursor() {
+    let mut writer = WRITER.lock();
+    writer.col = 0;
+    writer.row = 0;
 }
 
 #[macro_export]

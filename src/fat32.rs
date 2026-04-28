@@ -283,16 +283,7 @@ pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
 ///
 /// Only 8.3 filenames are supported.  The path must start with `/`.
 pub fn read_file(path: &str) -> Option<Vec<u8>> {
-    crate::println!("[fat32] read_file: loading BPB");
     let bpb = Bpb::load()?;
-    crate::println!(
-        "[fat32] BPB loaded: bps={} spc={} fat_start={} data_start={} root_clust={}",
-        bpb.bytes_per_sector,
-        bpb.sectors_per_cluster,
-        bpb.fat_start_lba(),
-        bpb.data_start_lba(),
-        bpb.root_cluster
-    );
 
     // Walk path components, starting at root cluster.
     let mut cluster = bpb.root_cluster;

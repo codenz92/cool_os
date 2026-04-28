@@ -49,6 +49,8 @@ const COLORS: [(&str, u32); 16] = [
 pub struct ColorPickerApp {
     pub window: Window,
     selected: Option<usize>,
+    last_width: i32,
+    last_height: i32,
 }
 
 impl ColorPickerApp {
@@ -57,6 +59,8 @@ impl ColorPickerApp {
         let mut app = ColorPickerApp {
             window,
             selected: Some(11),
+            last_width: PICKER_W,
+            last_height: PICKER_H,
         };
         app.render();
         app
@@ -78,14 +82,22 @@ impl ColorPickerApp {
         }
     }
 
+    pub fn update(&mut self) {
+        if self.window.width != self.last_width || self.window.height != self.last_height {
+            self.last_width = self.window.width;
+            self.last_height = self.window.height;
+            self.render();
+        }
+    }
+
     fn render(&mut self) {
-        let stride = PICKER_W as usize;
-        let content_h = (PICKER_H - TITLE_H) as usize;
+        let stride = self.window.width.max(0) as usize;
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
         self.fill_background(stride);
 
-        self.fill_rect(stride, 0, 0, PICKER_W as usize, 34, PANEL_ALT);
-        self.fill_rect(stride, 0, 0, PICKER_W as usize, 3, ACCENT);
-        self.fill_rect(stride, 0, 33, PICKER_W as usize, 1, BORDER);
+        self.fill_rect(stride, 0, 0, stride, 34, PANEL_ALT);
+        self.fill_rect(stride, 0, 0, stride, 3, ACCENT);
+        self.fill_rect(stride, 0, 33, stride, 1, BORDER);
         self.fill_rect(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, PANEL);
         self.draw_rect_border(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, BORDER);
         self.draw_rect_border(
@@ -222,10 +234,11 @@ impl ColorPickerApp {
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        let content_h = (PICKER_H - TITLE_H) as usize;
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        let width = self.window.width.max(0) as usize;
         for row in y..(y + h).min(content_h) {
             let base = row * stride;
-            for col in x..(x + w).min(PICKER_W as usize) {
+            for col in x..(x + w).min(width) {
                 let idx = base + col;
                 if idx < self.window.buf.len() {
                     self.window.buf[idx] = color;

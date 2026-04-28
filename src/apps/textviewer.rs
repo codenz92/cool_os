@@ -10,10 +10,11 @@ pub const VIEWER_W: i32 = 640;
 pub const VIEWER_H: i32 = 480;
 
 const CHAR_W: usize = 8;
-const CHAR_H: usize = 8;
+const LINE_H: usize = 12;
 const HEADER_H: usize = 42;
 const FOOTER_H: usize = 18;
 const PAD_X: usize = 18;
+const GLYPH_Y_INSET: usize = 1;
 
 const BG_A: u32 = 0x00_03_08_15;
 const BG_B: u32 = 0x00_01_03_0A;
@@ -65,6 +66,8 @@ pub struct TextViewerApp {
     cols: usize,
     heading: String,
     subheading: String,
+    last_width: i32,
+    last_height: i32,
 }
 
 impl TextViewerApp {
@@ -78,6 +81,8 @@ impl TextViewerApp {
             cols: 0,
             heading: String::from("About coolOS"),
             subheading: String::from("system notes, controls, and current milestone"),
+            last_width: VIEWER_W,
+            last_height: VIEWER_H,
         };
         app.render();
         app
@@ -127,43 +132,51 @@ impl TextViewerApp {
     }
 
     pub fn update(&mut self) {
-        let expected = self.scroll as i32 * CHAR_H as i32;
+        if self.window.width != self.last_width || self.window.height != self.last_height {
+            self.last_width = self.window.width;
+            self.last_height = self.window.height;
+            self.render();
+            return;
+        }
+
+        let expected = self.scroll as i32 * LINE_H as i32;
         if self.window.scroll.offset != expected {
             let max = self.lines.len().saturating_sub(self.rows);
-            self.scroll = ((self.window.scroll.offset / CHAR_H as i32) as usize).min(max);
+            self.scroll = ((self.window.scroll.offset / LINE_H as i32) as usize).min(max);
             self.render();
         }
     }
 
     fn render(&mut self) {
-        let stride = VIEWER_W as usize;
+        let width = self.window.width.max(0) as usize;
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        let stride = width;
         self.fill_background(stride);
 
-        let content_h = (VIEWER_H - TITLE_H) as usize;
         let text_y0 = HEADER_H + 8;
         let text_h = content_h.saturating_sub(HEADER_H + FOOTER_H + 10);
-        self.rows = text_h / CHAR_H;
-        self.cols = (VIEWER_W as usize).saturating_sub(PAD_X * 2 + 8) / CHAR_W;
-        self.window.scroll.content_h = (self.lines.len() * CHAR_H) as i32;
-        self.window.scroll.offset = self.scroll as i32 * CHAR_H as i32;
-        self.window.scroll.clamp((self.rows * CHAR_H) as i32);
+        self.rows = text_h / LINE_H;
+        self.cols = width.saturating_sub(PAD_X * 2 + 8) / CHAR_W;
+        self.window.scroll.content_h = (self.lines.len() * LINE_H) as i32;
+        self.window.scroll.offset = self.scroll as i32 * LINE_H as i32;
+        self.window.scroll.clamp((self.rows * LINE_H) as i32);
 
-        self.fill_rect(stride, 0, 0, VIEWER_W as usize, HEADER_H, PANEL_ALT);
-        self.fill_rect(stride, 0, 0, VIEWER_W as usize, 3, ACCENT);
-        self.fill_rect(stride, 0, HEADER_H - 1, VIEWER_W as usize, 1, PANEL_BORDER);
+        self.fill_rect(stride, 0, 0, width, HEADER_H, PANEL_ALT);
+        self.fill_rect(stride, 0, 0, width, 3, ACCENT);
+        self.fill_rect(stride, 0, HEADER_H - 1, width, 1, PANEL_BORDER);
         self.fill_rect(
             stride,
             0,
-            content_h - FOOTER_H,
-            VIEWER_W as usize,
+            content_h.saturating_sub(FOOTER_H),
+            width,
             FOOTER_H,
             PANEL,
         );
         self.fill_rect(
             stride,
             0,
-            content_h - FOOTER_H,
-            VIEWER_W as usize,
+            content_h.saturating_sub(FOOTER_H),
+            width,
             1,
             PANEL_BORDER,
         );
@@ -180,7 +193,7 @@ impl TextViewerApp {
                 break;
             }
             let line = self.lines[doc_row].clone();
-            let py = text_y0 + screen_row * CHAR_H;
+            let py = text_y0 + screen_row * LINE_H + GLYPH_Y_INSET;
             let fg = if line.starts_with(" ==") {
                 YELLOW
             } else if line.starts_with("  ") {
@@ -206,7 +219,13 @@ impl TextViewerApp {
         push_number(&mut footer, current_line);
         footer.push('/');
         push_number(&mut footer, self.lines.len().max(1));
-        self.put_str(stride, PAD_X, content_h - FOOTER_H + 5, &footer, MUTED);
+        self.put_str(
+            stride,
+            PAD_X,
+            content_h.saturating_sub(FOOTER_H).saturating_add(5),
+            &footer,
+            MUTED,
+        );
 
         let progress = if self.lines.is_empty() {
             0
@@ -215,8 +234,8 @@ impl TextViewerApp {
         };
         self.draw_bar(
             stride,
-            VIEWER_W as usize - 170,
-            content_h - FOOTER_H + 6,
+            width.saturating_sub(170),
+            content_h.saturating_sub(FOOTER_H).saturating_add(6),
             140,
             6,
             progress,
@@ -233,10 +252,11 @@ impl TextViewerApp {
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        let content_h = (VIEWER_H - TITLE_H) as usize;
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        let width = self.window.width.max(0) as usize;
         for row in y..(y + h).min(content_h) {
             let base = row * stride;
-            for col in x..(x + w).min(VIEWER_W as usize) {
+            for col in x..(x + w).min(width) {
                 let idx = base + col;
                 if idx < self.window.buf.len() {
                     self.window.buf[idx] = color;

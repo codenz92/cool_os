@@ -44,6 +44,8 @@ pub struct TerminalApp {
     history_pos: usize,
     saved_input: String,
     input_start_col: usize,
+    last_width: i32,
+    last_height: i32,
 }
 
 impl TerminalApp {
@@ -66,6 +68,8 @@ impl TerminalApp {
             history_pos: 0,
             saved_input: String::new(),
             input_start_col: 0,
+            last_width: TERM_W,
+            last_height: TERM_H,
         };
         t.fill_background();
         t.set_fg(FG_ACCENT);
@@ -74,6 +78,19 @@ impl TerminalApp {
         t.print_str("type help for commands\n\n");
         t.print_prompt();
         t
+    }
+
+    pub fn update(&mut self) {
+        if self.window.width == self.last_width && self.window.height == self.last_height {
+            return;
+        }
+
+        let old_width = self.last_width.max(0) as usize;
+        let old_content_h = (self.last_height - TITLE_H).max(0) as usize;
+        self.last_width = self.window.width;
+        self.last_height = self.window.height;
+        self.refresh_layout();
+        self.paint_exposed_background(old_width, old_content_h);
     }
 
     pub fn handle_key(&mut self, c: char) {
@@ -725,6 +742,32 @@ impl TerminalApp {
         for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
             let py = idx / stride;
             *pixel = Self::bg_at(py);
+        }
+    }
+
+    fn paint_exposed_background(&mut self, old_width: usize, old_content_h: usize) {
+        let new_width = self.window.width.max(0) as usize;
+        let new_content_h = (self.window.height - TITLE_H).max(0) as usize;
+        let shared_h = old_content_h.min(new_content_h);
+
+        if new_width > old_width {
+            let fill_w = new_width - old_width;
+            for py in 0..shared_h {
+                let row_start = py * new_width + old_width;
+                let row_end = row_start + fill_w;
+                for idx in row_start..row_end {
+                    self.window.buf[idx] = Self::bg_at(py);
+                }
+            }
+        }
+
+        if new_content_h > old_content_h {
+            for py in old_content_h..new_content_h {
+                let row_start = py * new_width;
+                for idx in row_start..row_start + new_width {
+                    self.window.buf[idx] = Self::bg_at(py);
+                }
+            }
         }
     }
 
