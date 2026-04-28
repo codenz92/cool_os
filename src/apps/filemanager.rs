@@ -15,6 +15,9 @@ const CW: usize = 8;
 const TOOLBAR_H: i32 = 24;
 const COL_HDR_H: i32 = 16;
 const STATUS_H: i32 = 18;
+const ACTION_BTN_W: usize = 44;
+const ACTION_BTN_H: usize = 18;
+const ACTION_BTN_GAP: usize = 6;
 const NAME_COL_W: i32 = 288;
 const SIZE_COL_W: i32 = 72;
 const ROW_H: i32 = 16;
@@ -51,6 +54,7 @@ pub struct FileManagerApp {
     selected: Option<usize>,
     total_rows: usize,
     pending_open: Option<String>,
+    status_note: Option<String>,
     last_width: i32,
     last_height: i32,
 }
@@ -66,6 +70,7 @@ impl FileManagerApp {
             selected: None,
             total_rows: 0,
             pending_open: None,
+            status_note: None,
             last_width: FILEMAN_W,
             last_height: FILEMAN_H,
         };
@@ -89,6 +94,7 @@ impl FileManagerApp {
         self.entries = new_entries;
         self.offset = 0;
         self.selected = self.entries.first().map(|_| 0);
+        self.status_note = None;
         self.render();
     }
 
@@ -102,6 +108,8 @@ impl FileManagerApp {
             }
             '\u{F700}' => self.move_selection(-1), // up arrow
             '\u{F701}' => self.move_selection(1),  // down arrow
+            'n' | 'N' => self.create_new_file(),
+            'd' | 'D' => self.create_new_dir(),
             '\n' => self.open_selected(),
             _ => {}
         }
@@ -119,10 +127,29 @@ impl FileManagerApp {
                     }
                     return;
                 }
+                let window_w = self.window.width.max(0) as usize;
+                let (file_btn_x, dir_btn_x) = Self::toolbar_button_x(window_w);
+                if lx >= file_btn_x as i32
+                    && lx < (file_btn_x + ACTION_BTN_W) as i32
+                    && ly >= 3
+                    && ly < (3 + ACTION_BTN_H as i32)
+                {
+                    self.create_new_file();
+                    return;
+                }
+                if lx >= dir_btn_x as i32
+                    && lx < (dir_btn_x + ACTION_BTN_W) as i32
+                    && ly >= 3
+                    && ly < (3 + ACTION_BTN_H as i32)
+                {
+                    self.create_new_dir();
+                    return;
+                }
                 let window_w = self.window.width.max(0);
-                if lx >= 32 && lx < 32 + (window_w - 42).max(0) {
+                let address_w = Self::address_bar_w(window_w as usize) as i32;
+                if lx >= 32 && lx < 32 + address_w {
                     let rel_x = (lx - 32) as usize;
-                    let path_chars = (window_w as usize).saturating_sub(44) / CW;
+                    let path_chars = address_w.max(0) as usize / CW;
                     let clicked_char = rel_x / CW;
                     let path_start = self.path.len().saturating_sub(path_chars);
                     if path_start + clicked_char < self.path.len() {
@@ -408,13 +435,16 @@ impl FileManagerApp {
 
     fn draw_toolbar(&mut self, stride: usize) {
         let window_w = self.window.width.max(0) as usize;
-        let address_w = window_w.saturating_sub(38);
+        let address_w = Self::address_bar_w(window_w);
+        let (file_btn_x, dir_btn_x) = Self::toolbar_button_x(window_w);
         self.fill_rect(stride, 0, 0, window_w, TOOLBAR_H as usize, FM_PANEL_ALT);
         self.fill_rect(stride, 30, 3, address_w, 18, FM_PANEL);
         self.draw_rect_border(stride, 30, 3, address_w, 18, FM_BORDER);
         self.draw_up_button(stride, 6, 3);
+        self.draw_toolbar_button(stride, file_btn_x, 3, "FILE");
+        self.draw_toolbar_button(stride, dir_btn_x, 3, "DIR");
         let path_str = self.path.clone();
-        self.draw_address_bar(&path_str, 38, 0, stride);
+        self.draw_address_bar(&path_str, 38, 0, address_w);
     }
 
     fn draw_up_button(&mut self, stride: usize, px: usize, py: usize) {
@@ -454,10 +484,14 @@ impl FileManagerApp {
         }
     }
 
-    fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, _stride: usize) {
-        let avail = (self.window.width.max(0) as usize)
-            .saturating_sub(44)
-            .saturating_sub(x0);
+    fn draw_toolbar_button(&mut self, stride: usize, px: usize, py: usize, label: &str) {
+        self.fill_rect(stride, px, py, ACTION_BTN_W, ACTION_BTN_H, FM_PANEL);
+        self.draw_rect_border(stride, px, py, ACTION_BTN_W, ACTION_BTN_H, FM_BORDER);
+        let label_x = px + ACTION_BTN_W.saturating_sub(label.len() * CW) / 2;
+        self.put_str(label_x, py + 6, label, WHITE);
+    }
+
+    fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, avail: usize) {
         let display = if path_str.len() * CW > avail {
             let start = path_str.len() - avail / CW;
             &path_str[start..]
@@ -641,7 +675,10 @@ impl FileManagerApp {
         }
 
         // Keyboard hints (centre)
-        let hint = "^/v select  Enter open  BS up";
+        let hint_note = self.status_note.clone();
+        let hint = hint_note
+            .as_deref()
+            .unwrap_or("N file  D dir  Enter open  BS up");
         let hint_x = window_w.saturating_sub(hint.len() * CW) / 2;
         self.put_str(hint_x, y + 5, hint, FM_BORDER);
     }
@@ -718,6 +755,106 @@ impl FileManagerApp {
         self.fill_rect(stride, x, y + h - 1, w, 1, color);
         self.fill_rect(stride, x, y, 1, h, color);
         self.fill_rect(stride, x + w - 1, y, 1, h, color);
+    }
+
+    fn create_new_file(&mut self) {
+        let name = self.next_available_name("FILE", Some("TXT"));
+        let path = self.join_child_path(&name);
+        match crate::fat32::create_file(&path) {
+            Ok(()) => {
+                self.reload_after_create(&name, "created");
+            }
+            Err(err) => {
+                self.set_status_error("file", err.as_str());
+                self.render();
+            }
+        }
+    }
+
+    fn create_new_dir(&mut self) {
+        let name = self.next_available_name("DIR", None);
+        let path = self.join_child_path(&name);
+        match crate::fat32::create_dir(&path) {
+            Ok(()) => {
+                self.reload_after_create(&name, "created");
+            }
+            Err(err) => {
+                self.set_status_error("folder", err.as_str());
+                self.render();
+            }
+        }
+    }
+
+    fn reload_after_create(&mut self, name: &str, verb: &str) {
+        let current = self.path.clone();
+        self.load_dir(&current);
+        self.selected = self
+            .entries
+            .iter()
+            .position(|entry| entry.name.eq_ignore_ascii_case(name));
+        self.ensure_selected_visible();
+        let mut note = String::from(verb);
+        note.push(' ');
+        note.push_str(name);
+        self.status_note = Some(note);
+        self.render();
+    }
+
+    fn set_status_error(&mut self, subject: &str, detail: &str) {
+        let mut note = String::from(subject);
+        note.push_str(" create failed: ");
+        note.push_str(detail);
+        self.status_note = Some(note);
+    }
+
+    fn next_available_name(&self, prefix: &str, ext: Option<&str>) -> String {
+        for n in 1..10_000usize {
+            let candidate = Self::numbered_name(prefix, n, ext);
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.name.eq_ignore_ascii_case(&candidate))
+            {
+                return candidate;
+            }
+        }
+
+        let mut fallback = String::from(prefix);
+        if let Some(ext) = ext {
+            fallback.push('.');
+            fallback.push_str(ext);
+        }
+        fallback
+    }
+
+    fn numbered_name(prefix: &str, n: usize, ext: Option<&str>) -> String {
+        let mut s = String::from(prefix);
+        fmt_push_u(&mut s, n as u64);
+        if let Some(ext) = ext {
+            s.push('.');
+            s.push_str(ext);
+        }
+        s
+    }
+
+    fn join_child_path(&self, name: &str) -> String {
+        let mut path = self.path.clone();
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(name);
+        path
+    }
+
+    fn toolbar_button_x(window_w: usize) -> (usize, usize) {
+        let dir_btn_x = window_w.saturating_sub(ACTION_BTN_W + 6);
+        let file_btn_x = dir_btn_x.saturating_sub(ACTION_BTN_W + ACTION_BTN_GAP);
+        (file_btn_x, dir_btn_x)
+    }
+
+    fn address_bar_w(window_w: usize) -> usize {
+        let (file_btn_x, _) = Self::toolbar_button_x(window_w);
+        file_btn_x.saturating_sub(36)
     }
 }
 

@@ -4,8 +4,8 @@
 /// The filesystem disk image is attached to QEMU as `-drive if=ide,index=1`
 /// which maps to primary-bus slave.
 ///
-/// Only LBA 28 reads are implemented — the FAT32 image is 64 MiB, well within
-/// the 128 GiB LBA28 limit.
+/// Only LBA28 PIO transfers are implemented — the FAT32 image is 64 MiB, well
+/// within the 128 GiB addressing limit.
 use x86_64::instructions::port::Port;
 
 // ── Primary ATA bus I/O ports ─────────────────────────────────────────────────
@@ -24,6 +24,8 @@ const DEV_CTRL: u16 = 0x3F6; // Device Control Register: nIEN (bit 1) disables I
 
 const DRIVE_SLAVE: u8 = 0xF0; // bits 7/5 set, LBA mode (bit 6), drive 1 (bit 4)
 const CMD_READ: u8 = 0x20; // READ SECTORS (LBA28, PIO)
+const CMD_WRITE: u8 = 0x30; // WRITE SECTORS (LBA28, PIO)
+const CMD_CACHE_FLUSH: u8 = 0xE7; // FLUSH CACHE
 const STATUS_BSY: u8 = 0x80;
 const STATUS_DF: u8 = 0x20;
 const STATUS_DRQ: u8 = 0x08;
@@ -37,6 +39,12 @@ pub fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
     // Disable interrupts for the duration of the PIO transfer to prevent the
     // timer ISR from preempting in the middle of a multi-step I/O transaction.
     x86_64::instructions::interrupts::without_interrupts(|| read_sector_inner(lba, buf))
+}
+
+/// Write one 512-byte sector at `lba` to the slave device from `buf`.
+/// Returns `true` on success, `false` on device error.
+pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| write_sector_inner(lba, buf))
 }
 
 fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
@@ -104,6 +112,113 @@ fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
         let words = core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, 256);
         for w in words.iter_mut() {
             *w = data.read();
+        }
+    }
+    true
+}
+
+fn write_sector_inner(lba: u32, buf: &[u8; 512]) -> bool {
+    unsafe {
+        let mut status = Port::<u8>::new(STATUS_CMD);
+
+        Port::<u8>::new(DEV_CTRL).write(0x02);
+
+        let mut bsy_iters: u32 = 0;
+        while status.read() & STATUS_BSY != 0 {
+            bsy_iters += 1;
+            if bsy_iters > 10_000_000 {
+                crate::println!("[ata] BSY timeout before write lba={}", lba);
+                return false;
+            }
+        }
+
+        Port::<u8>::new(DRIVE_HDR).write(DRIVE_SLAVE | ((lba >> 24) as u8 & 0x0F));
+        for _ in 0..4 {
+            let _ = status.read();
+        }
+
+        Port::<u8>::new(FEATURES).write(0);
+        Port::<u8>::new(SECCOUNT).write(1);
+        Port::<u8>::new(LBA_LO).write(lba as u8);
+        Port::<u8>::new(LBA_MID).write((lba >> 8) as u8);
+        Port::<u8>::new(LBA_HI).write((lba >> 16) as u8);
+        Port::<u8>::new(STATUS_CMD).write(CMD_WRITE);
+
+        let mut drq_iters: u32 = 0;
+        loop {
+            let s = status.read();
+            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+                let err = Port::<u8>::new(FEATURES).read();
+                crate::println!(
+                    "[ata] write error lba={} status={:#x} err={:#x}",
+                    lba,
+                    s,
+                    err
+                );
+                return false;
+            }
+            if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 {
+                break;
+            }
+            drq_iters += 1;
+            if drq_iters > 10_000_000 {
+                crate::println!("[ata] DRQ timeout before write lba={}", lba);
+                return false;
+            }
+        }
+
+        let mut data = Port::<u16>::new(DATA);
+        let words = core::slice::from_raw_parts(buf.as_ptr() as *const u16, 256);
+        for &w in words {
+            data.write(w);
+        }
+
+        let mut settle_iters: u32 = 0;
+        loop {
+            let s = status.read();
+            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+                let err = Port::<u8>::new(FEATURES).read();
+                crate::println!(
+                    "[ata] write settle error lba={} status={:#x} err={:#x}",
+                    lba,
+                    s,
+                    err
+                );
+                return false;
+            }
+            if s & STATUS_BSY == 0 {
+                break;
+            }
+            settle_iters += 1;
+            if settle_iters > 10_000_000 {
+                crate::println!("[ata] write settle timeout lba={}", lba);
+                return false;
+            }
+        }
+
+        Port::<u8>::new(STATUS_CMD).write(CMD_CACHE_FLUSH);
+
+        let mut flush_iters: u32 = 0;
+        loop {
+            let s = status.read();
+            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+                let err = Port::<u8>::new(FEATURES).read();
+                crate::println!(
+                    "[ata] flush error lba={} status={:#x} err={:#x}",
+                    lba,
+                    s,
+                    err
+                );
+                return false;
+            }
+            if s & STATUS_BSY == 0 {
+                break;
+            }
+            flush_iters += 1;
+            if flush_iters > 10_000_000 {
+                crate::println!("[ata] flush timeout lba={}", lba);
+                return false;
+            }
         }
     }
     true

@@ -3,7 +3,7 @@
 ///
 /// Visual theme: Retro-Futuristic CRT Phosphor Blue
 extern crate alloc;
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
@@ -137,27 +137,196 @@ const CURSOR_RESIZE_OUTLINE: [u16; CURSOR_H] = [
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
-const CTX_W: i32 = 224;
-const CTX_ITEM_H: i32 = 32;
-const CTX_HEADER_H: i32 = 28; // non-clickable header strip
-const CTX_PAD: i32 = 4; // top/bottom padding inside menu body
-const CTX_ITEMS: &[&str] = &[
-    "Terminal",
-    "System Mon",
-    "Text Viewer",
-    "Color Pick",
-    "File Manager",
+const CTX_W: i32 = 212;
+const CTX_SUB_W: i32 = 196;
+const CTX_ITEM_H: i32 = 28;
+const CTX_SEP_H: i32 = 10;
+const CTX_HEADER_H: i32 = 0;
+const CTX_PAD: i32 = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DesktopContextCommand {
+    ToggleDesktopIcons,
+    ToggleCompactSpacing,
+    SortByName,
+    SortByType,
+    Refresh,
+    CreateFolder,
+    CreateTextDocument,
+    DisplaySettings,
+    Personalize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DesktopContextSubmenu {
+    View,
+    SortBy,
+    New,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContextEntryKind {
+    Action(DesktopContextCommand),
+    Submenu(DesktopContextSubmenu),
+    Separator,
+}
+
+#[derive(Clone, Copy)]
+struct ContextEntryDef {
+    label: &'static str,
+    kind: ContextEntryKind,
+    enabled: bool,
+}
+
+const DESKTOP_CONTEXT_MENU: &[ContextEntryDef] = &[
+    ContextEntryDef {
+        label: "View",
+        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::View),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Sort by",
+        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::SortBy),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Refresh",
+        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "",
+        kind: ContextEntryKind::Separator,
+        enabled: false,
+    },
+    ContextEntryDef {
+        label: "Paste",
+        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
+        enabled: false,
+    },
+    ContextEntryDef {
+        label: "Paste shortcut",
+        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
+        enabled: false,
+    },
+    ContextEntryDef {
+        label: "",
+        kind: ContextEntryKind::Separator,
+        enabled: false,
+    },
+    ContextEntryDef {
+        label: "New",
+        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::New),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "",
+        kind: ContextEntryKind::Separator,
+        enabled: false,
+    },
+    ContextEntryDef {
+        label: "Display settings",
+        kind: ContextEntryKind::Action(DesktopContextCommand::DisplaySettings),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Personalize",
+        kind: ContextEntryKind::Action(DesktopContextCommand::Personalize),
+        enabled: true,
+    },
+];
+
+const CTX_VIEW_MENU: &[ContextEntryDef] = &[
+    ContextEntryDef {
+        label: "Show desktop icons",
+        kind: ContextEntryKind::Action(DesktopContextCommand::ToggleDesktopIcons),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Compact icon spacing",
+        kind: ContextEntryKind::Action(DesktopContextCommand::ToggleCompactSpacing),
+        enabled: true,
+    },
+];
+
+const CTX_SORT_MENU: &[ContextEntryDef] = &[
+    ContextEntryDef {
+        label: "Name",
+        kind: ContextEntryKind::Action(DesktopContextCommand::SortByName),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Type",
+        kind: ContextEntryKind::Action(DesktopContextCommand::SortByType),
+        enabled: true,
+    },
+];
+
+const CTX_NEW_MENU: &[ContextEntryDef] = &[
+    ContextEntryDef {
+        label: "Folder",
+        kind: ContextEntryKind::Action(DesktopContextCommand::CreateFolder),
+        enabled: true,
+    },
+    ContextEntryDef {
+        label: "Text Document",
+        kind: ContextEntryKind::Action(DesktopContextCommand::CreateTextDocument),
+        enabled: true,
+    },
 ];
 
 struct ContextMenu {
     x: i32,
     y: i32,
+    submenu: Option<DesktopContextSubmenu>,
 }
 
 // ── Desktop icons ──────────────────────────────────────────────────────────────
 
 const ICON_SIZE: i32 = 52;
 const ICON_LABEL_H: i32 = 14;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DesktopSortMode {
+    Default,
+    Name,
+    Type,
+}
+
+#[derive(Clone, Copy)]
+struct DesktopIconSpec {
+    label: &'static str,
+    app: &'static str,
+    type_rank: u8,
+}
+
+const DESKTOP_ICON_SPECS: [DesktopIconSpec; 5] = [
+    DesktopIconSpec {
+        label: "Terminal",
+        app: "Terminal",
+        type_rank: 2,
+    },
+    DesktopIconSpec {
+        label: "Monitor",
+        app: "System Mon",
+        type_rank: 1,
+    },
+    DesktopIconSpec {
+        label: "Files",
+        app: "File Manager",
+        type_rank: 0,
+    },
+    DesktopIconSpec {
+        label: "Viewer",
+        app: "Text Viewer",
+        type_rank: 3,
+    },
+    DesktopIconSpec {
+        label: "Colors",
+        app: "Color Pick",
+        type_rank: 4,
+    },
+];
 
 struct DesktopIcon {
     x: i32,
@@ -173,45 +342,6 @@ impl DesktopIcon {
             && py >= self.y
             && py < self.y + ICON_SIZE + ICON_LABEL_H
     }
-}
-
-fn desktop_icons() -> [DesktopIcon; 5] {
-    [
-        DesktopIcon {
-            x: 20,
-            y: 20,
-            label: "Terminal",
-            app: "Terminal",
-        },
-        DesktopIcon {
-            x: 188,
-            y: 20,
-            label: "Monitor",
-            app: "System Mon",
-        },
-        DesktopIcon {
-            x: 356,
-            y: 20,
-            label: "Files",
-            app: "File Manager",
-        },
-        DesktopIcon {
-            x: 20,
-            y: 118,
-            label: "Viewer",
-            app: "Text Viewer",
-        },
-        DesktopIcon {
-            x: 188,
-            y: 118,
-            label: "Colors",
-            app: "Color Pick",
-        },
-    ]
-}
-
-fn desktop_icon_hit(px: i32, py: i32) -> Option<usize> {
-    desktop_icons().iter().position(|icon| icon.hit(px, py))
 }
 
 const START_PINNED_APPS: [&str; 5] = [
@@ -370,6 +500,9 @@ pub struct WindowManager {
     prev_left: bool,
     prev_right: bool,
     context_menu: Option<ContextMenu>,
+    desktop_show_icons: bool,
+    desktop_compact_spacing: bool,
+    desktop_sort: DesktopSortMode,
     icon_selected: Option<usize>,
     pressed_icon: Option<usize>,
     start_menu_open: bool,
@@ -545,6 +678,9 @@ impl WindowManager {
             prev_left: false,
             prev_right: false,
             context_menu: None,
+            desktop_show_icons: true,
+            desktop_compact_spacing: false,
+            desktop_sort: DesktopSortMode::Default,
             icon_selected: None,
             pressed_icon: None,
             start_menu_open: false,
@@ -576,6 +712,210 @@ impl WindowManager {
             "File Manager" => self.add_window(AppWindow::FileManager(FileManagerApp::new(wx, wy))),
             _ => {}
         }
+    }
+
+    fn desktop_icons(&self) -> Vec<DesktopIcon> {
+        if !self.desktop_show_icons {
+            return Vec::new();
+        }
+
+        let mut specs = DESKTOP_ICON_SPECS.to_vec();
+        match self.desktop_sort {
+            DesktopSortMode::Default => {}
+            DesktopSortMode::Name => {
+                specs.sort_by(|a, b| a.label.cmp(b.label));
+            }
+            DesktopSortMode::Type => {
+                specs.sort_by(|a, b| {
+                    a.type_rank
+                        .cmp(&b.type_rank)
+                        .then_with(|| a.label.cmp(b.label))
+                });
+            }
+        }
+
+        let step_x = if self.desktop_compact_spacing {
+            140
+        } else {
+            168
+        };
+        let step_y = if self.desktop_compact_spacing { 88 } else { 98 };
+        let cols = 3i32;
+
+        specs
+            .into_iter()
+            .enumerate()
+            .map(|(i, spec)| DesktopIcon {
+                x: 20 + (i as i32 % cols) * step_x,
+                y: 20 + (i as i32 / cols) * step_y,
+                label: spec.label,
+                app: spec.app,
+            })
+            .collect()
+    }
+
+    fn desktop_icon_hit(&self, px: i32, py: i32) -> Option<usize> {
+        self.desktop_icons()
+            .iter()
+            .position(|icon| icon.hit(px, py))
+    }
+
+    fn open_context_menu(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        let menu_h = ctx_menu_height(DESKTOP_CONTEXT_MENU);
+        let cx = mx.min(sw - CTX_W).max(0);
+        let cy = my.min(taskbar_y - menu_h).max(0);
+        self.context_menu = Some(ContextMenu {
+            x: cx,
+            y: cy,
+            submenu: None,
+        });
+    }
+
+    fn update_context_menu_hover(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        let Some(cm) = self.context_menu.as_mut() else {
+            return;
+        };
+
+        if let Some(idx) = ctx_menu_hit_index(DESKTOP_CONTEXT_MENU, cm.x, cm.y, CTX_W, mx, my) {
+            if let ContextEntryKind::Submenu(submenu) = DESKTOP_CONTEXT_MENU[idx].kind {
+                cm.submenu = Some(submenu);
+            } else {
+                cm.submenu = None;
+            }
+            return;
+        }
+
+        if let Some(submenu) = cm.submenu {
+            let (sub_x, sub_y, sub_w, sub_h) = ctx_submenu_rect(cm.x, cm.y, submenu, sw, taskbar_y);
+            if mx < sub_x || mx >= sub_x + sub_w || my < sub_y || my >= sub_y + sub_h {
+                cm.submenu = None;
+            }
+        }
+    }
+
+    fn handle_context_menu_click(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) -> bool {
+        let Some(ref cm) = self.context_menu else {
+            return false;
+        };
+        let cm_x = cm.x;
+        let cm_y = cm.y;
+        let cm_submenu = cm.submenu;
+
+        if let Some(submenu) = cm_submenu {
+            let (sub_x, sub_y, sub_w, sub_h) = ctx_submenu_rect(cm_x, cm_y, submenu, sw, taskbar_y);
+            let entries = ctx_submenu_entries(submenu);
+            if let Some(idx) = ctx_menu_hit_index(entries, sub_x, sub_y, sub_w, mx, my) {
+                let entry = entries[idx];
+                if entry.enabled {
+                    if let ContextEntryKind::Action(cmd) = entry.kind {
+                        self.context_menu = None;
+                        self.run_context_command(cmd, sw, taskbar_y);
+                    }
+                }
+                return true;
+            }
+            if mx >= sub_x && mx < sub_x + sub_w && my >= sub_y && my < sub_y + sub_h {
+                return true;
+            }
+        }
+
+        if let Some(idx) = ctx_menu_hit_index(DESKTOP_CONTEXT_MENU, cm_x, cm_y, CTX_W, mx, my) {
+            let entry = DESKTOP_CONTEXT_MENU[idx];
+            match entry.kind {
+                ContextEntryKind::Action(cmd) if entry.enabled => {
+                    self.context_menu = None;
+                    self.run_context_command(cmd, sw, taskbar_y);
+                }
+                ContextEntryKind::Submenu(submenu) if entry.enabled => {
+                    if let Some(cm_mut) = self.context_menu.as_mut() {
+                        cm_mut.submenu = Some(submenu);
+                    }
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        let main_h = ctx_menu_height(DESKTOP_CONTEXT_MENU);
+        if mx >= cm_x && mx < cm_x + CTX_W && my >= cm_y && my < cm_y + main_h {
+            return true;
+        }
+
+        self.context_menu = None;
+        false
+    }
+
+    fn run_context_command(&mut self, cmd: DesktopContextCommand, sw: i32, taskbar_y: i32) {
+        match cmd {
+            DesktopContextCommand::ToggleDesktopIcons => {
+                self.desktop_show_icons = !self.desktop_show_icons;
+                if !self.desktop_show_icons {
+                    self.icon_selected = None;
+                    self.pressed_icon = None;
+                }
+            }
+            DesktopContextCommand::ToggleCompactSpacing => {
+                self.desktop_compact_spacing = !self.desktop_compact_spacing;
+            }
+            DesktopContextCommand::SortByName => {
+                self.desktop_sort = DesktopSortMode::Name;
+            }
+            DesktopContextCommand::SortByType => {
+                self.desktop_sort = DesktopSortMode::Type;
+            }
+            DesktopContextCommand::Refresh => {}
+            DesktopContextCommand::CreateFolder => {
+                if let Ok(path) = create_root_item("DIR", None, true) {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (10 + off).min(sw - 640);
+                    let wy = (10 + off).min(taskbar_y - 120);
+                    self.launch_app("File Manager", wx, wy);
+                    if let Some(AppWindow::FileManager(fm)) = self.windows.last_mut() {
+                        fm.load_dir("/");
+                    }
+                    if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                        AppWindow::Terminal(t) => Some(t),
+                        _ => None,
+                    }) {
+                        term.print_str("created ");
+                        term.print_str(&path);
+                        term.print_char('\n');
+                    }
+                }
+            }
+            DesktopContextCommand::CreateTextDocument => {
+                if let Ok(path) = create_root_item("FILE", Some("TXT"), false) {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (10 + off).min(sw - 640);
+                    let wy = (10 + off).min(taskbar_y - 120);
+                    self.launch_app("File Manager", wx, wy);
+                    if let Some(AppWindow::FileManager(fm)) = self.windows.last_mut() {
+                        fm.load_dir("/");
+                    }
+                    if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                        AppWindow::Terminal(t) => Some(t),
+                        _ => None,
+                    }) {
+                        term.print_str("created ");
+                        term.print_str(&path);
+                        term.print_char('\n');
+                    }
+                }
+            }
+            DesktopContextCommand::DisplaySettings => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(sw - 540);
+                let wy = (10 + off).min(taskbar_y - 310);
+                self.launch_app("System Monitor", wx, wy);
+            }
+            DesktopContextCommand::Personalize => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(sw - 460);
+                let wy = (10 + off).min(taskbar_y - 340);
+                self.launch_app("Color Picker", wx, wy);
+            }
+        }
+        crate::wm::request_repaint();
     }
 
     fn toggle_show_desktop(&mut self) {
@@ -705,38 +1045,18 @@ impl WindowManager {
             crate::wm::request_repaint();
         }
 
-        if right_pressed && self.front_to_back_hit(mx_i, my_i).is_none() {
-            let cx = mx_i.min(sw as i32 - CTX_W);
-            let ctx_total_h = CTX_HEADER_H + CTX_PAD * 2 + CTX_ITEM_H * CTX_ITEMS.len() as i32;
-            let cy = my_i.min(taskbar_y - ctx_total_h);
-            self.context_menu = Some(ContextMenu { x: cx, y: cy });
+        if right_pressed && my_i < taskbar_y && self.front_to_back_hit(mx_i, my_i).is_none() {
+            self.open_context_menu(mx_i, my_i, sw as i32, taskbar_y);
+        }
+
+        if self.context_menu.is_some() {
+            self.update_context_menu_hover(mx_i, my_i, sw as i32, taskbar_y);
         }
 
         if left_pressed {
             if self.context_menu.is_some() {
                 left_press_consumed = true;
-                let clicked: Option<&str> = {
-                    let cm = self.context_menu.as_ref().unwrap();
-                    CTX_ITEMS.iter().enumerate().find_map(|(i, &label)| {
-                        let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;
-                        if mx_i >= cm.x
-                            && mx_i < cm.x + CTX_W
-                            && my_i >= item_y
-                            && my_i < item_y + CTX_ITEM_H
-                        {
-                            Some(label)
-                        } else {
-                            None
-                        }
-                    })
-                };
-                self.context_menu = None;
-                let off = self.windows.len() as i32 * 16;
-                let wx = (10 + off).min(sw as i32 - 200);
-                let wy = (10 + off).min(taskbar_y - 80);
-                if let Some(label) = clicked {
-                    self.launch_app(label, wx, wy);
-                }
+                let _ = self.handle_context_menu_click(mx_i, my_i, sw as i32, taskbar_y);
             } else {
                 if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
                     left_press_consumed = true;
@@ -962,7 +1282,7 @@ impl WindowManager {
 
         // Desktop icon click.
         if left_pressed {
-            let icon_hit = desktop_icon_hit(mx_i, my_i);
+            let icon_hit = self.desktop_icon_hit(mx_i, my_i);
             let desktop_hit = !left_press_consumed
                 && my_i < taskbar_y
                 && self.context_menu.is_none()
@@ -977,13 +1297,14 @@ impl WindowManager {
 
         if left_released {
             if let Some(icon_idx) = self.pressed_icon.take() {
-                if desktop_icon_hit(mx_i, my_i) == Some(icon_idx)
+                if self.desktop_icon_hit(mx_i, my_i) == Some(icon_idx)
                     && my_i < taskbar_y
                     && self.front_to_back_hit(mx_i, my_i).is_none()
                     && self.context_menu.is_none()
                     && !self.start_menu_open
                 {
-                    let icon = &desktop_icons()[icon_idx];
+                    let icons = self.desktop_icons();
+                    let icon = &icons[icon_idx];
                     let off = self.windows.len() as i32 * 16;
                     let wx = (10 + off).min(sw as i32 - 200);
                     let wy = (10 + off).min(taskbar_y - 80);
@@ -1018,6 +1339,7 @@ impl WindowManager {
                     wi < self.windows.len() && self.windows[wi].window().hit_resize(mx_i, my_i)
                 })
                 .unwrap_or(false);
+        let desktop_icons = self.desktop_icons();
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
@@ -1033,7 +1355,7 @@ impl WindowManager {
                 (ICON_TXT_BG, ICON_TXT_ACC),    // Viewer (Text Viewer)
                 (ICON_COL_BG, ICON_COL_ACC),    // Colors (Color Picker)
             ];
-            for (i, icon) in desktop_icons().iter().enumerate() {
+            for (i, icon) in desktop_icons.iter().enumerate() {
                 let selected = self.icon_selected == Some(i);
                 let hot = mx_i >= icon.x
                     && mx_i < icon.x + ICON_SIZE
@@ -2032,130 +2354,18 @@ impl WindowManager {
 
             // ── Context menu ──────────────────────────────────────────────────────
             if let Some(ref cm) = self.context_menu {
-                let menu_h = CTX_HEADER_H + CTX_PAD * 2 + CTX_ITEM_H * CTX_ITEMS.len() as i32;
-
-                // Drop shadow
-                s_fill(s, sw, cm.x + 4, cm.y + 4, CTX_W, menu_h, 0x00_00_00_24);
-
-                // Background — darker, richer navy
-                s_fill(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_09_1E);
-
-                // Outer border + inner inset
-                draw_rect_border(s, sw, cm.x, cm.y, CTX_W, menu_h, 0x00_00_BB_EE);
-                draw_rect_border(
+                draw_desktop_context_menu(
                     s,
                     sw,
-                    cm.x + 1,
-                    cm.y + 1,
-                    CTX_W - 2,
-                    menu_h - 2,
-                    0x00_00_33_55,
+                    cm,
+                    mx_i,
+                    my_i,
+                    self.desktop_show_icons,
+                    self.desktop_compact_spacing,
+                    self.desktop_sort,
+                    sw as i32,
+                    taskbar_y,
                 );
-
-                // ── Header strip ──────────────────────────────────────────────────
-                let hdr_bg = 0x00_00_0E_28;
-                s_fill(
-                    s,
-                    sw,
-                    cm.x + 1,
-                    cm.y + 1,
-                    CTX_W - 2,
-                    CTX_HEADER_H - 1,
-                    hdr_bg,
-                );
-                // Accent pip + "Open App" label
-                s_fill(s, sw, cm.x + 10, cm.y + 12, 4, 4, ACCENT);
-                s_draw_str_small(
-                    s,
-                    sw,
-                    cm.x + 18,
-                    cm.y + 10,
-                    "Open App",
-                    0x00_44_88_BB,
-                    hdr_bg,
-                    cm.x + CTX_W - 4,
-                );
-                // Header bottom rule
-                s_fill(
-                    s,
-                    sw,
-                    cm.x + 1,
-                    cm.y + CTX_HEADER_H - 1,
-                    CTX_W - 2,
-                    1,
-                    0x00_00_33_66,
-                );
-
-                // Per-app accent colours, matching the desktop icon set
-                const CTX_ACCENTS: [u32; 5] = [
-                    ICON_TERM_ACC,
-                    ICON_MON_ACC,
-                    ICON_TXT_ACC,
-                    ICON_COL_ACC,
-                    0x00_55_DD_FF,
-                ];
-                const CTX_GLYPHS: [&str; 5] = ["T>", "M#", "Tx", "CP", "FM"];
-
-                for (i, &label) in CTX_ITEMS.iter().enumerate() {
-                    let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;
-                    let hot = mx_i >= cm.x
-                        && mx_i < cm.x + CTX_W
-                        && my_i >= item_y
-                        && my_i < item_y + CTX_ITEM_H;
-                    let acc = CTX_ACCENTS[i % CTX_ACCENTS.len()];
-
-                    // Hover: subtle tint row + left accent bar (no full solid fill)
-                    if hot {
-                        let hov_bg = 0x00_00_12_2C;
-                        s_fill(s, sw, cm.x + 1, item_y, CTX_W - 2, CTX_ITEM_H - 1, hov_bg);
-                        s_fill(s, sw, cm.x + 1, item_y + 5, 3, CTX_ITEM_H - 11, ACCENT);
-                    }
-
-                    // Coloured icon tile identifying the app.
-                    let icon_x = cm.x + 8;
-                    let icon_y = item_y + 5;
-                    let icon_bg = blend_color(0x00_00_0B_20, acc, 65);
-                    s_fill(s, sw, icon_x, icon_y, 20, 20, icon_bg);
-                    draw_rect_border(s, sw, icon_x, icon_y, 20, 20, blend_color(acc, WHITE, 90));
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        icon_x + 4,
-                        icon_y + 6,
-                        CTX_GLYPHS[i],
-                        acc,
-                        icon_bg,
-                        icon_x + 18,
-                    );
-
-                    // Label
-                    let text_col = if hot { WHITE } else { 0x00_88_CC_FF };
-                    let text_bg = if hot { 0x00_00_12_2C } else { 0x00_00_07_18 };
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        cm.x + 34,
-                        item_y + (CTX_ITEM_H - 8) / 2,
-                        label,
-                        text_col,
-                        text_bg,
-                        cm.x + CTX_W - 4,
-                    );
-
-                    // Separator (not after last item)
-                    if i + 1 < CTX_ITEMS.len() {
-                        let sep_col = if hot { 0x00_00_10_22 } else { 0x00_00_1A_33 };
-                        s_fill(
-                            s,
-                            sw,
-                            cm.x + 8,
-                            item_y + CTX_ITEM_H - 1,
-                            CTX_W - 16,
-                            1,
-                            sep_col,
-                        );
-                    }
-                }
             }
 
             // ── Cursor — switches to resize cursor over resize handles ────────────
@@ -2691,6 +2901,337 @@ fn mouse_event_packet(buttons: u8, lx: i32, ly: i32) -> [u8; EVENT_PACKET_SIZE] 
     packet[2..4].copy_from_slice(&x.to_le_bytes());
     packet[4..6].copy_from_slice(&y.to_le_bytes());
     packet
+}
+
+fn ctx_submenu_entries(submenu: DesktopContextSubmenu) -> &'static [ContextEntryDef] {
+    match submenu {
+        DesktopContextSubmenu::View => CTX_VIEW_MENU,
+        DesktopContextSubmenu::SortBy => CTX_SORT_MENU,
+        DesktopContextSubmenu::New => CTX_NEW_MENU,
+    }
+}
+
+fn ctx_entry_h(entry: ContextEntryDef) -> i32 {
+    match entry.kind {
+        ContextEntryKind::Separator => CTX_SEP_H,
+        _ => CTX_ITEM_H,
+    }
+}
+
+fn ctx_menu_height(entries: &[ContextEntryDef]) -> i32 {
+    CTX_HEADER_H + CTX_PAD * 2 + entries.iter().map(|entry| ctx_entry_h(*entry)).sum::<i32>()
+}
+
+fn ctx_entry_y(entries: &[ContextEntryDef], menu_y: i32, target_idx: usize) -> i32 {
+    let mut y = menu_y + CTX_HEADER_H + CTX_PAD;
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx == target_idx {
+            return y;
+        }
+        y += ctx_entry_h(*entry);
+    }
+    y
+}
+
+fn ctx_menu_hit_index(
+    entries: &[ContextEntryDef],
+    menu_x: i32,
+    menu_y: i32,
+    menu_w: i32,
+    px: i32,
+    py: i32,
+) -> Option<usize> {
+    if px < menu_x
+        || px >= menu_x + menu_w
+        || py < menu_y
+        || py >= menu_y + ctx_menu_height(entries)
+    {
+        return None;
+    }
+
+    let mut y = menu_y + CTX_HEADER_H + CTX_PAD;
+    for (idx, entry) in entries.iter().enumerate() {
+        let h = ctx_entry_h(*entry);
+        if py >= y && py < y + h {
+            return match entry.kind {
+                ContextEntryKind::Separator => None,
+                _ => Some(idx),
+            };
+        }
+        y += h;
+    }
+    None
+}
+
+fn ctx_submenu_rect(
+    menu_x: i32,
+    menu_y: i32,
+    submenu: DesktopContextSubmenu,
+    sw: i32,
+    taskbar_y: i32,
+) -> (i32, i32, i32, i32) {
+    let parent_idx = DESKTOP_CONTEXT_MENU
+        .iter()
+        .position(|entry| entry.kind == ContextEntryKind::Submenu(submenu))
+        .unwrap_or(0);
+    let entries = ctx_submenu_entries(submenu);
+    let h = ctx_menu_height(entries);
+    let parent_y = ctx_entry_y(DESKTOP_CONTEXT_MENU, menu_y, parent_idx);
+    let mut x = menu_x + CTX_W - 6;
+    if x + CTX_SUB_W > sw {
+        x = (menu_x - CTX_SUB_W + 6).max(0);
+    }
+    let mut y = (parent_y - 4).max(0);
+    if y + h > taskbar_y {
+        y = (taskbar_y - h).max(0);
+    }
+    (x, y, CTX_SUB_W, h)
+}
+
+fn create_root_item(
+    prefix: &str,
+    ext: Option<&str>,
+    is_dir: bool,
+) -> Result<String, crate::fat32::FsError> {
+    let entries = crate::fat32::list_dir("/").unwrap_or_default();
+    for n in 1..10_000usize {
+        let mut name = String::from(prefix);
+        push_decimal(&mut name, n as u64);
+        if let Some(ext) = ext {
+            name.push('.');
+            name.push_str(ext);
+        }
+        if entries
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        let mut path = String::from("/");
+        path.push_str(&name);
+        if is_dir {
+            crate::fat32::create_dir(&path)?;
+        } else {
+            crate::fat32::create_file(&path)?;
+        }
+        return Ok(path);
+    }
+    Err(crate::fat32::FsError::NoSpace)
+}
+
+fn push_decimal(out: &mut String, mut n: u64) {
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    while n > 0 {
+        digits[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    for idx in (0..len).rev() {
+        out.push(digits[idx] as char);
+    }
+}
+
+fn draw_desktop_context_menu(
+    s: &mut [u32],
+    sw: usize,
+    cm: &ContextMenu,
+    mx: i32,
+    my: i32,
+    show_desktop_icons: bool,
+    compact_spacing: bool,
+    desktop_sort: DesktopSortMode,
+    screen_w: i32,
+    taskbar_y: i32,
+) {
+    draw_context_panel(
+        s,
+        sw,
+        cm.x,
+        cm.y,
+        CTX_W,
+        DESKTOP_CONTEXT_MENU,
+        ctx_menu_hit_index(DESKTOP_CONTEXT_MENU, cm.x, cm.y, CTX_W, mx, my),
+        None,
+        show_desktop_icons,
+        compact_spacing,
+        desktop_sort,
+    );
+
+    if let Some(submenu) = cm.submenu {
+        let (sub_x, sub_y, sub_w, _sub_h) =
+            ctx_submenu_rect(cm.x, cm.y, submenu, screen_w, taskbar_y);
+        let entries = ctx_submenu_entries(submenu);
+        draw_context_panel(
+            s,
+            sw,
+            sub_x,
+            sub_y,
+            sub_w,
+            entries,
+            ctx_menu_hit_index(entries, sub_x, sub_y, sub_w, mx, my),
+            Some(submenu),
+            show_desktop_icons,
+            compact_spacing,
+            desktop_sort,
+        );
+    }
+}
+
+fn draw_context_panel(
+    s: &mut [u32],
+    sw: usize,
+    menu_x: i32,
+    menu_y: i32,
+    menu_w: i32,
+    entries: &[ContextEntryDef],
+    hovered: Option<usize>,
+    submenu: Option<DesktopContextSubmenu>,
+    show_desktop_icons: bool,
+    compact_spacing: bool,
+    desktop_sort: DesktopSortMode,
+) {
+    let menu_h = ctx_menu_height(entries);
+    let bg = 0x00_E4_E5_E8;
+    let border = 0x00_8A_8E_95;
+    let inner = 0x00_F8_F8_FA;
+    let hover_bg = 0x00_F3_F9_FE;
+    let hover_border = 0x00_7A_B8_E7;
+    let text = 0x00_12_14_17;
+    let muted = 0x00_8A_8D_94;
+    let sep = 0x00_B9_BC_C2;
+
+    s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_20_20_20);
+    s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, bg);
+    draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, border);
+    draw_rect_border(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, menu_h - 2, inner);
+
+    let mut row_y = menu_y + CTX_HEADER_H + CTX_PAD;
+    for (idx, entry) in entries.iter().enumerate() {
+        match entry.kind {
+            ContextEntryKind::Separator => {
+                s_fill(
+                    s,
+                    sw,
+                    menu_x + 14,
+                    row_y + CTX_SEP_H / 2,
+                    menu_w - 28,
+                    1,
+                    sep,
+                );
+                row_y += CTX_SEP_H;
+            }
+            _ => {
+                let hot = hovered == Some(idx) && entry.enabled;
+                if hot {
+                    s_fill(s, sw, menu_x + 2, row_y, menu_w - 4, CTX_ITEM_H, hover_bg);
+                    draw_rect_border(
+                        s,
+                        sw,
+                        menu_x + 2,
+                        row_y,
+                        menu_w - 4,
+                        CTX_ITEM_H,
+                        hover_border,
+                    );
+                }
+
+                if let Some(mark) = ctx_menu_mark(
+                    entry.kind,
+                    submenu,
+                    show_desktop_icons,
+                    compact_spacing,
+                    desktop_sort,
+                ) {
+                    match mark {
+                        MenuMark::Check => {
+                            draw_menu_check(s, sw, menu_x + 8, row_y + 9, 0x00_26_68_9D)
+                        }
+                        MenuMark::Dot => {
+                            s_fill(s, sw, menu_x + 11, row_y + 11, 5, 5, 0x00_26_68_9D)
+                        }
+                    }
+                }
+
+                let fg = if entry.enabled { text } else { muted };
+                s_draw_str_small(
+                    s,
+                    sw,
+                    menu_x + 24,
+                    row_y + 10,
+                    entry.label,
+                    fg,
+                    if hot { hover_bg } else { bg },
+                    menu_x + menu_w - 18,
+                );
+
+                if let ContextEntryKind::Submenu(_) = entry.kind {
+                    draw_menu_chevron(
+                        s,
+                        sw,
+                        menu_x + menu_w - 16,
+                        row_y + 10,
+                        if entry.enabled { text } else { muted },
+                    );
+                }
+
+                row_y += CTX_ITEM_H;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MenuMark {
+    Check,
+    Dot,
+}
+
+fn ctx_menu_mark(
+    kind: ContextEntryKind,
+    submenu: Option<DesktopContextSubmenu>,
+    show_desktop_icons: bool,
+    compact_spacing: bool,
+    desktop_sort: DesktopSortMode,
+) -> Option<MenuMark> {
+    match (submenu, kind) {
+        (
+            Some(DesktopContextSubmenu::View),
+            ContextEntryKind::Action(DesktopContextCommand::ToggleDesktopIcons),
+        ) if show_desktop_icons => Some(MenuMark::Check),
+        (
+            Some(DesktopContextSubmenu::View),
+            ContextEntryKind::Action(DesktopContextCommand::ToggleCompactSpacing),
+        ) if compact_spacing => Some(MenuMark::Check),
+        (
+            Some(DesktopContextSubmenu::SortBy),
+            ContextEntryKind::Action(DesktopContextCommand::SortByName),
+        ) if desktop_sort == DesktopSortMode::Name => Some(MenuMark::Dot),
+        (
+            Some(DesktopContextSubmenu::SortBy),
+            ContextEntryKind::Action(DesktopContextCommand::SortByType),
+        ) if desktop_sort == DesktopSortMode::Type => Some(MenuMark::Dot),
+        _ => None,
+    }
+}
+
+fn draw_menu_chevron(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
+    s_fill(s, sw, x, y, 1, 2, color);
+    s_fill(s, sw, x + 1, y + 1, 1, 2, color);
+    s_fill(s, sw, x + 2, y + 2, 1, 2, color);
+    s_fill(s, sw, x + 1, y + 3, 1, 2, color);
+    s_fill(s, sw, x, y + 4, 1, 2, color);
+}
+
+fn draw_menu_check(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
+    s_fill(s, sw, x, y + 3, 2, 2, color);
+    s_fill(s, sw, x + 2, y + 5, 2, 2, color);
+    s_fill(s, sw, x + 4, y + 3, 2, 2, color);
+    s_fill(s, sw, x + 6, y + 1, 2, 2, color);
 }
 
 lazy_static! {

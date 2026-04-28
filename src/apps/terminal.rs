@@ -245,6 +245,28 @@ impl TerminalApp {
                 self.cmd_ls(&path);
             }
 
+            Some("touch") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    self.cmd_touch(&path);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: touch <path>\n");
+                }
+            },
+
+            Some("mkdir") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    self.cmd_mkdir(&path);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: mkdir <path>\n");
+                }
+            },
+
             Some("cat") => match words.next() {
                 Some(p) => {
                     let path = resolve_path(&self.cwd, p);
@@ -410,6 +432,8 @@ impl TerminalApp {
             ("pwd", "print working directory"),
             ("cd <dir>", "change directory"),
             ("ls [path]", "list directory contents"),
+            ("touch <path>", "create empty file"),
+            ("mkdir <path>", "create folder"),
             ("cat <path>", "print file to terminal"),
             ("ps", "list running processes"),
             ("exec <path>", "run ELF binary"),
@@ -494,6 +518,44 @@ impl TerminalApp {
             None => {
                 self.set_fg(FG_ERROR);
                 self.print_str("cat: file not found\n");
+            }
+        }
+    }
+
+    fn cmd_touch(&mut self, path: &str) {
+        match crate::fat32::create_file(path) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("created ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("touch: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_mkdir(&mut self, path: &str) {
+        match crate::fat32::create_dir(path) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("created ");
+                self.set_fg(FG_DIR);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("mkdir: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
             }
         }
     }
