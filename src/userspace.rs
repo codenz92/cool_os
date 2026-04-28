@@ -1,3 +1,4 @@
+use crate::vmm;
 /// Userspace tasks (Phase 10).
 ///
 /// Each user process gets its own PML4, cloned from the kernel's PML4 for the
@@ -7,9 +8,7 @@
 /// Two processes run the same stub at the same virtual code address but write
 /// a sentinel value onto their private stacks and read it back — demonstrating
 /// that the stacks are physically isolated.
-
 use x86_64::structures::paging::PageTableFlags;
-use crate::vmm;
 
 // ── Ring-3 stub ───────────────────────────────────────────────────────────────
 
@@ -60,11 +59,17 @@ fn run_user_stub(pid: u64) -> ! {
             options(nostack),
         );
     }
-    loop { core::hint::spin_loop(); }
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
-fn user_stub_1() -> ! { run_user_stub(1) }
-fn user_stub_2() -> ! { run_user_stub(2) }
+fn user_stub_1() -> ! {
+    run_user_stub(1)
+}
+fn user_stub_2() -> ! {
+    run_user_stub(2)
+}
 
 // ── Per-process spawn helper ──────────────────────────────────────────────────
 
@@ -81,10 +86,16 @@ pub fn spawn_user_process(pid: u64) -> bool {
 
     // Map the user stack: USER_STACK_SIZE bytes of private writable pages
     // ending at USER_STACK_TOP, user-accessible.
-    let stack_flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE;
-    if vmm::map_region(pml4, x86_64::VirtAddr::new(vmm::USER_STACK_BOTTOM), vmm::USER_STACK_SIZE, stack_flags).is_err() {
+    let stack_flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    if vmm::map_region(
+        pml4,
+        x86_64::VirtAddr::new(vmm::USER_STACK_BOTTOM),
+        vmm::USER_STACK_SIZE,
+        stack_flags,
+    )
+    .is_err()
+    {
         return false;
     }
 
@@ -106,15 +117,21 @@ pub fn spawn_user_process(pid: u64) -> bool {
         ("user2", trampoline_2)
     };
     x86_64::instructions::interrupts::without_interrupts(|| {
-        crate::scheduler::SCHEDULER.lock().spawn_with_pml4(name, task_fn, Some(pml4));
+        crate::scheduler::SCHEDULER
+            .lock()
+            .spawn_with_pml4(name, task_fn, Some(pml4));
     });
     true
 }
 
 fn trampoline_1() -> ! {
-    unsafe { crate::syscall::jump_to_userspace(user_stub_1 as *const () as u64, vmm::USER_STACK_TOP) }
+    unsafe {
+        crate::syscall::jump_to_userspace(user_stub_1 as *const () as u64, vmm::USER_STACK_TOP)
+    }
 }
 
 fn trampoline_2() -> ! {
-    unsafe { crate::syscall::jump_to_userspace(user_stub_2 as *const () as u64, vmm::USER_STACK_TOP) }
+    unsafe {
+        crate::syscall::jump_to_userspace(user_stub_2 as *const () as u64, vmm::USER_STACK_TOP)
+    }
 }

@@ -9,7 +9,9 @@
 
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts, DecodedKey, HandleControl, KeyCode, KeyEvent, KeyState, Keyboard, ScancodeSet1};
+use pc_keyboard::{
+    layouts, DecodedKey, HandleControl, KeyCode, KeyEvent, KeyState, Keyboard, ScancodeSet1,
+};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -23,10 +25,9 @@ static TAIL: AtomicUsize = AtomicUsize::new(0); // read  by main loop
 static USB_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 lazy_static! {
-    static ref USB_KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
-        Mutex::new(Keyboard::<layouts::Us104Key, ScancodeSet1>::new(
-            HandleControl::MapLettersToUnicode
-        ));
+    static ref USB_KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> = Mutex::new(
+        Keyboard::<layouts::Us104Key, ScancodeSet1>::new(HandleControl::MapLettersToUnicode)
+    );
     static ref USB_PREV_REPORT: Mutex<[u8; 8]> = Mutex::new([0; 8]);
 }
 
@@ -89,7 +90,14 @@ pub fn handle_usb_boot_report(report: &[u8; 8]) {
         let is_down = report[0] & mask != 0;
         if was_down != is_down {
             if let Some(code) = usb_modifier_keycode(bit) {
-                handle_usb_key_event(code, if is_down { KeyState::Down } else { KeyState::Up });
+                handle_usb_key_event(
+                    code,
+                    if is_down {
+                        KeyState::Down
+                    } else {
+                        KeyState::Up
+                    },
+                );
             }
         }
     }
@@ -120,9 +128,9 @@ fn handle_usb_key_event(code: KeyCode, state: KeyState) {
     if let Some(decoded) = keyboard.process_keyevent(KeyEvent::new(code, state)) {
         let ch = match decoded {
             DecodedKey::Unicode(c) => Some(c),
-            DecodedKey::RawKey(KeyCode::ArrowUp)    => Some('\u{F700}'),
-            DecodedKey::RawKey(KeyCode::ArrowDown)  => Some('\u{F701}'),
-            DecodedKey::RawKey(KeyCode::ArrowLeft)  => Some('\u{F702}'),
+            DecodedKey::RawKey(KeyCode::ArrowUp) => Some('\u{F700}'),
+            DecodedKey::RawKey(KeyCode::ArrowDown) => Some('\u{F701}'),
+            DecodedKey::RawKey(KeyCode::ArrowLeft) => Some('\u{F702}'),
             DecodedKey::RawKey(KeyCode::ArrowRight) => Some('\u{F703}'),
             _ => None,
         };

@@ -1,5 +1,4 @@
 /// Window manager — public interface.
-
 pub mod compositor;
 pub mod window;
 

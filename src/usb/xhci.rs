@@ -819,16 +819,21 @@ fn prime_default_control_endpoint(
     let slot_id = enable_slot(info, cmd_ring, event_ring, proto.slot_type)?;
     let mut device =
         match build_default_control_device(info, dcbaa_virt, slot_id, port_num, speed_id) {
-        Ok(device) => device,
-        Err(err) => {
-            let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
-            return Err(err);
-        }
-    };
+            Ok(device) => device,
+            Err(err) => {
+                let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
+                return Err(err);
+            }
+        };
 
-    if let Err(err) =
-        address_device(info, cmd_ring, event_ring, slot_id, device.input_ctx_phys, true)
-    {
+    if let Err(err) = address_device(
+        info,
+        cmd_ring,
+        event_ring,
+        slot_id,
+        device.input_ctx_phys,
+        true,
+    ) {
         let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
         return Err(err);
     }
@@ -894,7 +899,10 @@ fn prime_default_control_endpoint(
     let hid_interfaces = parse_boot_hid_interfaces(&config);
     let mut status = Vec::new();
     let mut devices = Vec::new();
-    let config_value = config.get(5).copied().ok_or("configuration value missing")?;
+    let config_value = config
+        .get(5)
+        .copied()
+        .ok_or("configuration value missing")?;
 
     println!(
         "[xhci] slot {} device vid={:04x} pid={:04x} bcdUSB={:04x} dev={:04x} class={:02x}/{:02x}/{:02x} configs={}",
@@ -1119,9 +1127,7 @@ fn address_device(
         cmd_ring,
         input_ctx_phys,
         0,
-        (TRB_TYPE_ADDRESS_DEVICE_CMD << 10)
-            | ((bsr as u32) << 9)
-            | ((slot_id as u32) << 24),
+        (TRB_TYPE_ADDRESS_DEVICE_CMD << 10) | ((bsr as u32) << 9) | ((slot_id as u32) << 24),
     );
     ring_host_doorbell(info);
 
@@ -1136,8 +1142,7 @@ fn address_device(
 
     println!(
         "[xhci] slot {} address device complete bsr={}",
-        slot_id,
-        bsr as u8,
+        slot_id, bsr as u8,
     );
     Ok(())
 }
@@ -1461,10 +1466,7 @@ fn configure_interrupt_endpoint(
         copy_context(output_ep0_ctx, input_ep0_ctx, info.context_size);
 
         write_u32(device.input_ctx_virt, 0);
-        write_u32(
-            device.input_ctx_virt + 0x04,
-            (1 << 0) | (1 << endpoint_dci),
-        );
+        write_u32(device.input_ctx_virt + 0x04, (1 << 0) | (1 << endpoint_dci));
 
         let slot_ctx_entries = read_u32(input_slot_ctx) & !(0x1F << 27);
         write_u32(
@@ -1482,10 +1484,7 @@ fn configure_interrupt_endpoint(
             ((hid.max_packet_size as u32) << 16) | (7 << 3) | (3 << 1),
         );
         write_u64(ep_ctx + 0x08, report_ring_phys | 1);
-        write_u32(
-            ep_ctx + 0x10,
-            interrupt_report_len(hid) as u32,
-        );
+        write_u32(ep_ctx + 0x10, interrupt_report_len(hid) as u32);
     }
 
     let trb_phys = push_command_trb(
@@ -1527,7 +1526,12 @@ fn control_transfer_in(
 
     let setup = usb_setup_packet(request_type, request, value, index, len as u16);
 
-    let _setup_phys = push_transfer_trb(ring, setup, 8, (TRB_TYPE_SETUP_STAGE << 10) | TRB_IDT | TRB_TRT_IN);
+    let _setup_phys = push_transfer_trb(
+        ring,
+        setup,
+        8,
+        (TRB_TYPE_SETUP_STAGE << 10) | TRB_IDT | TRB_TRT_IN,
+    );
     let _data_phys = push_transfer_trb(
         ring,
         buffer_phys,
@@ -1543,12 +1547,7 @@ fn control_transfer_in(
     if !completion_is_success_like(transfer.completion_code) {
         println!(
             "[xhci] control IN failed slot={} req={:#x} value={:#x} code={} ptr={:#x} residual={}",
-            slot_id,
-            request,
-            value,
-            transfer.completion_code,
-            transfer.ptr,
-            transfer.residual,
+            slot_id, request, value, transfer.completion_code, transfer.ptr, transfer.residual,
         );
         return Err("control IN transfer failed");
     }
@@ -1593,11 +1592,7 @@ fn control_transfer_no_data(
     if !completion_is_success_like(transfer.completion_code) {
         println!(
             "[xhci] control no-data failed slot={} req={:#x} value={:#x} code={} ptr={:#x}",
-            slot_id,
-            request,
-            value,
-            transfer.completion_code,
-            transfer.ptr,
+            slot_id, request, value, transfer.completion_code, transfer.ptr,
         );
         return Err("control transfer failed");
     }
@@ -1737,7 +1732,9 @@ fn hid_protocol_name(protocol: u8) -> &'static str {
 fn interrupt_report_len(hid: &HidInterface) -> usize {
     match hid.protocol {
         USB_HID_PROTOCOL_KEYBOARD => BOOT_KEYBOARD_REPORT_BYTES,
-        USB_HID_PROTOCOL_MOUSE => BOOT_MOUSE_REPORT_BYTES.min(hid.max_packet_size as usize).max(3),
+        USB_HID_PROTOCOL_MOUSE => BOOT_MOUSE_REPORT_BYTES
+            .min(hid.max_packet_size as usize)
+            .max(3),
         _ => hid.max_packet_size as usize,
     }
 }
@@ -2106,10 +2103,7 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
     }) else {
         println!(
             "[xhci] runtime transfer for unknown device slot={} ep={} ptr={:#x} code={}",
-            completion.slot_id,
-            completion.endpoint_id,
-            completion.ptr,
-            completion.completion_code,
+            completion.slot_id, completion.endpoint_id, completion.ptr, completion.completion_code,
         );
         return;
     };
@@ -2119,15 +2113,11 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
         device.last_completion_code = completion.completion_code;
         runtime.last_runtime_note = format!(
             "slot {} ep {} ptr mismatch",
-            completion.slot_id,
-            completion.endpoint_id,
+            completion.slot_id, completion.endpoint_id,
         );
         println!(
             "[xhci] runtime transfer ptr mismatch slot={} ep={} got={:#x} expected={:#x}",
-            completion.slot_id,
-            completion.endpoint_id,
-            completion.ptr,
-            device.report_trb_phys,
+            completion.slot_id, completion.endpoint_id, completion.ptr, device.report_trb_phys,
         );
         return;
     }
@@ -2137,15 +2127,11 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
         device.error_count = device.error_count.saturating_add(1);
         runtime.last_runtime_note = format!(
             "slot {} ep {} code {}",
-            completion.slot_id,
-            completion.endpoint_id,
-            completion.completion_code,
+            completion.slot_id, completion.endpoint_id, completion.completion_code,
         );
         println!(
             "[xhci] HID transfer failed slot={} ep={} code={}",
-            completion.slot_id,
-            completion.endpoint_id,
-            completion.completion_code,
+            completion.slot_id, completion.endpoint_id, completion.completion_code,
         );
         return;
     }
@@ -2167,9 +2153,7 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
         device.error_count = device.error_count.saturating_add(1);
         runtime.last_runtime_note = format!(
             "slot {} ep {} requeue {}",
-            device.slot_id,
-            device.endpoint_dci,
-            err,
+            device.slot_id, device.endpoint_dci, err,
         );
         println!(
             "[xhci] failed to requeue HID transfer slot={} ep={} err={}",
@@ -2191,8 +2175,7 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
         );
         println!(
             "[xhci] runtime event: port {} status change portsc={:#x}",
-            port_num,
-            portsc,
+            port_num, portsc,
         );
         return;
     };
@@ -2200,12 +2183,14 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
     let initial_portsc = read_portsc(&runtime.info, port_num);
     println!(
         "[xhci] runtime event: port {} status change portsc={:#x}",
-        port_num,
-        initial_portsc,
+        port_num, initial_portsc,
     );
 
     let had_connection_change = initial_portsc & PORTSC_CSC != 0;
-    let had_existing_device = runtime.devices.iter().any(|device| device.port_num == port_num);
+    let had_existing_device = runtime
+        .devices
+        .iter()
+        .any(|device| device.port_num == port_num);
 
     clear_port_changes(&runtime.info, port_num);
     let current_portsc = read_portsc(&runtime.info, port_num);
@@ -2215,7 +2200,10 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
         replace_port_status_lines(
             runtime,
             port_num,
-            vec![format!("USB: port {} {} disconnected", port_num, proto.label)],
+            vec![format!(
+                "USB: port {} {} disconnected",
+                port_num, proto.label
+            )],
         );
         runtime.last_runtime_note = format!("port {} disconnected", port_num);
         return;
@@ -2225,32 +2213,44 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
         remove_port_devices(runtime, port_num);
     }
 
-    if runtime.devices.iter().any(|device| device.port_num == port_num) {
-        runtime.last_runtime_note = format!("port {} {} status change handled", port_num, proto.label);
+    if runtime
+        .devices
+        .iter()
+        .any(|device| device.port_num == port_num)
+    {
+        runtime.last_runtime_note =
+            format!("port {} {} status change handled", port_num, proto.label);
         return;
     }
 
-    let portsc = match prepare_port_for_probe(&runtime.info, &mut runtime.event_ring, port_num, &proto) {
-        Ok(Some(portsc)) => portsc,
-        Ok(None) => {
-            replace_port_status_lines(
-                runtime,
-                port_num,
-                vec![format!("USB: port {} {} disconnected", port_num, proto.label)],
-            );
-            runtime.last_runtime_note = format!("port {} disconnected", port_num);
-            return;
-        }
-        Err(err) => {
-            replace_port_status_lines(
-                runtime,
-                port_num,
-                vec![format!("USB: port {} {} reset failed: {}", port_num, proto.label, err)],
-            );
-            runtime.last_runtime_note = format!("port {} reset failed {}", port_num, err);
-            return;
-        }
-    };
+    let portsc =
+        match prepare_port_for_probe(&runtime.info, &mut runtime.event_ring, port_num, &proto) {
+            Ok(Some(portsc)) => portsc,
+            Ok(None) => {
+                replace_port_status_lines(
+                    runtime,
+                    port_num,
+                    vec![format!(
+                        "USB: port {} {} disconnected",
+                        port_num, proto.label
+                    )],
+                );
+                runtime.last_runtime_note = format!("port {} disconnected", port_num);
+                return;
+            }
+            Err(err) => {
+                replace_port_status_lines(
+                    runtime,
+                    port_num,
+                    vec![format!(
+                        "USB: port {} {} reset failed: {}",
+                        port_num, proto.label, err
+                    )],
+                );
+                runtime.last_runtime_note = format!("port {} reset failed {}", port_num, err);
+                return;
+            }
+        };
 
     if portsc & PORTSC_PED == 0 {
         replace_port_status_lines(
@@ -2283,7 +2283,10 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
             replace_port_status_lines(
                 runtime,
                 port_num,
-                vec![format!("USB: port {} {} prime failed: {}", port_num, proto.label, err)],
+                vec![format!(
+                    "USB: port {} {} prime failed: {}",
+                    port_num, proto.label, err
+                )],
             );
             runtime.last_runtime_note = format!("port {} prime failed {}", port_num, err);
         }
@@ -2323,7 +2326,9 @@ fn dispatch_hid_report(device: &mut HidDeviceState, actual_len: usize) {
     let mut report = [0u8; BOOT_KEYBOARD_REPORT_BYTES];
     let len = actual_len.min(device.report_request_len).min(report.len());
     for (idx, byte) in report.iter_mut().take(len).enumerate() {
-        *byte = unsafe { core::ptr::read_volatile((device.report_buffer_virt + idx as u64) as *const u8) };
+        *byte = unsafe {
+            core::ptr::read_volatile((device.report_buffer_virt + idx as u64) as *const u8)
+        };
     }
 
     match device.protocol {
@@ -2353,7 +2358,10 @@ fn queue_interrupt_transfer_by_base(
     );
     fence(Ordering::SeqCst);
     unsafe {
-        write_u32(db_base + device.slot_id as u64 * 4, device.endpoint_dci as u32);
+        write_u32(
+            db_base + device.slot_id as u64 * 4,
+            device.endpoint_dci as u32,
+        );
     }
     Ok(())
 }

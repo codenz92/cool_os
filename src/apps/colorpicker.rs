@@ -88,10 +88,23 @@ impl ColorPickerApp {
         self.fill_rect(stride, 0, 33, PICKER_W as usize, 1, BORDER);
         self.fill_rect(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, PANEL);
         self.draw_rect_border(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, BORDER);
-        self.draw_rect_border(stride, PREVIEW_X + 1, PREVIEW_Y + 1, PREVIEW_W - 2, PREVIEW_H - 2, 0x00_00_18_30);
+        self.draw_rect_border(
+            stride,
+            PREVIEW_X + 1,
+            PREVIEW_Y + 1,
+            PREVIEW_W - 2,
+            PREVIEW_H - 2,
+            0x00_00_18_30,
+        );
 
         self.put_str(stride, 18, 12, "PALETTE LAB", LABEL);
-        self.put_str(stride, 18, 24, "pick a swatch to inspect rgb and hex values", MUTED);
+        self.put_str(
+            stride,
+            18,
+            24,
+            "pick a swatch to inspect rgb and hex values",
+            MUTED,
+        );
 
         for i in 0..COLORS.len() {
             let col = i % GRID_COLS;
@@ -116,7 +129,13 @@ impl ColorPickerApp {
             let g = ((rgb >> 8) & 0xFF) as usize;
             let b = (rgb & 0xFF) as usize;
 
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 14, "CURRENT SWATCH", LABEL);
+            self.put_str(
+                stride,
+                PREVIEW_X + 16,
+                PREVIEW_Y + 14,
+                "CURRENT SWATCH",
+                LABEL,
+            );
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 30, name, WHITE);
 
             self.fill_rect(stride, PREVIEW_X + 16, PREVIEW_Y + 50, 92, 92, rgb);
@@ -148,14 +167,50 @@ impl ColorPickerApp {
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 178, "RED", MUTED);
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 202, "GREEN", MUTED);
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 226, "BLUE", MUTED);
-            self.draw_bar(stride, PREVIEW_X + 70, PREVIEW_Y + 178, 140, 8, r, 0x00_AA_00_00);
-            self.draw_bar(stride, PREVIEW_X + 70, PREVIEW_Y + 202, 140, 8, g, 0x00_00_AA_00);
-            self.draw_bar(stride, PREVIEW_X + 70, PREVIEW_Y + 226, 140, 8, b, 0x00_00_AA_AA);
+            self.draw_bar(
+                stride,
+                PREVIEW_X + 70,
+                PREVIEW_Y + 178,
+                140,
+                8,
+                r,
+                0x00_AA_00_00,
+            );
+            self.draw_bar(
+                stride,
+                PREVIEW_X + 70,
+                PREVIEW_Y + 202,
+                140,
+                8,
+                g,
+                0x00_00_AA_00,
+            );
+            self.draw_bar(
+                stride,
+                PREVIEW_X + 70,
+                PREVIEW_Y + 226,
+                140,
+                8,
+                b,
+                0x00_00_AA_AA,
+            );
 
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 254, "classic 16-colour ega palette", MUTED);
+            self.put_str(
+                stride,
+                PREVIEW_X + 16,
+                PREVIEW_Y + 254,
+                "classic 16-colour ega palette",
+                MUTED,
+            );
         }
 
-        self.put_str(stride, GRID_X, PREVIEW_Y + PREVIEW_H + 8, "click any tile to sample", MUTED);
+        self.put_str(
+            stride,
+            GRID_X,
+            PREVIEW_Y + PREVIEW_H + 8,
+            "click any tile to sample",
+            MUTED,
+        );
         let _ = content_h;
     }
 
@@ -197,7 +252,16 @@ impl ColorPickerApp {
         self.fill_rect(stride, x + w - 1, y, 1, h, color);
     }
 
-    fn draw_bar(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, value: usize, fill: u32) {
+    fn draw_bar(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        value: usize,
+        fill: u32,
+    ) {
         self.fill_rect(stride, x, y, w, h, 0x00_11_22_33);
         self.draw_rect_border(stride, x, y, w, h, 0x00_00_18_30);
         let fill_w = (w.saturating_sub(2) * value.min(255)) / 255;

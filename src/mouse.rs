@@ -7,7 +7,6 @@
 /// Call `init_cursor()` once after the framebuffer is ready. If PS/2 mouse
 /// fallback is needed, follow it with `enable_ps2_fallback()`. After that,
 /// the IRQ12 handler in `interrupts.rs` feeds packets to `handle_packet()`.
-
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
@@ -15,16 +14,21 @@ use x86_64::instructions::port::Port;
 // ── State ─────────────────────────────────────────────────────────────────────
 
 struct MouseState {
-    x:     usize,
-    y:     usize,
-    left:  bool,
+    x: usize,
+    y: usize,
+    left: bool,
     right: bool,
 }
 
 impl MouseState {
     const fn new() -> Self {
         // Start at (0,0); mouse::init_cursor() will centre after framebuffer is ready.
-        MouseState { x: 0, y: 0, left: false, right: false }
+        MouseState {
+            x: 0,
+            y: 0,
+            left: false,
+            right: false,
+        }
     }
 }
 
@@ -44,7 +48,7 @@ static SCROLL_ACCUM: AtomicI32 = AtomicI32::new(0);
 pub fn init_cursor() {
     {
         let mut m = MOUSE.lock();
-        m.x = crate::framebuffer::width()  / 2;
+        m.x = crate::framebuffer::width() / 2;
         m.y = crate::framebuffer::height() / 2;
     }
 }
@@ -52,16 +56,22 @@ pub fn init_cursor() {
 /// Ensure the PS/2 mouse fallback is live when no USB mouse is active.
 pub fn enable_ps2_fallback() {
     if !PS2_INITIALIZED.swap(true, Ordering::AcqRel) {
-        unsafe { init_hardware(); }
+        unsafe {
+            init_hardware();
+        }
     } else {
-        unsafe { set_ps2_fallback_mask(false); }
+        unsafe {
+            set_ps2_fallback_mask(false);
+        }
     }
 }
 
 /// Disable the PS/2 mouse fallback IRQ when USB mouse input is active.
 pub fn disable_ps2_fallback() {
     if PS2_INITIALIZED.load(Ordering::Acquire) {
-        unsafe { set_ps2_fallback_mask(true); }
+        unsafe {
+            set_ps2_fallback_mask(true);
+        }
     }
 }
 
@@ -97,12 +107,20 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
     }
 
     // 9-bit signed X delta (sign bit is bit 4 of b0).
-    let dx: i32 = if b0 & 0x10 != 0 { b1 as i32 - 256 } else { b1 as i32 };
+    let dx: i32 = if b0 & 0x10 != 0 {
+        b1 as i32 - 256
+    } else {
+        b1 as i32
+    };
     // 9-bit signed Y delta (sign bit is bit 5 of b0).  PS/2 Y increases
     // upward, so negate it for screen coordinates.
-    let dy: i32 = if b0 & 0x20 != 0 { b2 as i32 - 256 } else { b2 as i32 };
+    let dy: i32 = if b0 & 0x20 != 0 {
+        b2 as i32 - 256
+    } else {
+        b2 as i32
+    };
 
-    let left  = b0 & 0x01 != 0;
+    let left = b0 & 0x01 != 0;
     let right = b0 & 0x02 != 0;
 
     apply_motion(dx, -dy, left, right);
@@ -202,28 +220,39 @@ unsafe fn wait_for_read() {
 /// then read back the device ID.  Returns true if the device confirmed ID 0x03.
 unsafe fn try_enable_intellimouse(cmd: &mut Port<u8>, data: &mut Port<u8>) -> bool {
     for &rate in &[200u8, 100u8, 80u8] {
-        wait_for_write(); cmd.write(0xD4u8);
-        wait_for_write(); data.write(0xF3u8); // Set Sample Rate
-        wait_for_read();  let _ = data.read(); // ACK
-        wait_for_write(); cmd.write(0xD4u8);
-        wait_for_write(); data.write(rate);
-        wait_for_read();  let _ = data.read(); // ACK
+        wait_for_write();
+        cmd.write(0xD4u8);
+        wait_for_write();
+        data.write(0xF3u8); // Set Sample Rate
+        wait_for_read();
+        let _ = data.read(); // ACK
+        wait_for_write();
+        cmd.write(0xD4u8);
+        wait_for_write();
+        data.write(rate);
+        wait_for_read();
+        let _ = data.read(); // ACK
     }
     // Read Device ID
-    wait_for_write(); cmd.write(0xD4u8);
-    wait_for_write(); data.write(0xF2u8); // Read Device ID
-    wait_for_read();  let _ = data.read(); // ACK
-    wait_for_read();  let id = data.read();
+    wait_for_write();
+    cmd.write(0xD4u8);
+    wait_for_write();
+    data.write(0xF2u8); // Read Device ID
+    wait_for_read();
+    let _ = data.read(); // ACK
+    wait_for_read();
+    let id = data.read();
     id == 0x03
 }
 
 unsafe fn init_hardware() {
-    let mut cmd:  Port<u8> = Port::new(0x64);
+    let mut cmd: Port<u8> = Port::new(0x64);
     let mut data: Port<u8> = Port::new(0x60);
 
     // 1. Disable keyboard scanning so its scancodes cannot land in the output
     //    buffer while we are waiting for PS/2 controller responses.
-    wait_for_write(); cmd.write(0xADu8); // disable keyboard
+    wait_for_write();
+    cmd.write(0xADu8); // disable keyboard
 
     // 2. Flush any bytes that arrived before we disabled the keyboard.
     for _ in 0..16u8 {
@@ -234,20 +263,27 @@ unsafe fn init_hardware() {
     }
 
     // 3. Enable the auxiliary (mouse) device.
-    wait_for_write(); cmd.write(0xA8u8);
+    wait_for_write();
+    cmd.write(0xA8u8);
 
     // 4. Read-modify-write the Controller Command Byte:
     //    set bit 1 (enable IRQ12) and clear bit 5 (enable mouse clock).
-    wait_for_write(); cmd.write(0x20u8);
+    wait_for_write();
+    cmd.write(0x20u8);
     wait_for_read();
     let ccb = data.read();
-    wait_for_write(); cmd.write(0x60u8);
-    wait_for_write(); data.write((ccb | 0x02) & !0x20);
+    wait_for_write();
+    cmd.write(0x60u8);
+    wait_for_write();
+    data.write((ccb | 0x02) & !0x20);
 
     // 5. Send 0xF6 (Set Defaults) to the mouse.
-    wait_for_write(); cmd.write(0xD4u8);
-    wait_for_write(); data.write(0xF6u8);
-    wait_for_read(); let _ = data.read(); // ACK
+    wait_for_write();
+    cmd.write(0xD4u8);
+    wait_for_write();
+    data.write(0xF6u8);
+    wait_for_read();
+    let _ = data.read(); // ACK
 
     // 5a. Attempt IntelliMouse activation via the magic sample-rate sequence.
     //     Must happen before data reporting is enabled (0xF4) so no movement
@@ -256,12 +292,16 @@ unsafe fn init_hardware() {
     INTELLIMOUSE.store(is_intellimouse, Ordering::Relaxed);
 
     // 6. Send 0xF4 (Enable Data Reporting) to the mouse.
-    wait_for_write(); cmd.write(0xD4u8);
-    wait_for_write(); data.write(0xF4u8);
-    wait_for_read(); let _ = data.read(); // ACK
+    wait_for_write();
+    cmd.write(0xD4u8);
+    wait_for_write();
+    data.write(0xF4u8);
+    wait_for_read();
+    let _ = data.read(); // ACK
 
     // 7. Re-enable keyboard scanning.
-    wait_for_write(); cmd.write(0xAEu8);
+    wait_for_write();
+    cmd.write(0xAEu8);
 
     // 8. Unmask IRQ12 (bit 4) on the secondary PIC, and ensure the cascade
     //    line (bit 2) is open on the primary PIC.

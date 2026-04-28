@@ -1,5 +1,4 @@
 /// Terminal app — renders a shell into a window's pixel back-buffer.
-
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -18,29 +17,29 @@ const TERM_BG_B: u32 = 0x00_01_04_02;
 const TERM_BG_C: u32 = 0x00_06_0F_09;
 const FG_OUTPUT: u32 = 0x00_B8_F3_CE;
 const FG_PROMPT: u32 = 0x00_00_FF_88;
-const FG_INPUT:  u32 = 0x00_E4_FF_F1;
+const FG_INPUT: u32 = 0x00_E4_FF_F1;
 const FG_ACCENT: u32 = 0x00_55_FF_FF;
-const FG_DIM:    u32 = 0x00_58_8A_70;
-const FG_ERROR:  u32 = 0x00_FF_72_72;
-const FG_DIR:    u32 = 0x00_55_DD_FF;
-const FG_WARN:   u32 = 0x00_FF_CC_44;
+const FG_DIM: u32 = 0x00_58_8A_70;
+const FG_ERROR: u32 = 0x00_FF_72_72;
+const FG_DIR: u32 = 0x00_55_DD_FF;
+const FG_WARN: u32 = 0x00_FF_CC_44;
 
 const HISTORY_MAX: usize = 32;
 
 pub struct TerminalApp {
     pub window: Window,
-    cmd_buf:          String,
+    cmd_buf: String,
     pending_key_sink_fd: Option<usize>,
-    col:              usize,
-    row:              usize,
-    cols:             usize,
-    rows:             usize,
-    fg:               u32,
-    cwd:              String,
-    cmd_history:      Vec<String>,
-    history_pos:      usize,
-    saved_input:      String,
-    input_start_col:  usize,
+    col: usize,
+    row: usize,
+    cols: usize,
+    rows: usize,
+    fg: u32,
+    cwd: String,
+    cmd_history: Vec<String>,
+    history_pos: usize,
+    saved_input: String,
+    input_start_col: usize,
 }
 
 impl TerminalApp {
@@ -112,8 +111,12 @@ impl TerminalApp {
 
     fn push_history(&mut self, cmd: &str) {
         let cmd = cmd.trim();
-        if cmd.is_empty() { return; }
-        if self.cmd_history.last().map(|s| s.as_str()) == Some(cmd) { return; }
+        if cmd.is_empty() {
+            return;
+        }
+        if self.cmd_history.last().map(|s| s.as_str()) == Some(cmd) {
+            return;
+        }
         if self.cmd_history.len() >= HISTORY_MAX {
             self.cmd_history.remove(0);
         }
@@ -123,9 +126,13 @@ impl TerminalApp {
     }
 
     fn history_up(&mut self) {
-        if self.cmd_history.is_empty() { return; }
+        if self.cmd_history.is_empty() {
+            return;
+        }
         let new_pos = (self.history_pos + 1).min(self.cmd_history.len());
-        if new_pos == self.history_pos { return; }
+        if new_pos == self.history_pos {
+            return;
+        }
         if self.history_pos == 0 {
             self.saved_input = self.cmd_buf.clone();
         }
@@ -138,7 +145,9 @@ impl TerminalApp {
     }
 
     fn history_down(&mut self) {
-        if self.history_pos == 0 { return; }
+        if self.history_pos == 0 {
+            return;
+        }
         self.history_pos -= 1;
         self.erase_input();
         if self.history_pos == 0 {
@@ -168,7 +177,6 @@ impl TerminalApp {
         let mut words = input.split_whitespace();
         self.set_fg(FG_OUTPUT);
         match words.next() {
-
             Some("help") => self.cmd_help(),
 
             Some("clear") => {
@@ -180,7 +188,10 @@ impl TerminalApp {
             Some("reboot") => crate::interrupts::reboot(),
 
             Some("echo") => {
-                for word in words { self.print_str(word); self.print_char(' '); }
+                for word in words {
+                    self.print_str(word);
+                    self.print_char(' ');
+                }
                 self.print_char('\n');
             }
 
@@ -194,7 +205,7 @@ impl TerminalApp {
             Some("cd") => {
                 let target = match words.next() {
                     Some(p) => resolve_path(&self.cwd, p),
-                    None    => String::from("/"),
+                    None => String::from("/"),
                 };
                 if crate::fat32::list_dir(&target).is_some() {
                     self.cwd = target;
@@ -208,23 +219,21 @@ impl TerminalApp {
                 let path_arg = words.next();
                 let path = match path_arg {
                     Some(p) => resolve_path(&self.cwd, p),
-                    None    => self.cwd.clone(),
+                    None => self.cwd.clone(),
                 };
                 self.cmd_ls(&path);
             }
 
-            Some("cat") => {
-                match words.next() {
-                    Some(p) => {
-                        let path = resolve_path(&self.cwd, p);
-                        self.cmd_cat(&path);
-                    }
-                    None => {
-                        self.set_fg(FG_ERROR);
-                        self.print_str("usage: cat <path>\n");
-                    }
+            Some("cat") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    self.cmd_cat(&path);
                 }
-            }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: cat <path>\n");
+                }
+            },
 
             Some("ps") => self.cmd_ps(),
 
@@ -232,114 +241,115 @@ impl TerminalApp {
 
             Some("uptime") => self.cmd_uptime(),
 
-            Some("exec") => {
-                match words.next() {
-                    Some(path) => {
-                        let args: Vec<&str> = words.collect();
-                        let abs = resolve_path(&self.cwd, path);
-                        match crate::elf::spawn_elf_process_with_args(&abs, &args) {
-                            Ok(()) => {
-                                self.set_fg(FG_ACCENT);
-                                self.print_str("spawned ");
-                                self.set_fg(FG_OUTPUT);
-                                self.print_str(&abs);
-                                self.print_char('\n');
-                            }
-                            Err(err) => {
-                                self.set_fg(FG_ERROR);
-                                self.print_str("exec: ");
-                                self.set_fg(FG_OUTPUT);
-                                self.print_str(err.as_str());
-                                self.print_char('\n');
-                            }
+            Some("exec") => match words.next() {
+                Some(path) => {
+                    let args: Vec<&str> = words.collect();
+                    let abs = resolve_path(&self.cwd, path);
+                    match crate::elf::spawn_elf_process_with_args(&abs, &args) {
+                        Ok(()) => {
+                            self.set_fg(FG_ACCENT);
+                            self.print_str("spawned ");
+                            self.set_fg(FG_OUTPUT);
+                            self.print_str(&abs);
+                            self.print_char('\n');
+                        }
+                        Err(err) => {
+                            self.set_fg(FG_ERROR);
+                            self.print_str("exec: ");
+                            self.set_fg(FG_OUTPUT);
+                            self.print_str(err.as_str());
+                            self.print_char('\n');
                         }
                     }
-                    None => {
-                        self.set_fg(FG_ERROR);
-                        self.print_str("usage: exec <path> [args...]\n");
-                    }
                 }
-            }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: exec <path> [args...]\n");
+                }
+            },
 
-            Some("ipc") => {
-                match crate::vfs::vfs_pipe() {
-                    Some((read_fd, write_fd)) => {
-                        let r = crate::elf::spawn_elf_process_with_fds("/bin/piperd", &[], &[(read_fd, 3)]);
-                        let w = crate::elf::spawn_elf_process_with_fds("/bin/pipewr", &[], &[(write_fd, 3)]);
-                        crate::vfs::vfs_close(read_fd);
-                        crate::vfs::vfs_close(write_fd);
-                        match (r, w) {
-                            (Ok(()), Ok(())) => {
-                                self.set_fg(FG_ACCENT);
-                                self.print_str("pipe demo spawned\n");
-                            }
-                            _ => {
-                                self.set_fg(FG_ERROR);
-                                self.print_str("ipc: spawn failed\n");
-                            }
+            Some("ipc") => match crate::vfs::vfs_pipe() {
+                Some((read_fd, write_fd)) => {
+                    let r =
+                        crate::elf::spawn_elf_process_with_fds("/bin/piperd", &[], &[(read_fd, 3)]);
+                    let w = crate::elf::spawn_elf_process_with_fds(
+                        "/bin/pipewr",
+                        &[],
+                        &[(write_fd, 3)],
+                    );
+                    crate::vfs::vfs_close(read_fd);
+                    crate::vfs::vfs_close(write_fd);
+                    match (r, w) {
+                        (Ok(()), Ok(())) => {
+                            self.set_fg(FG_ACCENT);
+                            self.print_str("pipe demo spawned\n");
+                        }
+                        _ => {
+                            self.set_fg(FG_ERROR);
+                            self.print_str("ipc: spawn failed\n");
                         }
                     }
-                    None => {
-                        self.set_fg(FG_ERROR);
-                        self.print_str("ipc: no pipe slots\n");
-                    }
                 }
-            }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("ipc: no pipe slots\n");
+                }
+            },
 
-            Some("keydemo") => {
-                match crate::vfs::vfs_pipe() {
-                    Some((read_fd, write_fd)) => {
-                        match crate::elf::spawn_elf_process_with_fds("/bin/keyecho", &[], &[(read_fd, 3)]) {
-                            Ok(()) => {
-                                crate::vfs::vfs_close(read_fd);
-                                self.pending_key_sink_fd = Some(write_fd);
-                                self.set_fg(FG_ACCENT);
-                                self.print_str("keydemo active — ~ ends\n");
-                            }
-                            Err(err) => {
-                                crate::vfs::vfs_close(read_fd);
-                                crate::vfs::vfs_close(write_fd);
-                                self.set_fg(FG_ERROR);
-                                self.print_str("keydemo: ");
-                                self.set_fg(FG_OUTPUT);
-                                self.print_str(err.as_str());
-                                self.print_char('\n');
-                            }
+            Some("keydemo") => match crate::vfs::vfs_pipe() {
+                Some((read_fd, write_fd)) => {
+                    match crate::elf::spawn_elf_process_with_fds(
+                        "/bin/keyecho",
+                        &[],
+                        &[(read_fd, 3)],
+                    ) {
+                        Ok(()) => {
+                            crate::vfs::vfs_close(read_fd);
+                            self.pending_key_sink_fd = Some(write_fd);
+                            self.set_fg(FG_ACCENT);
+                            self.print_str("keydemo active — ~ ends\n");
+                        }
+                        Err(err) => {
+                            crate::vfs::vfs_close(read_fd);
+                            crate::vfs::vfs_close(write_fd);
+                            self.set_fg(FG_ERROR);
+                            self.print_str("keydemo: ");
+                            self.set_fg(FG_OUTPUT);
+                            self.print_str(err.as_str());
+                            self.print_char('\n');
                         }
                     }
-                    None => {
-                        self.set_fg(FG_ERROR);
-                        self.print_str("keydemo: no pipe slots\n");
-                    }
                 }
-            }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("keydemo: no pipe slots\n");
+                }
+            },
 
-            Some("term") => {
-                match crate::vfs::vfs_pipe() {
-                    Some((read_fd, write_fd)) => {
-                        match crate::elf::spawn_elf_process_with_stdin("/bin/terminal", &[], read_fd) {
-                            Ok(()) => {
-                                self.pending_key_sink_fd = Some(write_fd);
-                                self.set_fg(FG_ACCENT);
-                                self.print_str("userspace terminal — Ctrl+D ends\n");
-                            }
-                            Err(err) => {
-                                crate::vfs::vfs_close(read_fd);
-                                crate::vfs::vfs_close(write_fd);
-                                self.set_fg(FG_ERROR);
-                                self.print_str("term: ");
-                                self.set_fg(FG_OUTPUT);
-                                self.print_str(err.as_str());
-                                self.print_char('\n');
-                            }
+            Some("term") => match crate::vfs::vfs_pipe() {
+                Some((read_fd, write_fd)) => {
+                    match crate::elf::spawn_elf_process_with_stdin("/bin/terminal", &[], read_fd) {
+                        Ok(()) => {
+                            self.pending_key_sink_fd = Some(write_fd);
+                            self.set_fg(FG_ACCENT);
+                            self.print_str("userspace terminal — Ctrl+D ends\n");
+                        }
+                        Err(err) => {
+                            crate::vfs::vfs_close(read_fd);
+                            crate::vfs::vfs_close(write_fd);
+                            self.set_fg(FG_ERROR);
+                            self.print_str("term: ");
+                            self.set_fg(FG_OUTPUT);
+                            self.print_str(err.as_str());
+                            self.print_char('\n');
                         }
                     }
-                    None => {
-                        self.set_fg(FG_ERROR);
-                        self.print_str("term: no pipe slots\n");
-                    }
                 }
-            }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("term: no pipe slots\n");
+                }
+            },
 
             Some("usb") => {
                 let lines = crate::usb::status_lines();
@@ -373,22 +383,22 @@ impl TerminalApp {
 
     fn cmd_help(&mut self) {
         let cmds: &[(&str, &str)] = &[
-            ("help",          "list commands"),
-            ("clear",         "clear terminal"),
-            ("reboot",        "restart OS"),
-            ("pwd",           "print working directory"),
-            ("cd <dir>",      "change directory"),
-            ("ls [path]",     "list directory contents"),
-            ("cat <path>",    "print file to terminal"),
-            ("ps",            "list running processes"),
-            ("exec <path>",   "run ELF binary"),
-            ("info",          "CPU, memory, and system info"),
-            ("uptime",        "time since boot"),
-            ("usb",           "USB controller status"),
-            ("echo <text>",   "print text"),
-            ("ipc",           "pipe demo"),
-            ("keydemo",       "keyboard event stream"),
-            ("term",          "userspace terminal"),
+            ("help", "list commands"),
+            ("clear", "clear terminal"),
+            ("reboot", "restart OS"),
+            ("pwd", "print working directory"),
+            ("cd <dir>", "change directory"),
+            ("ls [path]", "list directory contents"),
+            ("cat <path>", "print file to terminal"),
+            ("ps", "list running processes"),
+            ("exec <path>", "run ELF binary"),
+            ("info", "CPU, memory, and system info"),
+            ("uptime", "time since boot"),
+            ("usb", "USB controller status"),
+            ("echo <text>", "print text"),
+            ("ipc", "pipe demo"),
+            ("keydemo", "keyboard event stream"),
+            ("term", "userspace terminal"),
         ];
         self.set_fg(FG_ACCENT);
         self.print_str("Commands:\n");
@@ -411,9 +421,13 @@ impl TerminalApp {
         match crate::fat32::list_dir(path) {
             Some(mut entries) => {
                 entries.sort_by(|a, b| {
-                    if a.is_dir == b.is_dir { a.name.cmp(&b.name) }
-                    else if a.is_dir { core::cmp::Ordering::Less }
-                    else { core::cmp::Ordering::Greater }
+                    if a.is_dir == b.is_dir {
+                        a.name.cmp(&b.name)
+                    } else if a.is_dir {
+                        core::cmp::Ordering::Less
+                    } else {
+                        core::cmp::Ordering::Greater
+                    }
                 });
                 if entries.is_empty() {
                     self.set_fg(FG_DIM);
@@ -441,21 +455,21 @@ impl TerminalApp {
 
     fn cmd_cat(&mut self, path: &str) {
         match crate::fat32::read_file(path) {
-            Some(bytes) => {
-                match core::str::from_utf8(&bytes) {
-                    Ok(text) => {
-                        self.set_fg(FG_OUTPUT);
-                        self.print_str(text);
-                        if !text.ends_with('\n') { self.print_char('\n'); }
-                    }
-                    Err(_) => {
-                        self.set_fg(FG_WARN);
-                        self.print_str("cat: binary file (");
-                        self.print_u64(bytes.len() as u64);
-                        self.print_str(" bytes)\n");
+            Some(bytes) => match core::str::from_utf8(&bytes) {
+                Ok(text) => {
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(text);
+                    if !text.ends_with('\n') {
+                        self.print_char('\n');
                     }
                 }
-            }
+                Err(_) => {
+                    self.set_fg(FG_WARN);
+                    self.print_str("cat: binary file (");
+                    self.print_u64(bytes.len() as u64);
+                    self.print_str(" bytes)\n");
+                }
+            },
             None => {
                 self.set_fg(FG_ERROR);
                 self.print_str("cat: file not found\n");
@@ -468,9 +482,12 @@ impl TerminalApp {
         let tasks: Vec<(usize, &'static str, crate::scheduler::TaskStatus, bool)> = {
             let sched = crate::scheduler::SCHEDULER.lock();
             let cur = sched.current;
-            sched.tasks.iter().enumerate().map(|(i, t)| {
-                (i, t.name, t.status, i == cur)
-            }).collect()
+            sched
+                .tasks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i, t.name, t.status, i == cur))
+                .collect()
         };
 
         self.set_fg(FG_ACCENT);
@@ -488,7 +505,7 @@ impl TerminalApp {
             self.set_fg(FG_OUTPUT);
             let status_str = match status {
                 crate::scheduler::TaskStatus::Running => "running",
-                crate::scheduler::TaskStatus::Ready   => "ready  ",
+                crate::scheduler::TaskStatus::Ready => "ready  ",
                 crate::scheduler::TaskStatus::Blocked => "blocked",
             };
             self.print_str(status_str);
@@ -502,7 +519,7 @@ impl TerminalApp {
     }
 
     fn cmd_info(&mut self) {
-        let heap_used  = crate::allocator::heap_used();
+        let heap_used = crate::allocator::heap_used();
         let heap_total = crate::allocator::HEAP_SIZE;
         let task_count = crate::scheduler::SCHEDULER.lock().tasks.len();
 
@@ -548,8 +565,8 @@ impl TerminalApp {
 
     fn cmd_uptime(&mut self) {
         let ticks = crate::interrupts::ticks();
-        let secs  = ticks / 100;
-        let mins  = secs / 60;
+        let secs = ticks / 100;
+        let mins = secs / 60;
         let hours = mins / 60;
         let s = secs % 60;
         let m = mins % 60;
@@ -559,10 +576,14 @@ impl TerminalApp {
         self.set_fg(FG_OUTPUT);
         self.print_u64(hours);
         self.print_char(':');
-        if m < 10 { self.print_char('0'); }
+        if m < 10 {
+            self.print_char('0');
+        }
         self.print_u64(m);
         self.print_char(':');
-        if s < 10 { self.print_char('0'); }
+        if s < 10 {
+            self.print_char('0');
+        }
         self.print_u64(s);
         self.set_fg(FG_DIM);
         self.print_str("  (");
@@ -573,20 +594,40 @@ impl TerminalApp {
     // ── Rendering helpers ─────────────────────────────────────────────────────
 
     pub fn print_char(&mut self, c: char) {
-        if c == '\n' { self.col = 0; self.advance_row(); return; }
-        if self.col >= self.cols { self.col = 0; self.advance_row(); }
+        if c == '\n' {
+            self.col = 0;
+            self.advance_row();
+            return;
+        }
+        if self.col >= self.cols {
+            self.col = 0;
+            self.advance_row();
+        }
         self.draw_char_at(self.col, self.row, c);
         self.col += 1;
     }
 
-    pub fn print_str(&mut self, s: &str) { for c in s.chars() { self.print_char(c); } }
+    pub fn print_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.print_char(c);
+        }
+    }
 
     fn print_u64(&mut self, mut n: u64) {
-        if n == 0 { self.print_char('0'); return; }
+        if n == 0 {
+            self.print_char('0');
+            return;
+        }
         let mut buf = [0u8; 20];
         let mut i = 20usize;
-        while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
-        for &b in &buf[i..] { self.print_char(b as char); }
+        while n > 0 {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        for &b in &buf[i..] {
+            self.print_char(b as char);
+        }
     }
 
     fn print_size(&mut self, bytes: usize) {
@@ -604,7 +645,10 @@ impl TerminalApp {
 
     fn advance_row(&mut self) {
         self.row += 1;
-        if self.row >= self.rows { self.scroll_up(); self.row = self.rows - 1; }
+        if self.row >= self.rows {
+            self.scroll_up();
+            self.row = self.rows - 1;
+        }
     }
 
     fn scroll_up(&mut self) {
@@ -642,7 +686,9 @@ impl TerminalApp {
         }
     }
 
-    fn set_fg(&mut self, color: u32) { self.fg = color; }
+    fn set_fg(&mut self, color: u32) {
+        self.fg = color;
+    }
 
     fn print_prompt(&mut self) {
         self.set_fg(FG_DIM);
@@ -681,7 +727,9 @@ fn resolve_path(cwd: &str, input: &str) -> String {
         normalize_path(input)
     } else {
         let mut base = String::from(cwd);
-        if !base.ends_with('/') { base.push('/'); }
+        if !base.ends_with('/') {
+            base.push('/');
+        }
         base.push_str(input);
         normalize_path(&base)
     }
@@ -691,9 +739,11 @@ fn normalize_path(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for component in path.split('/').filter(|s| !s.is_empty()) {
         match component {
-            ".." => { parts.pop(); }
-            "."  => {}
-            seg  => parts.push(seg),
+            ".." => {
+                parts.pop();
+            }
+            "." => {}
+            seg => parts.push(seg),
         }
     }
     if parts.is_empty() {
@@ -701,7 +751,9 @@ fn normalize_path(path: &str) -> String {
     }
     let mut result = String::from("/");
     for (i, &part) in parts.iter().enumerate() {
-        if i > 0 { result.push('/'); }
+        if i > 0 {
+            result.push('/');
+        }
         result.push_str(part);
     }
     result

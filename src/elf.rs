@@ -3,14 +3,13 @@
 /// Supports statically linked ELF64 binaries with page-aligned PT_LOAD segments
 /// in the lower canonical half. The loader can either spawn a fresh task or
 /// prepare an image for `sys_exec` to install into the current task.
-
 extern crate alloc;
 use alloc::vec::Vec;
 use core::{cmp, mem, ptr};
 
 use x86_64::{
-    VirtAddr,
     structures::paging::{PageTableFlags, PhysFrame},
+    VirtAddr,
 };
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -108,7 +107,11 @@ pub fn spawn_elf_process_with_fds(
         )
     });
 
-    if ok { Ok(()) } else { Err(ExecError::FdInstallFailed) }
+    if ok {
+        Ok(())
+    } else {
+        Err(ExecError::FdInstallFailed)
+    }
 }
 
 pub fn spawn_elf_process_with_stdin(
@@ -179,9 +182,8 @@ fn parse_header(image: &[u8]) -> Result<Elf64Header, ExecError> {
 }
 
 fn map_user_stack(pml4: PhysFrame, argv0: &str, args: &[&str]) -> Result<u64, ExecError> {
-    let stack_flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE;
+    let stack_flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     let mut top_frame = None;
     let mut offset = 0u64;
     while offset < crate::vmm::USER_STACK_SIZE {
@@ -214,7 +216,9 @@ fn build_initial_stack(top_frame: PhysFrame, argv0: &str, args: &[&str]) -> Resu
     let strings_bytes = argv.iter().map(|arg| arg.len() + 1).sum::<usize>();
     let pointer_bytes = (argv.len() + 3) * 8; // argc + argv[] + null + envp null
     if strings_bytes + pointer_bytes > PAGE_SIZE as usize {
-        return Err(ExecError::InvalidElf("argv too large for initial stack page"));
+        return Err(ExecError::InvalidElf(
+            "argv too large for initial stack page",
+        ));
     }
 
     let mut rsp = crate::vmm::USER_STACK_TOP;
@@ -273,7 +277,9 @@ fn validate_load_segment(ph: &Elf64ProgramHeader, image_len: usize) -> Result<()
         return Err(ExecError::InvalidElf("PT_LOAD filesz exceeds memsz"));
     }
     if ph.p_vaddr >= USER_CANONICAL_LIMIT {
-        return Err(ExecError::InvalidElf("PT_LOAD address must be in user space"));
+        return Err(ExecError::InvalidElf(
+            "PT_LOAD address must be in user space",
+        ));
     }
     let file_end = ph
         .p_offset

@@ -174,7 +174,12 @@ impl Scheduler {
 
     /// Spawn a task with an optional private PML4.  When `pml4` is `Some`,
     /// the scheduler loads it into CR3 whenever this task is scheduled.
-    pub fn spawn_with_pml4(&mut self, name: &'static str, entry: fn() -> !, pml4: Option<PhysFrame>) {
+    pub fn spawn_with_pml4(
+        &mut self,
+        name: &'static str,
+        entry: fn() -> !,
+        pml4: Option<PhysFrame>,
+    ) {
         // Read the current kernel selectors. These must match exactly what the
         // CPU expects for a ring-0 iretq frame.
         let cs: u64;
@@ -254,14 +259,15 @@ impl Scheduler {
         // ── Activate the winner ──────────────────────────────────────────────
         self.tasks[next].status = TaskStatus::Running;
         self.current = next;
-        CURRENT_SYSCALL_STACK_TOP.store(self.tasks[next].syscall_stack_top as u64, Ordering::Relaxed);
+        CURRENT_SYSCALL_STACK_TOP
+            .store(self.tasks[next].syscall_stack_top as u64, Ordering::Relaxed);
 
         // Switch address space: load the winning task's PML4, or restore the
         // boot PML4 for kernel tasks (pml4=None) so they never run with a
         // user process's address space accidentally loaded.
         match self.tasks[next].pml4 {
             Some(pml4) => unsafe { crate::vmm::switch_to(pml4) },
-            None       => unsafe { crate::vmm::switch_to_boot() },
+            None => unsafe { crate::vmm::switch_to_boot() },
         }
 
         self.tasks[next].stack_ptr
@@ -281,7 +287,8 @@ pub fn current_task_id() -> usize {
 
 pub fn current_task_blocked() -> bool {
     let sched = SCHEDULER.lock();
-    sched.tasks
+    sched
+        .tasks
         .get(sched.current)
         .map(|task| task.status == TaskStatus::Blocked)
         .unwrap_or(false)

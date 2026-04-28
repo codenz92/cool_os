@@ -10,11 +10,10 @@
 ///      state without relying on the host terminal.
 ///   4. Later phases: controller reset, command/event ring setup, device
 ///      enumeration, HID class driver.
-
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
 use crate::println;
+use alloc::{string::String, vec::Vec};
 use spin::Mutex;
 
 pub mod xhci;

@@ -38,7 +38,10 @@ impl SysMonApp {
 
         let cpuid = raw_cpuid::CpuId::new();
         let vendor_info = cpuid.get_vendor_info();
-        let vendor = vendor_info.as_ref().map(|v| v.as_str()).unwrap_or("unknown");
+        let vendor = vendor_info
+            .as_ref()
+            .map(|v| v.as_str())
+            .unwrap_or("unknown");
 
         let used = crate::allocator::heap_used();
         let heap_total = crate::allocator::HEAP_SIZE;
@@ -59,10 +62,18 @@ impl SysMonApp {
         let usb_lines = crate::usb::status_lines();
         let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
         let usb_present = !usb_lines.is_empty();
-        let usb_active = usb_lines.iter().any(|line| line.contains("active init ready"));
+        let usb_active = usb_lines
+            .iter()
+            .any(|line| line.contains("active init ready"));
 
         self.put_str_px(stride, 18, 14, "SYSTEM DASHBOARD", LABEL);
-        self.put_str_px(stride, 18, 26, "runtime view for scheduler, memory, and USB", MUTED);
+        self.put_str_px(
+            stride,
+            18,
+            26,
+            "runtime view for scheduler, memory, and USB",
+            MUTED,
+        );
 
         let card_w = 236usize;
         let card_h = 58usize;
@@ -82,7 +93,16 @@ impl SysMonApp {
         heap_line.push_usize(heap_total);
         heap_line.push_str(" B");
         self.put_str_px(stride, 280, 76, heap_line.as_str(), YELLOW);
-        self.draw_bar(stride, 280, 90, 200, 6, heap_ratio, 0x00_11_22_33, 0x00_FF_DD_55);
+        self.draw_bar(
+            stride,
+            280,
+            90,
+            200,
+            6,
+            heap_ratio,
+            0x00_11_22_33,
+            0x00_FF_DD_55,
+        );
 
         self.put_str_px(stride, 28, 128, "UPTIME", LABEL);
         let time = [
@@ -108,13 +128,50 @@ impl SysMonApp {
         counter_line.push_u64(counter);
         self.put_str_px(stride, 280, 146, counter_line.as_str(), LIGHT_CYAN);
         let pulse = ((counter as usize / 64) % 100).max(8);
-        self.draw_bar(stride, 280, 160, 200, 6, pulse, 0x00_11_22_33, 0x00_66_BB_FF);
+        self.draw_bar(
+            stride,
+            280,
+            160,
+            200,
+            6,
+            pulse,
+            0x00_11_22_33,
+            0x00_66_BB_FF,
+        );
 
         self.put_str_px(stride, 28, 198, "USB RUNTIME", LABEL);
-        self.draw_status_pill(stride, 28, 214, "CTRL", usb_present, if usb_present { LIGHT_CYAN } else { MUTED });
-        self.draw_status_pill(stride, 90, 214, "ACTIVE", usb_active, if usb_active { USB_GOOD } else { USB_WARN });
-        self.draw_status_pill(stride, 164, 214, "KBD", usb_keyboard, if usb_keyboard { USB_GOOD } else { MUTED });
-        self.draw_status_pill(stride, 220, 214, "MOUSE", usb_mouse, if usb_mouse { USB_GOOD } else { MUTED });
+        self.draw_status_pill(
+            stride,
+            28,
+            214,
+            "CTRL",
+            usb_present,
+            if usb_present { LIGHT_CYAN } else { MUTED },
+        );
+        self.draw_status_pill(
+            stride,
+            90,
+            214,
+            "ACTIVE",
+            usb_active,
+            if usb_active { USB_GOOD } else { USB_WARN },
+        );
+        self.draw_status_pill(
+            stride,
+            164,
+            214,
+            "KBD",
+            usb_keyboard,
+            if usb_keyboard { USB_GOOD } else { MUTED },
+        );
+        self.draw_status_pill(
+            stride,
+            220,
+            214,
+            "MOUSE",
+            usb_mouse,
+            if usb_mouse { USB_GOOD } else { MUTED },
+        );
 
         let mut row = 234usize;
         if usb_lines.is_empty() {
@@ -200,11 +257,21 @@ impl SysMonApp {
             4,
             if active { accent } else { 0x00_33_44_55 },
         );
-        self.put_str_px(stride, x + 12, y + 3, label, if active { WHITE } else { MUTED });
+        self.put_str_px(
+            stride,
+            x + 12,
+            y + 3,
+            label,
+            if active { WHITE } else { MUTED },
+        );
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        let max_h = if stride > 0 { self.window.buf.len() / stride } else { 0 };
+        let max_h = if stride > 0 {
+            self.window.buf.len() / stride
+        } else {
+            0
+        };
         for row in y..(y + h).min(max_h) {
             let base = row * stride;
             for col in x..(x + w).min(stride) {
@@ -296,7 +363,14 @@ impl NumberLine {
     }
 }
 
-fn put_char_buf_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
+fn put_char_buf_transparent(
+    buf: &mut [u32],
+    stride: usize,
+    px0: usize,
+    py0: usize,
+    c: char,
+    fg: u32,
+) {
     let glyph = font8x8::BASIC_FONTS
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());

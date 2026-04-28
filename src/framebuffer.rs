@@ -8,15 +8,14 @@
 /// row), and pixel format (RGB or BGR) at boot time.  We store these in a
 /// global and expose the public helpers used by `vga_buffer` (panic output)
 /// and the compositor.
-
 use spin::Mutex;
 
 // ── Font constants ────────────────────────────────────────────────────────────
 
 /// Render each 8×8 font glyph at 2× scale → 16×16 effective pixels.
 pub const FONT_SCALE: usize = 2;
-pub const CHAR_W:     usize = 8 * FONT_SCALE; // 16
-pub const CHAR_H:     usize = 8 * FONT_SCALE; // 16
+pub const CHAR_W: usize = 8 * FONT_SCALE; // 16
+pub const CHAR_H: usize = 8 * FONT_SCALE; // 16
 
 // ── Pixel format ──────────────────────────────────────────────────────────────
 
@@ -25,68 +24,94 @@ pub const CHAR_H:     usize = 8 * FONT_SCALE; // 16
 /// For BGR hardware: write the u32 as-is (on LE the bytes land B, G, R, 0).
 /// For RGB hardware: swap R and B before writing.
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub enum PixFmt { Bgr, Rgb }
+pub enum PixFmt {
+    Bgr,
+    Rgb,
+}
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
 struct FbState {
-    base:   u64,   // pointer to first pixel (as integer for Send-safety)
-    width:  usize,
+    base: u64, // pointer to first pixel (as integer for Send-safety)
+    width: usize,
     height: usize,
     stride: usize, // pixels per row (≥ width, may include right-hand padding)
-    bpp:    usize, // bytes per pixel (3 or 4)
-    fmt:    PixFmt,
+    bpp: usize,    // bytes per pixel (3 or 4)
+    fmt: PixFmt,
 }
 
 static FB: Mutex<Option<FbState>> = Mutex::new(None);
 
 /// Called once in `kernel_main` after the bootloader provides framebuffer info.
 pub fn init(base: u64, width: usize, height: usize, stride: usize, bpp: usize, fmt: PixFmt) {
-    *FB.lock() = Some(FbState { base, width, height, stride, bpp, fmt });
+    *FB.lock() = Some(FbState {
+        base,
+        width,
+        height,
+        stride,
+        bpp,
+        fmt,
+    });
 }
 
 /// Screen width in pixels (0 until `init` is called).
-pub fn width()  -> usize { FB.lock().as_ref().map_or(0, |s| s.width)  }
+pub fn width() -> usize {
+    FB.lock().as_ref().map_or(0, |s| s.width)
+}
 /// Screen height in pixels (0 until `init` is called).
-pub fn height() -> usize { FB.lock().as_ref().map_or(0, |s| s.height) }
+pub fn height() -> usize {
+    FB.lock().as_ref().map_or(0, |s| s.height)
+}
 /// Pixel stride — pixels per scanline (≥ width).
-pub fn stride() -> usize { FB.lock().as_ref().map_or(0, |s| s.stride) }
+pub fn stride() -> usize {
+    FB.lock().as_ref().map_or(0, |s| s.stride)
+}
 /// Bytes per pixel (3 or 4).
-pub fn bpp()    -> usize { FB.lock().as_ref().map_or(4, |s| s.bpp)    }
+pub fn bpp() -> usize {
+    FB.lock().as_ref().map_or(4, |s| s.bpp)
+}
 /// Base pointer as u64.
-pub fn base()   -> u64   { FB.lock().as_ref().map_or(0, |s| s.base)   }
+pub fn base() -> u64 {
+    FB.lock().as_ref().map_or(0, |s| s.base)
+}
 /// Pixel format.
-pub fn fmt()    -> PixFmt { FB.lock().as_ref().map_or(PixFmt::Bgr, |s| s.fmt) }
+pub fn fmt() -> PixFmt {
+    FB.lock().as_ref().map_or(PixFmt::Bgr, |s| s.fmt)
+}
 
 /// Character columns available on screen.
-pub fn cols() -> usize { width()  / CHAR_W }
+pub fn cols() -> usize {
+    width() / CHAR_W
+}
 /// Character rows available on screen.
-pub fn rows() -> usize { height() / CHAR_H }
+pub fn rows() -> usize {
+    height() / CHAR_H
+}
 
 // ── Color constants (0x00_RR_GG_BB) ──────────────────────────────────────────
 
 // All colour constants are part of the public palette API; suppress dead_code
 // warnings for the ones not yet used by the current set of apps.
 // All colour constants are part of the public palette API.
-pub const BLACK:       u32 = 0x00_00_00_00;
-pub const BLUE:        u32 = 0x00_00_00_AA;
-pub const GREEN:       u32 = 0x00_00_AA_00;
-pub const CYAN:        u32 = 0x00_00_AA_AA;
-pub const RED:         u32 = 0x00_AA_00_00;
-pub const MAGENTA:     u32 = 0x00_AA_00_AA;
-pub const BROWN:       u32 = 0x00_AA_55_00;
-pub const LIGHT_GRAY:  u32 = 0x00_AA_AA_AA;
-pub const DARK_GRAY:   u32 = 0x00_55_55_55;
-pub const DARK_BLUE:   u32 = 0x00_00_00_40;
-pub const GRAY:       u32 = 0x00_77_77_77;
+pub const BLACK: u32 = 0x00_00_00_00;
+pub const BLUE: u32 = 0x00_00_00_AA;
+pub const GREEN: u32 = 0x00_00_AA_00;
+pub const CYAN: u32 = 0x00_00_AA_AA;
+pub const RED: u32 = 0x00_AA_00_00;
+pub const MAGENTA: u32 = 0x00_AA_00_AA;
+pub const BROWN: u32 = 0x00_AA_55_00;
+pub const LIGHT_GRAY: u32 = 0x00_AA_AA_AA;
+pub const DARK_GRAY: u32 = 0x00_55_55_55;
+pub const DARK_BLUE: u32 = 0x00_00_00_40;
+pub const GRAY: u32 = 0x00_77_77_77;
 pub const SELECTED_BG: u32 = 0x00_00_00_80;
-pub const LIGHT_BLUE:  u32 = 0x00_55_55_FF;
+pub const LIGHT_BLUE: u32 = 0x00_55_55_FF;
 pub const LIGHT_GREEN: u32 = 0x00_55_FF_55;
-pub const LIGHT_CYAN:  u32 = 0x00_55_FF_FF;
-pub const LIGHT_RED:   u32 = 0x00_FF_55_55;
-pub const PINK:        u32 = 0x00_FF_55_FF;
-pub const YELLOW:      u32 = 0x00_FF_FF_55;
-pub const WHITE:       u32 = 0x00_FF_FF_FF;
+pub const LIGHT_CYAN: u32 = 0x00_55_FF_FF;
+pub const LIGHT_RED: u32 = 0x00_FF_55_55;
+pub const PINK: u32 = 0x00_FF_55_FF;
+pub const YELLOW: u32 = 0x00_FF_FF_55;
+pub const WHITE: u32 = 0x00_FF_FF_FF;
 
 // ── Pixel-format conversion ───────────────────────────────────────────────────
 
@@ -95,11 +120,12 @@ pub const WHITE:       u32 = 0x00_FF_FF_FF;
 #[inline(always)]
 fn to_hw(color: u32, fmt: PixFmt) -> u32 {
     match fmt {
-        PixFmt::Bgr => color,  // 0x00RRGGBB bytes = [BB GG RR 00] = BGR ✓
-        PixFmt::Rgb => {       // need bytes [RR GG BB 00]
+        PixFmt::Bgr => color, // 0x00RRGGBB bytes = [BB GG RR 00] = BGR ✓
+        PixFmt::Rgb => {
+            // need bytes [RR GG BB 00]
             let r = (color >> 16) & 0xFF;
-            let g = (color >>  8) & 0xFF;
-            let b =  color        & 0xFF;
+            let g = (color >> 8) & 0xFF;
+            let b = color & 0xFF;
             (b << 16) | (g << 8) | r
         }
     }
@@ -115,8 +141,8 @@ unsafe fn write_hw_pixel(base: u64, offset: usize, bpp: usize, hw_color: u32) {
         4 => (base as *mut u32).add(offset).write_volatile(hw_color),
         3 => {
             let p = (base as *mut u8).add(offset * 3);
-            p.write_volatile((hw_color       & 0xFF) as u8);
-            p.add(1).write_volatile(((hw_color >>  8) & 0xFF) as u8);
+            p.write_volatile((hw_color & 0xFF) as u8);
+            p.add(1).write_volatile(((hw_color >> 8) & 0xFF) as u8);
             p.add(2).write_volatile(((hw_color >> 16) & 0xFF) as u8);
         }
         _ => {}
@@ -158,7 +184,7 @@ pub fn draw_char(col: usize, row: usize, c: char, fg: u32, bg: u32) {
                 for sy in 0..FONT_SCALE {
                     for sx in 0..FONT_SCALE {
                         let px = x0 + bit * FONT_SCALE + sx;
-                        let py = y0 + gy  * FONT_SCALE + sy;
+                        let py = y0 + gy * FONT_SCALE + sy;
                         if px < s.width && py < s.height {
                             unsafe {
                                 write_hw_pixel(s.base, py * s.stride + px, s.bpp, hw_color);
@@ -194,7 +220,16 @@ pub fn draw_char_small(buf: &mut [u32], stride: usize, x: i32, y: i32, c: char, 
 }
 
 /// Draw a string at 1× scale (8×8 pixels) to a buffer.
-pub fn draw_str_small(buf: &mut [u32], stride: usize, x: i32, y: i32, text: &str, fg: u32, bg: u32, max_x: i32) {
+pub fn draw_str_small(
+    buf: &mut [u32],
+    stride: usize,
+    x: i32,
+    y: i32,
+    text: &str,
+    fg: u32,
+    bg: u32,
+    max_x: i32,
+) {
     let mut cx = x;
     for c in text.chars() {
         if cx + 8 > max_x {

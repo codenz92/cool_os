@@ -15,8 +15,8 @@ mod interrupts;
 mod keyboard;
 mod memory;
 mod mouse;
-mod scheduler;
 mod pci;
+mod scheduler;
 mod syscall;
 mod usb;
 mod userspace;
@@ -95,9 +95,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // Build a fresh allocator starting after the frames consumed by the heap
     // (the heap allocator's `next` counter tells us how many frames it used).
-    let vmm_frame_allocator = unsafe {
-        memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next())
-    };
+    let vmm_frame_allocator =
+        unsafe { memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next()) };
 
     // Initialise the VMM with the physical-memory offset and the remaining
     // frame supply.  From here on, all page-table work goes through vmm::.
@@ -162,7 +161,9 @@ fn fs_test_task() -> ! {
         let cur = sched.current;
         sched.tasks[cur].status = scheduler::TaskStatus::Blocked;
     });
-    loop { x86_64::instructions::hlt(); }
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 /// Background task: increments BACKGROUND_COUNTER as fast as possible.

@@ -3,7 +3,6 @@
 /// Only what we need for Phase 14: brute-force scan every bus/device/function,
 /// read class codes, pull BAR values. No MMCONFIG / ECAM support — coolOS runs
 /// in QEMU where port-based access works for all emulated PCI devices.
-
 use core::sync::atomic::Ordering;
 use x86_64::instructions::port::Port;
 

@@ -2,7 +2,6 @@
 ///
 /// Used by the `print!`/`println!` macros and the panic handler.
 /// Writes directly to the hardware framebuffer (not through the WM shadow).
-
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -12,26 +11,32 @@ use crate::framebuffer;
 pub struct Writer {
     col: usize,
     row: usize,
-    fg:  u32,
-    bg:  u32,
+    fg: u32,
+    bg: u32,
 }
 
 /// Write a byte to QEMU's debug console (I/O port 0xE9).
 /// Requires `-debugcon stdio` in the QEMU command.
 #[inline(always)]
 fn debug_byte(byte: u8) {
-    unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte); }
+    unsafe {
+        x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte);
+    }
 }
 
 impl Writer {
     pub fn write_byte(&mut self, byte: u8) {
-        debug_byte(byte);  // mirror every byte to QEMU debug console
+        debug_byte(byte); // mirror every byte to QEMU debug console
         match byte {
             b'\n' => self.new_line(),
-            byte  => {
+            byte => {
                 let cols = framebuffer::cols();
-                if cols == 0 { return; }  // framebuffer not yet initialised
-                if self.col >= cols { self.new_line(); }
+                if cols == 0 {
+                    return;
+                } // framebuffer not yet initialised
+                if self.col >= cols {
+                    self.new_line();
+                }
                 framebuffer::draw_char(self.col, self.row, byte as char, self.fg, self.bg);
                 self.col += 1;
             }
@@ -41,7 +46,9 @@ impl Writer {
     fn new_line(&mut self) {
         self.col = 0;
         let rows = framebuffer::rows();
-        if rows == 0 { return; }
+        if rows == 0 {
+            return;
+        }
         if self.row + 1 < rows {
             self.row += 1;
         } else {
@@ -66,8 +73,8 @@ lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
         col: 0,
         row: 0,
-        fg:  framebuffer::YELLOW,
-        bg:  framebuffer::BLACK,
+        fg: framebuffer::YELLOW,
+        bg: framebuffer::BLACK,
     });
 }
 

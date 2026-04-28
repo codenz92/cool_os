@@ -3,7 +3,6 @@
 /// File descriptors are now task-local. Each task owns a small fd table that
 /// points at shared open objects, so inherited or duplicated descriptors refer
 /// to the same underlying file/pipe state instead of a single global fd slot.
-
 extern crate alloc;
 use alloc::vec::Vec;
 use core::arch::asm;
@@ -78,7 +77,10 @@ struct SharedMemRegion {
 
 impl SharedMemRegion {
     fn new(frames: Vec<PhysFrame>) -> Self {
-        Self { frames, refcount: 1 }
+        Self {
+            frames,
+            refcount: 1,
+        }
     }
 }
 
@@ -418,7 +420,11 @@ pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
                 }
 
                 let n = pipe.write(buf);
-                let wake_task = if n > 0 { pipe.waiting_reader.take() } else { None };
+                let wake_task = if n > 0 {
+                    pipe.waiting_reader.take()
+                } else {
+                    None
+                };
                 (n, wake_task)
             }
             _ => return usize::MAX,

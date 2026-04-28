@@ -10,7 +10,6 @@
 ///   0x30  TSS high
 ///
 /// STAR MSR: kernel‑CS‑base = 0x08, SYSRET‑base = 0x10.
-
 use lazy_static::lazy_static;
 use x86_64::{
     structures::{
@@ -48,13 +47,13 @@ lazy_static! {
 struct Selectors {
     kernel_code: SegmentSelector,
     kernel_data: SegmentSelector,
-    pub user_data:   SegmentSelector,
-    pub user_code:   SegmentSelector,
-    tss:         SegmentSelector,
+    pub user_data: SegmentSelector,
+    pub user_code: SegmentSelector,
+    tss: SegmentSelector,
 }
 
 pub fn init() {
-    use x86_64::instructions::segmentation::{CS, SS, Segment};
+    use x86_64::instructions::segmentation::{Segment, CS, SS};
     use x86_64::instructions::tables::load_tss;
 
     GDT.0.load();
@@ -65,5 +64,9 @@ pub fn init() {
     }
 }
 
-pub fn user_code_selector() -> SegmentSelector { GDT.1.user_code }
-pub fn user_data_selector() -> SegmentSelector { GDT.1.user_data }
+pub fn user_code_selector() -> SegmentSelector {
+    GDT.1.user_code
+}
+pub fn user_data_selector() -> SegmentSelector {
+    GDT.1.user_data
+}

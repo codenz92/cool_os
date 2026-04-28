@@ -24,7 +24,6 @@
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
 /// terminal window each frame, avoiding any lock contention with the WM.
-
 use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 // ── Syscall output ring buffer ────────────────────────────────────────────────
@@ -62,7 +61,8 @@ pub fn pop_output_byte() -> Option<u8> {
 // early/bootstrap edge cases where no per-task stack top is available yet.
 
 const BOOTSTRAP_SYSCALL_STACK_SIZE: usize = 64 * 1024;
-static mut BOOTSTRAP_SYSCALL_STACK: [u8; BOOTSTRAP_SYSCALL_STACK_SIZE] = [0; BOOTSTRAP_SYSCALL_STACK_SIZE];
+static mut BOOTSTRAP_SYSCALL_STACK: [u8; BOOTSTRAP_SYSCALL_STACK_SIZE] =
+    [0; BOOTSTRAP_SYSCALL_STACK_SIZE];
 static BOOTSTRAP_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 // ── MSR init ─────────────────────────────────────────────────────────────────
@@ -70,7 +70,8 @@ static BOOTSTRAP_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 pub fn init() {
     unsafe {
         BOOTSTRAP_SYSCALL_STACK_TOP.store(
-            core::ptr::addr_of!(BOOTSTRAP_SYSCALL_STACK) as u64 + BOOTSTRAP_SYSCALL_STACK_SIZE as u64,
+            core::ptr::addr_of!(BOOTSTRAP_SYSCALL_STACK) as u64
+                + BOOTSTRAP_SYSCALL_STACK_SIZE as u64,
             Ordering::Relaxed,
         );
 
@@ -171,16 +172,31 @@ unsafe extern "C" fn syscall_entry() {
 
 // ── Dispatcher and handlers ───────────────────────────────────────────────────
 
-extern "C" fn syscall_dispatch(frame: &mut SyscallFrame, nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+extern "C" fn syscall_dispatch(
+    frame: &mut SyscallFrame,
+    nr: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+) -> u64 {
     match nr {
-        0 => { sys_exit(a1); 0 }
+        0 => {
+            sys_exit(a1);
+            0
+        }
         1 => sys_write(a1, a2 as *const u8, a3),
-        2 => { sys_yield(); 0 }
+        2 => {
+            sys_yield();
+            0
+        }
         3 => sys_getpid(),
         4 => sys_mmap(a1, a2, a3),
         5 => sys_open(a1 as *const u8, a2),
         6 => sys_read(a1, a2 as *mut u8, a3),
-        7 => { sys_close(a1); 0 }
+        7 => {
+            sys_close(a1);
+            0
+        }
         8 => sys_exec(frame, a1 as *const u8, a2),
         9 => sys_pipe(a1 as *mut u64),
         10 => sys_dup(a1),
@@ -204,7 +220,11 @@ fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
     }
 
     let n = crate::vfs::vfs_write(fd as usize, bytes);
-    if n == usize::MAX { u64::MAX } else { n as u64 }
+    if n == usize::MAX {
+        u64::MAX
+    } else {
+        n as u64
+    }
 }
 
 fn sys_pipe(fds_ptr: *mut u64) -> u64 {
@@ -230,13 +250,17 @@ fn sys_getpid() -> u64 {
 fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
-    if addr == 0 || len == 0 { return u64::MAX; }
+    if addr == 0 || len == 0 {
+        return u64::MAX;
+    }
 
     // Round length up to page boundary.
     let len_aligned = (len + 4095) & !4095;
 
     let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-    if flags & 1 != 0 { pte_flags |= PageTableFlags::WRITABLE; }
+    if flags & 1 != 0 {
+        pte_flags |= PageTableFlags::WRITABLE;
+    }
 
     // Determine the current process's PML4.
     let pml4 = crate::vmm::current_pml4();
@@ -265,7 +289,11 @@ fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
     match core::str::from_utf8(bytes) {
         Ok(path) => {
             let fd = crate::vfs::vfs_open(path);
-            if fd == usize::MAX { u64::MAX } else { fd as u64 }
+            if fd == usize::MAX {
+                u64::MAX
+            } else {
+                fd as u64
+            }
         }
         Err(_) => u64::MAX,
     }
@@ -275,7 +303,11 @@ fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
 fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
     let n = crate::vfs::vfs_read_blocking(fd as usize, buf, len as usize);
-    if n == usize::MAX { u64::MAX } else { n as u64 }
+    if n == usize::MAX {
+        u64::MAX
+    } else {
+        n as u64
+    }
 }
 
 fn sys_close(fd: u64) {
@@ -319,13 +351,23 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
 
 fn sys_dup(fd: u64) -> u64 {
     let new_fd = crate::vfs::vfs_dup(fd as usize);
-    if new_fd == usize::MAX { u64::MAX } else { new_fd as u64 }
+    if new_fd == usize::MAX {
+        u64::MAX
+    } else {
+        new_fd as u64
+    }
 }
 
 fn sys_shmem_create(len: u64) -> u64 {
-    if len == 0 { return u64::MAX; }
+    if len == 0 {
+        return u64::MAX;
+    }
     let id = crate::vfs::vfs_shmem_create(len as usize);
-    if id == usize::MAX { u64::MAX } else { id as u64 }
+    if id == usize::MAX {
+        u64::MAX
+    } else {
+        id as u64
+    }
 }
 
 fn sys_shmem_map(id: u64) -> u64 {

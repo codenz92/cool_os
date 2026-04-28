@@ -1,6 +1,8 @@
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::{
-    structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB},
+    structures::paging::{
+        FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    },
     PhysAddr, VirtAddr,
 };
 
@@ -25,13 +27,19 @@ pub struct BootInfoFrameAllocator {
 
 impl BootInfoFrameAllocator {
     pub unsafe fn init(memory_regions: &'static [MemoryRegion]) -> Self {
-        BootInfoFrameAllocator { memory_regions, next: 0 }
+        BootInfoFrameAllocator {
+            memory_regions,
+            next: 0,
+        }
     }
 
     /// Start a new allocator that skips the first `start` usable frames,
     /// picking up exactly where a previous allocator with `next == start` left off.
     pub unsafe fn init_from(memory_regions: &'static [MemoryRegion], start: usize) -> Self {
-        BootInfoFrameAllocator { memory_regions, next: start }
+        BootInfoFrameAllocator {
+            memory_regions,
+            next: start,
+        }
     }
 
     /// How many frames have been allocated so far.
@@ -70,24 +78,36 @@ pub unsafe fn mark_all_user_accessible(phys_offset: VirtAddr) {
     let l4 = table_at(phys_offset, l4_frame.start_address());
 
     for l4e in l4.iter_mut() {
-        if l4e.is_unused() { continue; }
+        if l4e.is_unused() {
+            continue;
+        }
         l4e.set_flags(l4e.flags() | PageTableFlags::USER_ACCESSIBLE);
 
         let l3 = table_at(phys_offset, l4e.addr());
         for l3e in l3.iter_mut() {
-            if l3e.is_unused() { continue; }
+            if l3e.is_unused() {
+                continue;
+            }
             l3e.set_flags(l3e.flags() | PageTableFlags::USER_ACCESSIBLE);
-            if l3e.flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+            if l3e.flags().contains(PageTableFlags::HUGE_PAGE) {
+                continue;
+            }
 
             let l2 = table_at(phys_offset, l3e.addr());
             for l2e in l2.iter_mut() {
-                if l2e.is_unused() { continue; }
+                if l2e.is_unused() {
+                    continue;
+                }
                 l2e.set_flags(l2e.flags() | PageTableFlags::USER_ACCESSIBLE);
-                if l2e.flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+                if l2e.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    continue;
+                }
 
                 let l1 = table_at(phys_offset, l2e.addr());
                 for l1e in l1.iter_mut() {
-                    if l1e.is_unused() { continue; }
+                    if l1e.is_unused() {
+                        continue;
+                    }
                     l1e.set_flags(l1e.flags() | PageTableFlags::USER_ACCESSIBLE);
                 }
             }

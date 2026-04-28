@@ -14,7 +14,7 @@ use crate::wm::window::{Window, TITLE_H};
 // ── Layout constants ──────────────────────────────────────────────────────────
 
 const TASKBAR_H: i32 = 40; // Win11: 40px tall taskbar
-const START_BTN_W: i32 = 118; // home/start control hit zone
+const START_BTN_W: i32 = 40; // square start icon button + left gutter
 const TASKBAR_CLOCK_W: i32 = 176; // tray + time readout + brand
 const TASKBAR_TRAY_W: i32 = 70;
 const SHOW_DESKTOP_W: i32 = 18;
@@ -69,7 +69,6 @@ const ICON_TXT_BG: u32 = 0x00_00_0A_22; // text — navy
 const ICON_TXT_ACC: u32 = 0x00_00_99_FF; // #0099FF  blue phosphor
 const ICON_COL_BG: u32 = 0x00_10_00_1E; // colour — dark purple-black
 const ICON_COL_ACC: u32 = 0x00_AA_44_FF; // #AA44FF  violet phosphor
-
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -142,7 +141,13 @@ const CTX_W: i32 = 224;
 const CTX_ITEM_H: i32 = 32;
 const CTX_HEADER_H: i32 = 28; // non-clickable header strip
 const CTX_PAD: i32 = 4; // top/bottom padding inside menu body
-const CTX_ITEMS: &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick", "File Manager"];
+const CTX_ITEMS: &[&str] = &[
+    "Terminal",
+    "System Mon",
+    "Text Viewer",
+    "Color Pick",
+    "File Manager",
+];
 
 struct ContextMenu {
     x: i32,
@@ -172,12 +177,41 @@ impl DesktopIcon {
 
 fn desktop_icons() -> [DesktopIcon; 5] {
     [
-        DesktopIcon { x: 20,  y: 20,  label: "Terminal", app: "Terminal"    },
-        DesktopIcon { x: 188, y: 20,  label: "Monitor",  app: "System Mon"  },
-        DesktopIcon { x: 356, y: 20,  label: "Files",    app: "File Manager"},
-        DesktopIcon { x: 20,  y: 118, label: "Viewer",   app: "Text Viewer" },
-        DesktopIcon { x: 188, y: 118, label: "Colors",   app: "Color Pick"  },
+        DesktopIcon {
+            x: 20,
+            y: 20,
+            label: "Terminal",
+            app: "Terminal",
+        },
+        DesktopIcon {
+            x: 188,
+            y: 20,
+            label: "Monitor",
+            app: "System Mon",
+        },
+        DesktopIcon {
+            x: 356,
+            y: 20,
+            label: "Files",
+            app: "File Manager",
+        },
+        DesktopIcon {
+            x: 20,
+            y: 118,
+            label: "Viewer",
+            app: "Text Viewer",
+        },
+        DesktopIcon {
+            x: 188,
+            y: 118,
+            label: "Colors",
+            app: "Color Pick",
+        },
     ]
+}
+
+fn desktop_icon_hit(px: i32, py: i32) -> Option<usize> {
+    desktop_icons().iter().position(|icon| icon.hit(px, py))
 }
 
 const START_PINNED_APPS: [&str; 5] = [
@@ -187,7 +221,6 @@ const START_PINNED_APPS: [&str; 5] = [
     "Color Picker",
     "File Manager",
 ];
-
 
 fn canonical_app_title(name: &str) -> &str {
     match name {
@@ -337,6 +370,7 @@ pub struct WindowManager {
     prev_right: bool,
     context_menu: Option<ContextMenu>,
     icon_selected: Option<usize>,
+    pressed_icon: Option<usize>,
     start_menu_open: bool,
     last_click_tick: u64,
     last_click_window: Option<usize>,
@@ -434,10 +468,18 @@ impl WindowManager {
                 let dim_glow = blend_color(core, DESK_TR, 210);
                 wallpaper[sy * w + sx] = core;
                 // 4-point cross halo
-                if sx + 1 < w { wallpaper[sy * w + sx + 1] = glow; }
-                if sx > 0 { wallpaper[sy * w + sx - 1] = dim_glow; }
-                if sy + 1 < taskbar_y { wallpaper[(sy + 1) * w + sx] = glow; }
-                if sy > 0 { wallpaper[(sy - 1) * w + sx] = dim_glow; }
+                if sx + 1 < w {
+                    wallpaper[sy * w + sx + 1] = glow;
+                }
+                if sx > 0 {
+                    wallpaper[sy * w + sx - 1] = dim_glow;
+                }
+                if sy + 1 < taskbar_y {
+                    wallpaper[(sy + 1) * w + sx] = glow;
+                }
+                if sy > 0 {
+                    wallpaper[(sy - 1) * w + sx] = dim_glow;
+                }
             }
         }
 
@@ -454,6 +496,7 @@ impl WindowManager {
             prev_right: false,
             context_menu: None,
             icon_selected: None,
+            pressed_icon: None,
             start_menu_open: false,
             last_click_tick: 0,
             last_click_window: None,
@@ -600,6 +643,7 @@ impl WindowManager {
         let left_pressed = left && !self.prev_left;
         let left_released = !left && self.prev_left;
         let right_pressed = right && !self.prev_right;
+        let mut left_press_consumed = false;
 
         // ── Input ─────────────────────────────────────────────────────────────
 
@@ -608,6 +652,7 @@ impl WindowManager {
         if taskbar_click {
             self.start_menu_open = !self.start_menu_open;
             self.context_menu = None;
+            left_press_consumed = true;
             crate::wm::request_repaint();
         }
 
@@ -620,6 +665,7 @@ impl WindowManager {
 
         if left_pressed {
             if self.context_menu.is_some() {
+                left_press_consumed = true;
                 let clicked: Option<&str> = {
                     let cm = self.context_menu.as_ref().unwrap();
                     CTX_ITEMS.iter().enumerate().find_map(|(i, &label)| {
@@ -644,6 +690,7 @@ impl WindowManager {
                 }
             } else {
                 if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
+                    left_press_consumed = true;
                     let win_idx = self.z_order[z_pos];
                     self.z_order.remove(z_pos);
                     self.z_order.push(win_idx);
@@ -730,10 +777,12 @@ impl WindowManager {
                                 match TextViewerApp::open_file(wx, wy, &path) {
                                     Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
                                     Err(err) => {
-                                        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
-                                            AppWindow::Terminal(t) => Some(t),
-                                            _ => None,
-                                        }) {
+                                        if let Some(term) =
+                                            self.windows.iter_mut().find_map(|w| match w {
+                                                AppWindow::Terminal(t) => Some(t),
+                                                _ => None,
+                                            })
+                                        {
                                             term.print_str("open failed: ");
                                             term.print_str(err);
                                             term.print_char('\n');
@@ -751,6 +800,7 @@ impl WindowManager {
                 }
 
                 if my_i >= taskbar_y {
+                    left_press_consumed = true;
                     // Tray icon click → open System Monitor
                     let tray_clk_x = sw as i32 - TASKBAR_CLOCK_W;
                     let t_gap = 20i32;
@@ -775,8 +825,7 @@ impl WindowManager {
                                 if self.windows[btn_idx].is_minimized() {
                                     self.windows[btn_idx].window_mut().restore();
                                 }
-                                if let Some(z_pos) =
-                                    self.z_order.iter().position(|&i| i == btn_idx)
+                                if let Some(z_pos) = self.z_order.iter().position(|&i| i == btn_idx)
                                 {
                                     self.z_order.remove(z_pos);
                                     self.z_order.push(btn_idx);
@@ -841,13 +890,12 @@ impl WindowManager {
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
             if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
+                left_press_consumed = true;
                 // Left column — app list rows
                 if mx_i < menu_x + left_w {
                     let item_h = 40i32;
                     let items_y = menu_y + left_hdr_h + 8;
-                    if my_i >= items_y
-                        && my_i < items_y + item_h * START_PINNED_APPS.len() as i32
-                    {
+                    if my_i >= items_y && my_i < items_y + item_h * START_PINNED_APPS.len() as i32 {
                         let item_idx = ((my_i - items_y) / item_h) as usize;
                         if item_idx < START_PINNED_APPS.len() {
                             let off = self.windows.len() as i32 * 16;
@@ -864,20 +912,28 @@ impl WindowManager {
 
         // Desktop icon click.
         if left_pressed {
-            let icons = desktop_icons();
-            for (i, icon) in icons.iter().enumerate() {
-                if icon.hit(mx_i, my_i) {
-                    self.icon_selected = Some(i);
-                    self.context_menu = None;
-                    crate::wm::request_repaint();
-                }
+            let icon_hit = desktop_icon_hit(mx_i, my_i);
+            let desktop_hit = !left_press_consumed
+                && my_i < taskbar_y
+                && self.context_menu.is_none()
+                && !self.start_menu_open;
+            self.pressed_icon = if desktop_hit { icon_hit } else { None };
+            if let Some(i) = self.pressed_icon {
+                self.icon_selected = Some(i);
+                self.context_menu = None;
+                crate::wm::request_repaint();
             }
         }
 
         if left_released {
-            let icons = desktop_icons();
-            for icon in icons.iter() {
-                if icon.hit(mx_i, my_i) {
+            if let Some(icon_idx) = self.pressed_icon.take() {
+                if desktop_icon_hit(mx_i, my_i) == Some(icon_idx)
+                    && my_i < taskbar_y
+                    && self.front_to_back_hit(mx_i, my_i).is_none()
+                    && self.context_menu.is_none()
+                    && !self.start_menu_open
+                {
+                    let icon = &desktop_icons()[icon_idx];
                     let off = self.windows.len() as i32 * 16;
                     let wx = (10 + off).min(sw as i32 - 200);
                     let wy = (10 + off).min(taskbar_y - 80);
@@ -921,11 +977,11 @@ impl WindowManager {
 
             // ── Desktop icons — drawn BEFORE windows so windows can cover them ────
             let icon_data: [(u32, u32); 5] = [
-                (ICON_TERM_BG, ICON_TERM_ACC),      // Terminal
-                (ICON_MON_BG,  ICON_MON_ACC),       // Monitor
-                (0x00_00_0E_20, 0x00_55_DD_FF),     // Files (File Manager)
-                (ICON_TXT_BG,  ICON_TXT_ACC),       // Viewer (Text Viewer)
-                (ICON_COL_BG,  ICON_COL_ACC),       // Colors (Color Picker)
+                (ICON_TERM_BG, ICON_TERM_ACC),  // Terminal
+                (ICON_MON_BG, ICON_MON_ACC),    // Monitor
+                (0x00_00_0E_20, 0x00_55_DD_FF), // Files (File Manager)
+                (ICON_TXT_BG, ICON_TXT_ACC),    // Viewer (Text Viewer)
+                (ICON_COL_BG, ICON_COL_ACC),    // Colors (Color Picker)
             ];
             for (i, icon) in desktop_icons().iter().enumerate() {
                 let selected = self.icon_selected == Some(i);
@@ -1019,29 +1075,29 @@ impl WindowManager {
                         // Terminal — ">" prompt + underscore cursor
                         let bx = icon.x + 8;
                         let by = icon.y + 14;
-                        s_fill(s, sw, bx,      by,      6, 3, icon_acc);
-                        s_fill(s, sw, bx + 6,  by + 3,  6, 3, icon_acc);
-                        s_fill(s, sw, bx + 12, by + 6,  6, 3, icon_acc);
-                        s_fill(s, sw, bx + 6,  by + 9,  6, 3, icon_acc);
-                        s_fill(s, sw, bx,      by + 12, 6, 3, icon_acc);
+                        s_fill(s, sw, bx, by, 6, 3, icon_acc);
+                        s_fill(s, sw, bx + 6, by + 3, 6, 3, icon_acc);
+                        s_fill(s, sw, bx + 12, by + 6, 6, 3, icon_acc);
+                        s_fill(s, sw, bx + 6, by + 9, 6, 3, icon_acc);
+                        s_fill(s, sw, bx, by + 12, 6, 3, icon_acc);
                         s_fill(s, sw, icon.x + 8, icon.y + 38, 22, 2, icon_acc);
                     }
                     1 => {
                         // Monitor — bar chart
                         let base_y = icon.y + 44;
                         let bar_w = 8i32;
-                        s_fill(s, sw, icon.x + 6,  base_y - 10, bar_w, 10, icon_acc);
+                        s_fill(s, sw, icon.x + 6, base_y - 10, bar_w, 10, icon_acc);
                         s_fill(s, sw, icon.x + 18, base_y - 26, bar_w, 26, icon_acc);
                         s_fill(s, sw, icon.x + 30, base_y - 18, bar_w, 18, icon_acc);
-                        s_fill(s, sw, icon.x + 4,  base_y,      36,    2,  icon_acc);
+                        s_fill(s, sw, icon.x + 4, base_y, 36, 2, icon_acc);
                     }
                     2 => {
                         // Files — folder with content lines
                         s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
                         s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
-                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14,  8, icon_acc);
-                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28,  2, 0x00_00_0B_20);
-                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28,  2, 0x00_00_0B_20);
+                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14, 8, icon_acc);
+                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28, 2, 0x00_00_0B_20);
+                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28, 2, 0x00_00_0B_20);
                     }
                     3 => {
                         // Viewer — document page with text lines
@@ -1054,9 +1110,9 @@ impl WindowManager {
                     }
                     4 => {
                         // Colors — four colour quadrants
-                        s_fill(s, sw, icon.x + 6,  icon.y + 8,  16, 16, 0x00_FF_50_50);
-                        s_fill(s, sw, icon.x + 26, icon.y + 8,  16, 16, 0x00_50_FF_50);
-                        s_fill(s, sw, icon.x + 6,  icon.y + 28, 16, 16, 0x00_50_50_FF);
+                        s_fill(s, sw, icon.x + 6, icon.y + 8, 16, 16, 0x00_FF_50_50);
+                        s_fill(s, sw, icon.x + 26, icon.y + 8, 16, 16, 0x00_50_FF_50);
+                        s_fill(s, sw, icon.x + 6, icon.y + 28, 16, 16, 0x00_50_50_FF);
                         s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50);
                         s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
                     }
@@ -1079,7 +1135,6 @@ impl WindowManager {
                     s_fill(s, sw, icon.x - 1, icon.y, 1, ICON_SIZE, ring);
                     s_fill(s, sw, icon.x + ICON_SIZE, icon.y, 1, ICON_SIZE, ring);
                 }
-
 
                 // Label below icon — plain centred text, no box
                 let label_y = icon.y + ICON_SIZE + 8;
@@ -1138,16 +1193,18 @@ impl WindowManager {
             s_fill(s, sw, 0, taskbar_y, sw as i32, 2, 0x00_00_BB_EE);
             s_fill(s, sw, 0, taskbar_y + 2, sw as i32, 1, 0x00_00_55_88);
 
-            // ── Start / home button — layered launcher control ───────────────────
-            let start_hot =
-                mx_i >= 0 && mx_i < START_BTN_W && my_i >= taskbar_y && my_i < taskbar_y + TASKBAR_H;
+            // ── Start button — square launcher icon control ─────────────────────
+            let start_hot = mx_i >= 0
+                && mx_i < START_BTN_W
+                && my_i >= taskbar_y
+                && my_i < taskbar_y + TASKBAR_H;
             let start_pressed = left && start_hot;
             let start_active = self.start_menu_open || start_pressed;
 
-            let pill_x = 8i32;
-            let pill_y = taskbar_y + 4;
-            let pill_w = START_BTN_W - 16;
-            let pill_h = TASKBAR_H - 8;
+            let btn_x = 8i32;
+            let btn_y = taskbar_y + 4;
+            let btn_w = TASKBAR_H - 8;
+            let btn_h = TASKBAR_H - 8;
             let start_bg = if start_active {
                 ACCENT_PRESS
             } else if start_hot {
@@ -1157,64 +1214,77 @@ impl WindowManager {
             };
             // Outer shadow/glow when active
             if start_active {
-                s_fill(s, sw, pill_x - 2, pill_y - 2, pill_w + 4, pill_h + 4, blend_color(ACCENT, BLACK, 160));
+                s_fill(
+                    s,
+                    sw,
+                    btn_x - 2,
+                    btn_y - 2,
+                    btn_w + 4,
+                    btn_h + 4,
+                    blend_color(ACCENT, BLACK, 160),
+                );
             }
-            s_fill(s, sw, pill_x, pill_y, pill_w, pill_h, start_bg);
+            s_fill(s, sw, btn_x, btn_y, btn_w, btn_h, start_bg);
             // Double border for depth
             draw_rect_border(
                 s,
                 sw,
-                pill_x,
-                pill_y,
-                pill_w,
-                pill_h,
+                btn_x,
+                btn_y,
+                btn_w,
+                btn_h,
                 if start_active { ACCENT_HOV } else { ACCENT },
             );
             draw_rect_border(
                 s,
                 sw,
-                pill_x + 1,
-                pill_y + 1,
-                pill_w - 2,
-                pill_h - 2,
-                if start_active { blend_color(ACCENT, WIN_BAR_F, 200) } else { 0x00_00_22_44 },
+                btn_x + 1,
+                btn_y + 1,
+                btn_w - 2,
+                btn_h - 2,
+                if start_active {
+                    blend_color(ACCENT, WIN_BAR_F, 200)
+                } else {
+                    0x00_00_22_44
+                },
             );
 
-            let tile_x = pill_x + 8;
-            let tile_y = pill_y + 5;
-            let tile_bg = if start_active { 0x00_00_16_2E } else { 0x00_00_0A_1C };
+            let tile_x = btn_x + 7;
+            let tile_y = btn_y + 7;
+            let tile_bg = if start_active {
+                0x00_00_16_2E
+            } else {
+                0x00_00_0A_1C
+            };
             s_fill(s, sw, tile_x, tile_y, 18, 18, tile_bg);
-            s_fill(s, sw, tile_x, tile_y, 18, 3, if start_active { ACCENT } else { blend_color(ACCENT, BLACK, 160) });
-            draw_rect_border(s, sw, tile_x, tile_y, 18, 18, if start_active { ACCENT } else { 0x00_00_55_99 });
-            let home_col = if start_active { WHITE } else { ACCENT_HOV };
-            // Home icon glyphs (roof + walls + door)
-            s_fill(s, sw, tile_x + 4, tile_y + 6, 10, 2, home_col);
-            s_fill(s, sw, tile_x + 2, tile_y + 8, 2, 2, home_col);
-            s_fill(s, sw, tile_x + 14, tile_y + 8, 2, 2, home_col);
-            s_fill(s, sw, tile_x + 4, tile_y + 8, 10, 2, home_col);
-            s_fill(s, sw, tile_x + 5, tile_y + 10, 8, 6, home_col);
-            s_fill(s, sw, tile_x + 8, tile_y + 12, 2, 4, tile_bg);
-            s_draw_str_small(
+            s_fill(
                 s,
                 sw,
-                pill_x + 34,
-                pill_y + 6,
-                "HOME",
-                if start_active { WHITE } else { 0x00_DD_EE_FF },
-                start_bg,
-                pill_x + pill_w - 18,
+                tile_x,
+                tile_y,
+                18,
+                3,
+                if start_active {
+                    ACCENT
+                } else {
+                    blend_color(ACCENT, BLACK, 160)
+                },
             );
-            s_draw_str_small(
+            draw_rect_border(
                 s,
                 sw,
-                pill_x + 34,
-                pill_y + 17,
-                "start",
-                if start_hot { 0x00_88_CC_FF } else { 0x00_44_88_BB },
-                start_bg,
-                pill_x + pill_w - 18,
+                tile_x,
+                tile_y,
+                18,
+                18,
+                if start_active { ACCENT } else { 0x00_00_55_99 },
             );
-
+            let icon_col = if start_active { WHITE } else { ACCENT_HOV };
+            // Four-pane launcher glyph.
+            s_fill(s, sw, tile_x + 3, tile_y + 3, 5, 5, icon_col);
+            s_fill(s, sw, tile_x + 10, tile_y + 3, 5, 5, icon_col);
+            s_fill(s, sw, tile_x + 3, tile_y + 10, 5, 5, icon_col);
+            s_fill(s, sw, tile_x + 10, tile_y + 10, 5, 5, icon_col);
 
             // ── Start menu — shell hub with pinned and quick-launch areas ─────────
             if self.start_menu_open {
@@ -1231,7 +1301,9 @@ impl WindowManager {
                 let rc_w = right_w - 2;
                 let usb_lines = crate::usb::status_lines();
                 let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
-                let usb_live = usb_lines.iter().any(|line| line.contains("active init ready"));
+                let usb_live = usb_lines
+                    .iter()
+                    .any(|line| line.contains("active init ready"));
 
                 s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_00_00_18);
                 s_fill(s, sw, menu_x, menu_y, left_w, menu_h, 0x00_00_07_18);
@@ -1287,7 +1359,15 @@ impl WindowManager {
 
                 let left_hdr_y = menu_y + 4;
                 let left_hdr_bg = 0x00_00_0D_24;
-                s_fill(s, sw, menu_x + 1, left_hdr_y, left_w - 1, left_hdr_h, left_hdr_bg);
+                s_fill(
+                    s,
+                    sw,
+                    menu_x + 1,
+                    left_hdr_y,
+                    left_w - 1,
+                    left_hdr_h,
+                    left_hdr_bg,
+                );
                 s_fill(
                     s,
                     sw,
@@ -1402,7 +1482,16 @@ impl WindowManager {
                     let icon_bg = blend_color(0x00_00_0B_20, acc, 55);
                     s_fill(s, sw, icon_x, icon_y, 24, 24, icon_bg);
                     s_fill(s, sw, icon_x, icon_y, 24, 3, acc);
-                    s_draw_str_small(s, sw, icon_x + 5, icon_y + 9, glyph, acc, icon_bg, icon_x + 22);
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        icon_x + 5,
+                        icon_y + 9,
+                        glyph,
+                        acc,
+                        icon_bg,
+                        icon_x + 22,
+                    );
                     s_draw_str_small(
                         s,
                         sw,
@@ -1443,7 +1532,11 @@ impl WindowManager {
                         0x00_00_14_30,
                     );
                 }
-                let all_bg = if all_hot { 0x00_00_14_30 } else { 0x00_00_07_18 };
+                let all_bg = if all_hot {
+                    0x00_00_14_30
+                } else {
+                    0x00_00_07_18
+                };
                 s_draw_str_small(
                     s,
                     sw,
@@ -1507,7 +1600,11 @@ impl WindowManager {
                     banner_x + 18,
                     chip_y + 4,
                     "USB",
-                    if usb_live { 0x00_00_FF_AA } else { 0x00_44_88_BB },
+                    if usb_live {
+                        0x00_00_FF_AA
+                    } else {
+                        0x00_44_88_BB
+                    },
                     chip_bg,
                     banner_x + 8 + chip_w - 4,
                 );
@@ -1520,7 +1617,11 @@ impl WindowManager {
                     chip2_x + 12,
                     chip_y + 4,
                     "KBD",
-                    if usb_keyboard { 0x00_00_FF_AA } else { 0x00_44_88_BB },
+                    if usb_keyboard {
+                        0x00_00_FF_AA
+                    } else {
+                        0x00_44_88_BB
+                    },
                     chip_bg,
                     chip2_x + chip_w - 4,
                 );
@@ -1533,7 +1634,11 @@ impl WindowManager {
                     chip3_x + 12,
                     chip_y + 4,
                     "MSE",
-                    if usb_mouse { 0x00_FF_DD_55 } else { 0x00_44_88_BB },
+                    if usb_mouse {
+                        0x00_FF_DD_55
+                    } else {
+                        0x00_44_88_BB
+                    },
                     chip_bg,
                     chip3_x + chip_w - 4,
                 );
@@ -1625,9 +1730,25 @@ impl WindowManager {
                     // 3px bottom accent bar
                     s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 3, BUTTON_W, 3, accent);
                     // Subtle top glow line
-                    s_fill(s, sw, bx, taskbar_y + 2, BUTTON_W, 1, blend_color(accent, BLACK, 170));
+                    s_fill(
+                        s,
+                        sw,
+                        bx,
+                        taskbar_y + 2,
+                        BUTTON_W,
+                        1,
+                        blend_color(accent, BLACK, 170),
+                    );
                 } else if hovered {
-                    s_fill(s, sw, bx, taskbar_y + TASKBAR_H - 2, BUTTON_W, 1, 0x00_00_55_99);
+                    s_fill(
+                        s,
+                        sw,
+                        bx,
+                        taskbar_y + TASKBAR_H - 2,
+                        BUTTON_W,
+                        1,
+                        0x00_00_55_99,
+                    );
                 }
                 if minimized {
                     s_fill(
@@ -1649,10 +1770,31 @@ impl WindowManager {
                     blend_color(0x00_00_0B_20, accent, 65)
                 };
                 s_fill(s, sw, icon_x, icon_y, 16, 16, icon_bg);
-                draw_rect_border(s, sw, icon_x, icon_y, 16, 16, blend_color(accent, WHITE, 80));
-                s_draw_str_small(s, sw, icon_x + 3, icon_y + 4, glyph, accent, icon_bg, icon_x + 14);
+                draw_rect_border(
+                    s,
+                    sw,
+                    icon_x,
+                    icon_y,
+                    16,
+                    16,
+                    blend_color(accent, WHITE, 80),
+                );
+                s_draw_str_small(
+                    s,
+                    sw,
+                    icon_x + 3,
+                    icon_y + 4,
+                    glyph,
+                    accent,
+                    icon_bg,
+                    icon_x + 14,
+                );
 
-                let trunc = if title.len() > 14 { &title[..14] } else { title };
+                let trunc = if title.len() > 14 {
+                    &title[..14]
+                } else {
+                    title
+                };
                 let text_w = trunc.len() as i32 * 8;
                 let text_x = icon_x + 24;
                 s_draw_str_small(
@@ -1694,7 +1836,9 @@ impl WindowManager {
             let usb_lines = crate::usb::status_lines();
             let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
             let usb_present = !usb_lines.is_empty();
-            let usb_active = usb_lines.iter().any(|line| line.contains("active init ready"));
+            let usb_active = usb_lines
+                .iter()
+                .any(|line| line.contains("active init ready"));
             let pulse = ((current_tick as u32 / 6) % 28) as u32;
             let usb_col = if usb_active {
                 blend_color(0x00_00_EE_FF, ACCENT_HOV, pulse * 4)
@@ -1703,31 +1847,95 @@ impl WindowManager {
             } else {
                 0x00_22_44_66
             };
-            let kbd_col = if usb_keyboard { 0x00_00_FF_88 } else { 0x00_33_55_44 };
-            let mouse_col = if usb_mouse { 0x00_FF_DD_55 } else { 0x00_55_55_44 };
+            let kbd_col = if usb_keyboard {
+                0x00_00_FF_88
+            } else {
+                0x00_33_55_44
+            };
+            let mouse_col = if usb_mouse {
+                0x00_FF_DD_55
+            } else {
+                0x00_55_55_44
+            };
 
             // Center three icons horizontally in tray zone, vertically in taskbar.
             let icon_span = tray_icon_gap * 2 + 13;
             let tray_x = clk_x + (TASKBAR_TRAY_W - icon_span) / 2;
             let tray_y = taskbar_y + (TASKBAR_H - 12) / 2;
-            let usb_hot = mx_i >= tray_x && mx_i < tray_x + 12
-                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
-            let kbd_hot = mx_i >= tray_x + tray_icon_gap && mx_i < tray_x + tray_icon_gap + 14
-                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
-            let mse_hot = mx_i >= tray_x + tray_icon_gap * 2 && mx_i < tray_x + tray_icon_gap * 2 + 14
-                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
-            if usb_hot { s_fill(s, sw, tray_x - 3, taskbar_y + 3, 17, TASKBAR_H - 6, 0x00_00_18_38); }
-            if kbd_hot { s_fill(s, sw, tray_x + tray_icon_gap - 3, taskbar_y + 3, 20, TASKBAR_H - 6, 0x00_00_18_38); }
-            if mse_hot { s_fill(s, sw, tray_x + tray_icon_gap * 2 - 3, taskbar_y + 3, 17, TASKBAR_H - 6, 0x00_00_18_38); }
+            let usb_hot = mx_i >= tray_x
+                && mx_i < tray_x + 12
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H;
+            let kbd_hot = mx_i >= tray_x + tray_icon_gap
+                && mx_i < tray_x + tray_icon_gap + 14
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H;
+            let mse_hot = mx_i >= tray_x + tray_icon_gap * 2
+                && mx_i < tray_x + tray_icon_gap * 2 + 14
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H;
+            if usb_hot {
+                s_fill(
+                    s,
+                    sw,
+                    tray_x - 3,
+                    taskbar_y + 3,
+                    17,
+                    TASKBAR_H - 6,
+                    0x00_00_18_38,
+                );
+            }
+            if kbd_hot {
+                s_fill(
+                    s,
+                    sw,
+                    tray_x + tray_icon_gap - 3,
+                    taskbar_y + 3,
+                    20,
+                    TASKBAR_H - 6,
+                    0x00_00_18_38,
+                );
+            }
+            if mse_hot {
+                s_fill(
+                    s,
+                    sw,
+                    tray_x + tray_icon_gap * 2 - 3,
+                    taskbar_y + 3,
+                    17,
+                    TASKBAR_H - 6,
+                    0x00_00_18_38,
+                );
+            }
 
             // Clock hover tint (suppressed when hovering individual icons).
-            let clk_hot = !usb_hot && !kbd_hot && !mse_hot
-                && mx_i >= clk_x && mx_i < clk_x + clk_w
-                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
+            let clk_hot = !usb_hot
+                && !kbd_hot
+                && !mse_hot
+                && mx_i >= clk_x
+                && mx_i < clk_x + clk_w
+                && my_i >= taskbar_y + 2
+                && my_i < taskbar_y + TASKBAR_H;
             let clk_bg = 0x00_00_00_00;
             if clk_hot {
-                s_fill(s, sw, clk_x, taskbar_y + 2, clk_w, TASKBAR_H - 2, 0x00_00_14_30);
-                draw_rect_border(s, sw, clk_x, taskbar_y + 2, clk_w, TASKBAR_H - 2, 0x00_00_44_88);
+                s_fill(
+                    s,
+                    sw,
+                    clk_x,
+                    taskbar_y + 2,
+                    clk_w,
+                    TASKBAR_H - 2,
+                    0x00_00_14_30,
+                );
+                draw_rect_border(
+                    s,
+                    sw,
+                    clk_x,
+                    taskbar_y + 2,
+                    clk_w,
+                    TASKBAR_H - 2,
+                    0x00_00_44_88,
+                );
             }
 
             // Small tray icons: controller, keyboard, mouse.
@@ -1736,7 +1944,15 @@ impl WindowManager {
             draw_mouse_tray_icon(s, sw, tray_x + tray_icon_gap * 2, tray_y, mouse_col);
 
             // Separator between icons and clock.
-            s_fill(s, sw, clock_box_x - 5, taskbar_y + 7, 1, TASKBAR_H - 14, 0x00_00_33_66);
+            s_fill(
+                s,
+                sw,
+                clock_box_x - 5,
+                taskbar_y + 7,
+                1,
+                TASKBAR_H - 14,
+                0x00_00_33_66,
+            );
 
             // Two-line clock: uptime HH:MM on top, brand below.
             {
@@ -1848,8 +2064,13 @@ impl WindowManager {
                 );
 
                 // Per-app accent colours, matching the desktop icon set
-                const CTX_ACCENTS: [u32; 5] =
-                    [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC, 0x00_55_DD_FF];
+                const CTX_ACCENTS: [u32; 5] = [
+                    ICON_TERM_ACC,
+                    ICON_MON_ACC,
+                    ICON_TXT_ACC,
+                    ICON_COL_ACC,
+                    0x00_55_DD_FF,
+                ];
                 const CTX_GLYPHS: [&str; 5] = ["T>", "M#", "Tx", "CP", "FM"];
 
                 for (i, &label) in CTX_ITEMS.iter().enumerate() {
@@ -2020,7 +2241,10 @@ impl WindowManager {
     fn front_to_back_hit(&self, px: i32, py: i32) -> Option<usize> {
         for z_pos in (0..self.z_order.len()).rev() {
             let wi = self.z_order[z_pos];
-            if wi < self.windows.len() && self.windows[wi].window().hit(px, py) {
+            if wi < self.windows.len()
+                && !self.windows[wi].window().minimized
+                && self.windows[wi].window().hit(px, py)
+            {
                 return Some(z_pos);
             }
         }
@@ -2054,11 +2278,27 @@ impl WindowManager {
         if focused {
             // Outer dim glow ring (3px out)
             let outer_glow = blend_color(ACCENT, BLACK, 190);
-            draw_rect_border(s, sw, w.x - 3, w.y - 3, w.width + 6, w.height + 6, outer_glow);
+            draw_rect_border(
+                s,
+                sw,
+                w.x - 3,
+                w.y - 3,
+                w.width + 6,
+                w.height + 6,
+                outer_glow,
+            );
             // Inner bright 2px border
             let glow = blend_color(ACCENT, BLACK, 100);
             draw_rect_border(s, sw, w.x - 2, w.y - 2, w.width + 4, w.height + 4, glow);
-            draw_rect_border(s, sw, w.x - 1, w.y - 1, w.width + 2, w.height + 2, WIN_BDR_F);
+            draw_rect_border(
+                s,
+                sw,
+                w.x - 1,
+                w.y - 1,
+                w.width + 2,
+                w.height + 2,
+                WIN_BDR_F,
+            );
         }
 
         // ── Title bar — CRT phosphor chrome ──────────────────────────────────
@@ -2092,7 +2332,7 @@ impl WindowManager {
             blend_color(WIN_BDR_U, BLACK, 160)
         };
         s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, 1, bord); // top outer
-        s_fill(s, sw, w.x, w.y, w.width, 1, bord_inner);         // top inner shine
+        s_fill(s, sw, w.x, w.y, w.width, 1, bord_inner); // top inner shine
         s_fill(s, sw, w.x - 1, w.y + w.height, w.width + 2, 1, bord); // bottom
         s_fill(s, sw, w.x - 1, w.y, 1, w.height, bord); // left
         s_fill(s, sw, w.x + w.width, w.y, 1, w.height, bord); // right
@@ -2106,8 +2346,25 @@ impl WindowManager {
         // Slightly taller icon badge to fill the taller title bar
         s_fill(s, sw, icon_x, icon_y, 18, 18, icon_bg);
         s_fill(s, sw, icon_x, icon_y, 18, 3, accent); // accent top stripe on badge
-        draw_rect_border(s, sw, icon_x, icon_y, 18, 18, blend_color(accent, WHITE, 80));
-        s_draw_str_small(s, sw, icon_x + 4, icon_y + 5, glyph, accent, icon_bg, icon_x + 16);
+        draw_rect_border(
+            s,
+            sw,
+            icon_x,
+            icon_y,
+            18,
+            18,
+            blend_color(accent, WHITE, 80),
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            icon_x + 4,
+            icon_y + 5,
+            glyph,
+            accent,
+            icon_bg,
+            icon_x + 16,
+        );
 
         let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 10;
         let title_fg = if focused {
@@ -2327,8 +2584,24 @@ impl WindowManager {
                 );
             }
             // Thumb top/bottom edge lines
-            s_fill(s, sw, sb_x + 2, content_y + thumb_y, SCROLLBAR_W - 4, 1, thumb_highlight);
-            s_fill(s, sw, sb_x + 2, content_y + thumb_y + thumb_h - 1, SCROLLBAR_W - 4, 1, blend_color(thumb_col, BLACK, 80));
+            s_fill(
+                s,
+                sw,
+                sb_x + 2,
+                content_y + thumb_y,
+                SCROLLBAR_W - 4,
+                1,
+                thumb_highlight,
+            );
+            s_fill(
+                s,
+                sw,
+                sb_x + 2,
+                content_y + thumb_y + thumb_h - 1,
+                SCROLLBAR_W - 4,
+                1,
+                blend_color(thumb_col, BLACK, 80),
+            );
         }
 
         // ── Resize handle — diagonal dot-grip in bottom-right corner ──────────
@@ -2340,7 +2613,11 @@ impl WindowManager {
             } else {
                 0x00_00_2A_55
             };
-            let gc_dim = if focused { 0x00_00_33_66 } else { 0x00_00_14_28 };
+            let gc_dim = if focused {
+                0x00_00_33_66
+            } else {
+                0x00_00_14_28
+            };
             // Four 2×2 dots — stair-stepping toward corner
             s_fill(s, sw, hx + 7, hy + 7, 2, 2, gc);
             s_fill(s, sw, hx + 5, hy + 7, 2, 2, gc_dim);

@@ -9,15 +9,14 @@
 ///
 /// Per-process user stacks are placed at USER_STACK_TOP (L4 index 0xFF),
 /// chosen to sit in a canonical lower-half slot that the kernel never uses.
-
 use spin::Mutex;
 use x86_64::{
-    PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB,
-        Mapper, Page,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size4KiB,
     },
+    PhysAddr, VirtAddr,
 };
 
 use crate::memory::BootInfoFrameAllocator;

@@ -6,29 +6,28 @@
 ///
 /// Only LBA 28 reads are implemented — the FAT32 image is 64 MiB, well within
 /// the 128 GiB LBA28 limit.
-
 use x86_64::instructions::port::Port;
 
 // ── Primary ATA bus I/O ports ─────────────────────────────────────────────────
 
-const DATA:      u16 = 0x1F0;
-const FEATURES:  u16 = 0x1F1; // write: features, read: error
-const SECCOUNT:  u16 = 0x1F2;
-const LBA_LO:    u16 = 0x1F3;
-const LBA_MID:   u16 = 0x1F4;
-const LBA_HI:    u16 = 0x1F5;
+const DATA: u16 = 0x1F0;
+const FEATURES: u16 = 0x1F1; // write: features, read: error
+const SECCOUNT: u16 = 0x1F2;
+const LBA_LO: u16 = 0x1F3;
+const LBA_MID: u16 = 0x1F4;
+const LBA_HI: u16 = 0x1F5;
 const DRIVE_HDR: u16 = 0x1F6;
-const STATUS_CMD:u16 = 0x1F7; // write: command, read: status
-const DEV_CTRL:  u16 = 0x3F6; // Device Control Register: nIEN (bit 1) disables IRQs
+const STATUS_CMD: u16 = 0x1F7; // write: command, read: status
+const DEV_CTRL: u16 = 0x3F6; // Device Control Register: nIEN (bit 1) disables IRQs
 
 // ── Drive / status constants ──────────────────────────────────────────────────
 
 const DRIVE_SLAVE: u8 = 0xF0; // bits 7/5 set, LBA mode (bit 6), drive 1 (bit 4)
-const CMD_READ:    u8 = 0x20; // READ SECTORS (LBA28, PIO)
-const STATUS_BSY:  u8 = 0x80;
-const STATUS_DF:   u8 = 0x20;
-const STATUS_DRQ:  u8 = 0x08;
-const STATUS_ERR:  u8 = 0x01;
+const CMD_READ: u8 = 0x20; // READ SECTORS (LBA28, PIO)
+const STATUS_BSY: u8 = 0x80;
+const STATUS_DF: u8 = 0x20;
+const STATUS_DRQ: u8 = 0x08;
+const STATUS_ERR: u8 = 0x01;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -62,7 +61,9 @@ fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
         Port::<u8>::new(DRIVE_HDR).write(DRIVE_SLAVE | ((lba >> 24) as u8 & 0x0F));
 
         // 400 ns delay: read status register 4 times (ATA spec §7.2.3).
-        for _ in 0..4 { let _ = status.read(); }
+        for _ in 0..4 {
+            let _ = status.read();
+        }
 
         // Write LBA address and sector count.
         Port::<u8>::new(FEATURES).write(0);
@@ -82,11 +83,15 @@ fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
                 let err = Port::<u8>::new(FEATURES).read();
                 crate::println!(
                     "[ata] read error lba={} status={:#x} err={:#x}",
-                    lba, s, err
+                    lba,
+                    s,
+                    err
                 );
                 return false;
             }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 { break; }
+            if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 {
+                break;
+            }
             drq_iters += 1;
             if drq_iters > 10_000_000 {
                 crate::println!("[ata] DRQ timeout lba={}", lba);

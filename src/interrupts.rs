@@ -124,17 +124,15 @@ extern "x86-interrupt" fn page_fault_handler(
     // Only attempt lazy allocation for user-mode faults on unmapped pages.
     // Conditions: not a protection violation (P bit clear in error), user-mode
     // access (U bit set), fault address is in the lower canonical half.
-    let is_not_present = !err.contains(
-        x86_64::structures::idt::PageFaultErrorCode::PROTECTION_VIOLATION,
-    );
+    let is_not_present =
+        !err.contains(x86_64::structures::idt::PageFaultErrorCode::PROTECTION_VIOLATION);
     let is_user = err.contains(x86_64::structures::idt::PageFaultErrorCode::USER_MODE);
     let is_lower_half = fault_addr.as_u64() < 0x0000_8000_0000_0000;
 
     if is_not_present && is_user && is_lower_half {
         // Allocate and map the missing page with user-accessible writable flags.
-        let flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::USER_ACCESSIBLE;
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
         let pml4 = crate::vmm::current_pml4();
         if let Some(frame) = crate::vmm::alloc_zeroed_frame() {
             if crate::vmm::map_page_in(pml4, fault_addr.align_down(4096u64), frame, flags).is_ok() {
@@ -259,9 +257,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
             // interrupt context (compose() may already hold it).
             let ch = match key {
                 DecodedKey::Unicode(c) => Some(c),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowUp)    => Some('\u{F700}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowDown)  => Some('\u{F701}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowLeft)  => Some('\u{F702}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowUp) => Some('\u{F700}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowDown) => Some('\u{F701}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowLeft) => Some('\u{F702}'),
                 DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowRight) => Some('\u{F703}'),
                 _ => None,
             };
@@ -286,7 +284,10 @@ use core::sync::atomic::AtomicU8;
 static MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
 /// Raw bytes of the in-flight packet (4 bytes to accommodate IntelliMouse).
 static MOUSE_BYTES: [AtomicU8; 4] = [
-    AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
 ];
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {

@@ -151,8 +151,22 @@ impl TextViewerApp {
         self.fill_rect(stride, 0, 0, VIEWER_W as usize, HEADER_H, PANEL_ALT);
         self.fill_rect(stride, 0, 0, VIEWER_W as usize, 3, ACCENT);
         self.fill_rect(stride, 0, HEADER_H - 1, VIEWER_W as usize, 1, PANEL_BORDER);
-        self.fill_rect(stride, 0, content_h - FOOTER_H, VIEWER_W as usize, FOOTER_H, PANEL);
-        self.fill_rect(stride, 0, content_h - FOOTER_H, VIEWER_W as usize, 1, PANEL_BORDER);
+        self.fill_rect(
+            stride,
+            0,
+            content_h - FOOTER_H,
+            VIEWER_W as usize,
+            FOOTER_H,
+            PANEL,
+        );
+        self.fill_rect(
+            stride,
+            0,
+            content_h - FOOTER_H,
+            VIEWER_W as usize,
+            1,
+            PANEL_BORDER,
+        );
         self.fill_rect(stride, PAD_X - 10, text_y0 - 2, 2, text_h, ACCENT);
 
         let heading = self.heading.clone();
