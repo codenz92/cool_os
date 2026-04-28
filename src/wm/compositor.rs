@@ -36,7 +36,6 @@ const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 // Accent (CRT phosphor blue)
 const ACCENT: u32 = 0x00_00_BB_FF; // #00BBFF  bright phosphor blue (boosted)
 const ACCENT_HOV: u32 = 0x00_44_CC_FF; // #44CCFF  lit hover (richer)
-const ACCENT_PRESS: u32 = 0x00_00_77_CC; // #0077CC  depressed
 
 // Window chrome (CRT dark mode)
 const WIN_BAR_F: u32 = 0x00_00_12_2E; // #00122E  focused title bar — richer navy
@@ -385,6 +384,86 @@ fn window_glyph(title: &str) -> &'static str {
         "Personalize" => "P*",
         "File Manager" => "FM",
         _ => "[]",
+    }
+}
+
+fn month_abbrev(month: u8) -> &'static str {
+    match month {
+        1 => "JAN",
+        2 => "FEB",
+        3 => "MAR",
+        4 => "APR",
+        5 => "MAY",
+        6 => "JUN",
+        7 => "JUL",
+        8 => "AUG",
+        9 => "SEP",
+        10 => "OCT",
+        11 => "NOV",
+        12 => "DEC",
+        _ => "---",
+    }
+}
+
+fn push_two_digits(out: &mut String, value: u8) {
+    out.push((b'0' + (value / 10)) as char);
+    out.push((b'0' + (value % 10)) as char);
+}
+
+fn push_u16(out: &mut String, value: u16) {
+    for &div in &[1000u16, 100, 10, 1] {
+        out.push((b'0' + ((value / div) % 10) as u8) as char);
+    }
+}
+
+fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
+    if let Some(datetime) = crate::rtc::read_datetime() {
+        let mut time = String::with_capacity(5);
+        push_two_digits(&mut time, datetime.hour);
+        time.push(':');
+        push_two_digits(&mut time, datetime.minute);
+
+        let mut date = String::with_capacity(11);
+        push_two_digits(&mut date, datetime.day);
+        date.push(' ');
+        date.push_str(month_abbrev(datetime.month));
+        date.push(' ');
+        push_u16(&mut date, datetime.year);
+        return (time, date);
+    }
+
+    let secs = uptime_ticks / crate::interrupts::TIMER_HZ as u64;
+    let h = ((secs / 3600) % 24) as u8;
+    let m = ((secs / 60) % 60) as u8;
+
+    let mut time = String::with_capacity(5);
+    push_two_digits(&mut time, h);
+    time.push(':');
+    push_two_digits(&mut time, m);
+
+    (time, String::from("RTC offline"))
+}
+
+fn draw_snowflake_logo(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    scale: i32,
+    primary: u32,
+    secondary: u32,
+) {
+    for rect in crate::branding::SNOWFLAKE_LOGO_RECTS.iter() {
+        let color = if rect.highlight { secondary } else { primary };
+        s_fill(
+            s,
+            sw,
+            x + rect.x * scale,
+            y + rect.y * scale,
+            rect.w * scale,
+            rect.h * scale,
+            color,
+        );
     }
 }
 
@@ -1224,13 +1303,13 @@ impl WindowManager {
             let menu_w = 460i32;
             let menu_h = 320i32;
             let left_w = 240i32;
-            let right_w = menu_w - left_w;
             let bottom_h = 36i32;
             let left_hdr_h = 32i32;
             let menu_x = 2i32;
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
             let rc_x = menu_x + left_w + 1;
+            let right_w = menu_w - left_w;
             let rc_w = right_w - 2;
             if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
                 left_press_consumed = true;
@@ -1250,11 +1329,27 @@ impl WindowManager {
                         }
                     }
                 } else {
+                    let banner_x = rc_x + 6;
                     let banner_y = menu_y + 10;
                     let banner_h = 84i32;
+                    let settings_w = 104i32;
+                    let settings_h = 20i32;
+                    let settings_x = banner_x + 56;
+                    let settings_y = banner_y + 30;
                     let link_h = 24i32;
                     let links_y = banner_y + banner_h + 8;
-                    if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
+                    if mx_i >= settings_x
+                        && mx_i < settings_x + settings_w
+                        && my_i >= settings_y
+                        && my_i < settings_y + settings_h
+                    {
+                        let off = self.windows.len() as i32 * 16;
+                        let wx = (10 + off).min(sw as i32 - 200);
+                        let wy = (10 + off).min(bar_y - 80);
+                        self.launch_app("Display Settings", wx, wy);
+                        self.start_menu_open = false;
+                        crate::wm::request_repaint();
+                    } else if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
                         let link_idx = ((my_i - links_y) / link_h) as usize;
                         if let Some(&label) = FileManagerApp::START_MENU_LINKS.get(link_idx) {
                             let ly = links_y + link_idx as i32 * link_h;
@@ -1573,11 +1668,11 @@ impl WindowManager {
             let btn_w = TASKBAR_H - 12;
             let btn_h = TASKBAR_H - 12;
             let start_bg = if start_active {
-                ACCENT_PRESS
+                Some(0x00_00_1A_36)
             } else if start_hot {
-                0x00_00_22_48
+                Some(0x00_00_12_28)
             } else {
-                0x00_00_0E_22
+                None
             };
             // Outer shadow/glow when active
             if start_active {
@@ -1591,67 +1686,20 @@ impl WindowManager {
                     blend_color(ACCENT, BLACK, 160),
                 );
             }
-            s_fill(s, sw, btn_x, btn_y, btn_w, btn_h, start_bg);
-            // Double border for depth
-            draw_rect_border(
-                s,
-                sw,
-                btn_x,
-                btn_y,
-                btn_w,
-                btn_h,
-                if start_active { ACCENT_HOV } else { ACCENT },
-            );
-            draw_rect_border(
-                s,
-                sw,
-                btn_x + 1,
-                btn_y + 1,
-                btn_w - 2,
-                btn_h - 2,
-                if start_active {
-                    blend_color(ACCENT, WIN_BAR_F, 200)
-                } else {
-                    0x00_00_22_44
-                },
-            );
+            if let Some(bg) = start_bg {
+                s_fill(s, sw, btn_x, btn_y, btn_w, btn_h, bg);
+            }
 
-            let tile_x = btn_x + 5;
-            let tile_y = btn_y + 5;
-            let tile_bg = if start_active {
-                0x00_00_16_2E
+            let tile_x = btn_x + (btn_w - 18) / 2;
+            let tile_y = btn_y + (btn_h - 18) / 2;
+            let icon_primary = if start_active { WHITE } else { ACCENT_HOV };
+            let icon_secondary = if start_active {
+                blend_color(WHITE, ACCENT_HOV, 84)
             } else {
-                0x00_00_0A_1C
+                blend_color(ACCENT_HOV, WHITE, 72)
             };
-            s_fill(s, sw, tile_x, tile_y, 18, 18, tile_bg);
-            s_fill(
-                s,
-                sw,
-                tile_x,
-                tile_y,
-                18,
-                3,
-                if start_active {
-                    ACCENT
-                } else {
-                    blend_color(ACCENT, BLACK, 160)
-                },
-            );
-            draw_rect_border(
-                s,
-                sw,
-                tile_x,
-                tile_y,
-                18,
-                18,
-                if start_active { ACCENT } else { 0x00_00_55_99 },
-            );
-            let icon_col = if start_active { WHITE } else { ACCENT_HOV };
-            // Four-pane launcher glyph.
-            s_fill(s, sw, tile_x + 3, tile_y + 3, 5, 5, icon_col);
-            s_fill(s, sw, tile_x + 10, tile_y + 3, 5, 5, icon_col);
-            s_fill(s, sw, tile_x + 3, tile_y + 10, 5, 5, icon_col);
-            s_fill(s, sw, tile_x + 10, tile_y + 10, 5, 5, icon_col);
+            // coolOS snowflake mark.
+            draw_snowflake_logo(s, sw, tile_x, tile_y, 1, icon_primary, icon_secondary);
 
             // ── Start menu — shell hub with pinned and quick-launch areas ─────────
             if self.start_menu_open {
@@ -1666,11 +1714,7 @@ impl WindowManager {
                 let bar_y = menu_y + menu_h - bottom_h;
                 let rc_x = menu_x + left_w + 1;
                 let rc_w = right_w - 2;
-                let usb_lines = crate::usb::status_lines();
-                let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
-                let usb_live = usb_lines
-                    .iter()
-                    .any(|line| line.contains("active init ready"));
+                let (banner_time, banner_date) = start_menu_banner_clock(uptime_ticks);
 
                 s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_00_00_18);
                 s_fill(s, sw, menu_x, menu_y, left_w, menu_h, 0x00_00_07_18);
@@ -1859,15 +1903,20 @@ impl WindowManager {
                         icon_bg,
                         icon_x + 22,
                     );
+                    let text_left = menu_x + 40;
+                    let text_right = menu_x + left_w - 24;
+                    let text_w = name.chars().count() as i32 * 8;
+                    let text_x = text_left + ((text_right - text_left - text_w).max(0) / 2);
+                    let text_y = iy + (item_h - 8) / 2;
                     s_draw_str_small(
                         s,
                         sw,
-                        menu_x + 40,
-                        iy + 10,
+                        text_x,
+                        text_y,
                         name,
                         if is_hov { WHITE } else { 0x00_AA_DD_FF },
                         row_bg,
-                        menu_x + left_w - 24,
+                        text_right,
                     );
                     if i + 1 < START_PINNED_APPS.len() {
                         s_fill(
@@ -1933,6 +1982,14 @@ impl WindowManager {
                 draw_rect_border(s, sw, av_x, av_y, 40, 40, ACCENT);
                 s_fill(s, sw, av_x + 14, av_y + 6, 12, 10, 0x00_00_55_88);
                 s_fill(s, sw, av_x + 9, av_y + 20, 22, 14, 0x00_00_44_77);
+                let clock_right = banner_x + banner_w - 10;
+                let time_x = clock_right - banner_time.chars().count() as i32 * 8;
+                let settings_w = 104i32;
+                let settings_h = 20i32;
+                let settings_x = banner_x + 56;
+                let settings_y = banner_y + 38;
+                let date_x = av_x + 48;
+                let date_y = av_y + 16;
                 s_draw_str_small(
                     s,
                     sw,
@@ -1946,69 +2003,62 @@ impl WindowManager {
                 s_draw_str_small(
                     s,
                     sw,
-                    av_x + 48,
-                    av_y + 16,
-                    "coolOS shell",
+                    time_x,
+                    av_y + 4,
+                    &banner_time,
+                    0x00_CC_EE_FF,
+                    banner_bg,
+                    clock_right,
+                );
+                s_draw_str_small(
+                    s,
+                    sw,
+                    date_x,
+                    date_y,
+                    &banner_date,
                     0x00_44_88_BB,
                     banner_bg,
-                    banner_x + banner_w - 10,
+                    clock_right,
                 );
 
-                let chip_y = banner_y + 56;
-                let chip_w = 54;
-                let chip_h = 16;
-                let chip_gap = 6;
-                let chip_bg = 0x00_00_07_18;
-                s_fill(s, sw, banner_x + 8, chip_y, chip_w, chip_h, chip_bg);
-                draw_rect_border(s, sw, banner_x + 8, chip_y, chip_w, chip_h, 0x00_00_33_66);
+                let settings_hot = mx_i >= settings_x
+                    && mx_i < settings_x + settings_w
+                    && my_i >= settings_y
+                    && my_i < settings_y + settings_h;
+                let settings_bg = if settings_hot {
+                    0x00_00_14_30
+                } else {
+                    0x00_00_07_18
+                };
+                s_fill(
+                    s,
+                    sw,
+                    settings_x,
+                    settings_y,
+                    settings_w,
+                    settings_h,
+                    settings_bg,
+                );
                 s_draw_str_small(
                     s,
                     sw,
-                    banner_x + 18,
-                    chip_y + 4,
-                    "USB",
-                    if usb_live {
-                        0x00_00_FF_AA
-                    } else {
-                        0x00_44_88_BB
-                    },
-                    chip_bg,
-                    banner_x + 8 + chip_w - 4,
+                    settings_x + ((settings_w - ("Settings".len() as i32 * 8)) / 2),
+                    settings_y + 6,
+                    "Settings",
+                    if settings_hot { WHITE } else { 0x00_AA_DD_FF },
+                    settings_bg,
+                    settings_x + settings_w - 6,
                 );
-                let chip2_x = banner_x + 8 + chip_w + chip_gap;
-                s_fill(s, sw, chip2_x, chip_y, chip_w, chip_h, chip_bg);
-                draw_rect_border(s, sw, chip2_x, chip_y, chip_w, chip_h, 0x00_00_33_66);
-                s_draw_str_small(
+                draw_rect_border(
                     s,
                     sw,
-                    chip2_x + 12,
-                    chip_y + 4,
-                    "KBD",
-                    if usb_keyboard {
-                        0x00_00_FF_AA
-                    } else {
-                        0x00_44_88_BB
-                    },
-                    chip_bg,
-                    chip2_x + chip_w - 4,
+                    settings_x,
+                    settings_y,
+                    settings_w,
+                    settings_h,
+                    if settings_hot { ACCENT } else { 0x00_00_33_66 },
                 );
-                let chip3_x = chip2_x + chip_w + chip_gap;
-                s_fill(s, sw, chip3_x, chip_y, chip_w, chip_h, chip_bg);
-                draw_rect_border(s, sw, chip3_x, chip_y, chip_w, chip_h, 0x00_00_33_66);
-                s_draw_str_small(
-                    s,
-                    sw,
-                    chip3_x + 12,
-                    chip_y + 4,
-                    "MSE",
-                    if usb_mouse {
-                        0x00_FF_DD_55
-                    } else {
-                        0x00_44_88_BB
-                    },
-                    chip_bg,
-                    chip3_x + chip_w - 4,
-                );
+                s_fill(s, sw, settings_x, settings_y, settings_w, 2, ACCENT);
 
                 let link_h = 24i32;
                 let links_y = banner_y + banner_h + 8;

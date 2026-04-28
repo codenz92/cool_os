@@ -29,7 +29,6 @@ const TEXT: u32 = 0x00_C8_F6_FF;
 const BAR_BG: u32 = 0x00_01_04_0A;
 const BAR_FILL: u32 = 0x00_00_BB_FF;
 const BAR_FILL_GLOW: u32 = 0x00_44_D8_FF;
-const ICON_BG: u32 = 0x00_00_12_26;
 
 pub fn show(stage: &str, completed: usize, total: usize) {
     if !DRAWN.swap(true, Ordering::Relaxed) {
@@ -102,23 +101,17 @@ fn draw_static() {
     );
 
     let icon_x = panel_x + 34;
-    let icon_y = panel_y + 34;
-    let icon_s = 68;
-    fill_rect(icon_x, icon_y, icon_s, icon_s, ICON_BG);
-    draw_rect(icon_x, icon_y, icon_s, icon_s, PANEL_EDGE);
-    draw_rect(
-        icon_x + 4,
-        icon_y + 4,
-        icon_s - 8,
-        icon_s - 8,
-        PANEL_EDGE_DIM,
-    );
-    draw_logo_icon(icon_x + 14, icon_y + 14);
+    let icon_s = 84;
+    let title_y = panel_y + 34;
+    let subtitle_y = panel_y + 82;
+    let logo_size = 18 * 4;
+    let logo_y = title_y + (((subtitle_y + 8) - title_y) - logo_size) / 2;
+    draw_logo_icon(icon_x + 6, logo_y);
 
-    draw_str_scaled(icon_x + icon_s + 28, panel_y + 34, "coolOS", TITLE, 4);
+    draw_str_scaled(icon_x + icon_s + 28, title_y, "coolOS", TITLE, 4);
     draw_str_scaled(
         icon_x + icon_s + 30,
-        panel_y + 82,
+        subtitle_y,
         "PHOSPHOR DESKTOP",
         SUBTITLE,
         1,
@@ -195,12 +188,20 @@ fn draw_progress(stage: &str, completed_units: usize, total_units: usize, phase:
 }
 
 fn draw_logo_icon(x: i32, y: i32) {
-    fill_rect(x, y, 16, 16, BAR_FILL);
-    fill_rect(x + 20, y, 16, 16, BAR_FILL_GLOW);
-    fill_rect(x, y + 20, 16, 16, BAR_FILL_GLOW);
-    fill_rect(x + 20, y + 20, 16, 16, BAR_FILL);
-    fill_rect(x + 8, y + 8, 20, 20, ICON_BG);
-    draw_rect(x - 3, y - 3, 42, 42, PANEL_EDGE_DIM);
+    for rect in crate::branding::SNOWFLAKE_LOGO_RECTS.iter() {
+        let color = if rect.highlight {
+            BAR_FILL_GLOW
+        } else {
+            BAR_FILL
+        };
+        fill_rect(
+            x + rect.x * 4,
+            y + rect.y * 4,
+            rect.w * 4,
+            rect.h * 4,
+            color,
+        );
+    }
 }
 
 fn fill_rect(x: i32, y: i32, w: i32, h: i32, color: u32) {
