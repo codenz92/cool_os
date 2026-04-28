@@ -82,10 +82,9 @@ impl SysMonApp {
             .iter()
             .any(|line| line.contains("active init ready"));
 
-        self.put_str_px(stride, 18, 14, "SYSTEM DASHBOARD", LABEL);
-        self.put_str_px(
+        self.put_str_centered_px(stride, 14, "SYSTEM DASHBOARD", LABEL);
+        self.put_str_centered_px(
             stride,
-            18,
             26,
             "runtime view for scheduler, memory, and USB",
             MUTED,
@@ -325,6 +324,12 @@ impl SysMonApp {
             }
             put_char_buf_transparent(&mut self.window.buf, stride, gx, py, c, color);
         }
+    }
+
+    fn put_str_centered_px(&mut self, stride: usize, py: usize, s: &str, color: u32) {
+        let text_w = s.chars().count() * CHAR_W_SMALL;
+        let px = stride.saturating_sub(text_w) / 2;
+        self.put_str_px(stride, px, py, s, color);
     }
 }
 

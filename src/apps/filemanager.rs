@@ -410,7 +410,6 @@ impl FileManagerApp {
         let window_w = self.window.width.max(0) as usize;
         let address_w = window_w.saturating_sub(38);
         self.fill_rect(stride, 0, 0, window_w, TOOLBAR_H as usize, FM_PANEL_ALT);
-        self.fill_rect(stride, 0, 0, window_w, 2, FM_ACCENT);
         self.fill_rect(stride, 30, 3, address_w, 18, FM_PANEL);
         self.draw_rect_border(stride, 30, 3, address_w, 18, FM_BORDER);
         self.draw_up_button(stride, 6, 3);

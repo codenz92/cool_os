@@ -2366,8 +2366,10 @@ impl WindowManager {
         // ── Title icon + text ─────────────────────────────────────────────────
         let accent = window_accent(w.title);
         let glyph = window_glyph(w.title);
+        let title_content_y = w.y + 3;
+        let title_content_h = TITLE_H - 3;
         let icon_x = w.x + 8;
-        let icon_y = w.y + 5;
+        let icon_y = title_content_y + (title_content_h - 18) / 2;
         let icon_bg = blend_color(title_bg, accent, if focused { 120 } else { 75 });
         // Slightly taller icon badge to fill the taller title bar
         s_fill(s, sw, icon_x, icon_y, 18, 18, icon_bg);
@@ -2402,7 +2404,7 @@ impl WindowManager {
             s,
             sw,
             w.x + 34,
-            w.y + (TITLE_H - 8) / 2,
+            title_content_y + (title_content_h - 8) / 2,
             w.title,
             title_fg,
             title_bg,
@@ -2412,6 +2414,7 @@ impl WindowManager {
         // ── Caption buttons — CRT phosphor style ──────────────────────────────
         let btn_y = w.y + 1;
         let btn_h = TITLE_H - 2;
+        let cap_glyph_mid_y = btn_y + 3 + (btn_h - 3) / 2;
 
         // Hover detection — only fire when cursor is over this window's title row
         let in_btn_row = cursor_y >= btn_y && cursor_y < btn_y + btn_h;
@@ -2437,7 +2440,7 @@ impl WindowManager {
             s,
             sw,
             min_x + WIN_BTN_W / 2 - 4,
-            btn_y + btn_h / 2 + 1,
+            cap_glyph_mid_y,
             8,
             1,
             min_glyph,
@@ -2458,7 +2461,7 @@ impl WindowManager {
             s,
             sw,
             max_x + WIN_BTN_W / 2 - 4,
-            btn_y + btn_h / 2 - 4,
+            cap_glyph_mid_y - 4,
             8,
             1,
             max_glyph,
@@ -2467,7 +2470,7 @@ impl WindowManager {
             s,
             sw,
             max_x + WIN_BTN_W / 2 - 4,
-            btn_y + btn_h / 2 + 3,
+            cap_glyph_mid_y + 3,
             8,
             1,
             max_glyph,
@@ -2476,7 +2479,7 @@ impl WindowManager {
             s,
             sw,
             max_x + WIN_BTN_W / 2 - 4,
-            btn_y + btn_h / 2 - 4,
+            cap_glyph_mid_y - 4,
             1,
             8,
             max_glyph,
@@ -2485,7 +2488,7 @@ impl WindowManager {
             s,
             sw,
             max_x + WIN_BTN_W / 2 + 3,
-            btn_y + btn_h / 2 - 4,
+            cap_glyph_mid_y - 4,
             1,
             8,
             max_glyph,
@@ -2493,7 +2496,7 @@ impl WindowManager {
 
         // Close  ✕ — pixel diagonals
         let cx_c = cls_x + WIN_BTN_W / 2;
-        let cy_c = btn_y + btn_h / 2;
+        let cy_c = cap_glyph_mid_y;
         let sh_wnd = s.len() / sw;
         s_fill(
             s,

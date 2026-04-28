@@ -162,7 +162,6 @@ impl TextViewerApp {
         self.window.scroll.clamp((self.rows * LINE_H) as i32);
 
         self.fill_rect(stride, 0, 0, width, HEADER_H, PANEL_ALT);
-        self.fill_rect(stride, 0, 0, width, 3, ACCENT);
         self.fill_rect(stride, 0, HEADER_H - 1, width, 1, PANEL_BORDER);
         self.fill_rect(
             stride,

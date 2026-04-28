@@ -96,7 +96,6 @@ impl ColorPickerApp {
         self.fill_background(stride);
 
         self.fill_rect(stride, 0, 0, stride, 34, PANEL_ALT);
-        self.fill_rect(stride, 0, 0, stride, 3, ACCENT);
         self.fill_rect(stride, 0, 33, stride, 1, BORDER);
         self.fill_rect(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, PANEL);
         self.draw_rect_border(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, BORDER);
