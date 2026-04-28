@@ -11,6 +11,10 @@ pub const TERM_H: i32 = 440;
 
 const CHAR_W: usize = 8;
 const CHAR_H: usize = 8;
+const LINE_H: usize = 12;
+const GLYPH_Y_INSET: usize = 1;
+const TERM_PAD_X: usize = 14;
+const TERM_PAD_Y: usize = 10;
 
 const TERM_BG_A: u32 = 0x00_03_09_06;
 const TERM_BG_B: u32 = 0x00_01_04_02;
@@ -45,9 +49,8 @@ pub struct TerminalApp {
 impl TerminalApp {
     pub fn new(x: i32, y: i32) -> Self {
         let window = Window::new(x, y, TERM_W, TERM_H, "Terminal");
-        let cols = TERM_W as usize / CHAR_W;
-        let content_h = (TERM_H - TITLE_H) as usize;
-        let rows = content_h / CHAR_H;
+        let cols = text_cols(TERM_W as usize);
+        let rows = text_rows((TERM_H - TITLE_H) as usize);
 
         let mut t = TerminalApp {
             window,
@@ -74,6 +77,7 @@ impl TerminalApp {
     }
 
     pub fn handle_key(&mut self, c: char) {
+        self.refresh_layout();
         match c {
             // Arrow keys (private-use Unicode set by keyboard drivers)
             '\u{F700}' => self.history_up(),
@@ -594,6 +598,7 @@ impl TerminalApp {
     // ── Rendering helpers ─────────────────────────────────────────────────────
 
     pub fn print_char(&mut self, c: char) {
+        self.refresh_layout();
         if c == '\n' {
             self.col = 0;
             self.advance_row();
@@ -653,13 +658,29 @@ impl TerminalApp {
 
     fn scroll_up(&mut self) {
         let stride = self.window.width as usize;
-        let row_pixels = stride * CHAR_H;
-        let total = self.window.buf.len();
-        self.window.buf.copy_within(row_pixels..total, 0);
-        let last = total - row_pixels;
-        for idx in last..total {
-            let py = idx / stride;
-            self.window.buf[idx] = Self::bg_at(py);
+        let text_x = TERM_PAD_X;
+        let text_y = TERM_PAD_Y;
+        let text_w = self.cols * CHAR_W;
+        let text_h = self.rows * LINE_H;
+
+        if text_w == 0 || text_h <= LINE_H {
+            return;
+        }
+
+        for y in 0..(text_h - LINE_H) {
+            let dst_row = text_y + y;
+            let src_row = dst_row + LINE_H;
+            let dst = dst_row * stride + text_x;
+            let src = src_row * stride + text_x;
+            self.window.buf.copy_within(src..src + text_w, dst);
+        }
+
+        for y in (text_h - LINE_H)..text_h {
+            let py = text_y + y;
+            let row_start = py * stride + text_x;
+            for x in 0..text_w {
+                self.window.buf[row_start + x] = Self::bg_at(py);
+            }
         }
     }
 
@@ -667,10 +688,10 @@ impl TerminalApp {
         let glyph = font8x8::BASIC_FONTS
             .get(c)
             .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-        let px0 = col * CHAR_W;
-        let py0 = row * CHAR_H;
+        let px0 = TERM_PAD_X + col * CHAR_W;
+        let py0 = TERM_PAD_Y + row * LINE_H + GLYPH_Y_INSET;
         let stride = self.window.width as usize;
-        for (gy, &byte) in glyph.iter().enumerate() {
+        for (gy, &byte) in glyph.iter().take(CHAR_H).enumerate() {
             for bit in 0..8usize {
                 let px = px0 + bit;
                 let py = py0 + gy;
@@ -691,10 +712,6 @@ impl TerminalApp {
     }
 
     fn print_prompt(&mut self) {
-        self.set_fg(FG_DIM);
-        let cwd = self.cwd.clone();
-        self.print_str(&cwd);
-        self.print_char(' ');
         self.set_fg(FG_PROMPT);
         self.print_str("cool");
         self.set_fg(FG_ACCENT);
@@ -711,6 +728,14 @@ impl TerminalApp {
         }
     }
 
+    fn refresh_layout(&mut self) {
+        self.cols = text_cols(self.window.width as usize);
+        self.rows = text_rows((self.window.height - TITLE_H).max(0) as usize);
+        self.col = self.col.min(self.cols.saturating_sub(1));
+        self.row = self.row.min(self.rows.saturating_sub(1));
+        self.input_start_col = self.input_start_col.min(self.cols.saturating_sub(1));
+    }
+
     fn bg_at(py: usize) -> u32 {
         match py % 6 {
             0 => TERM_BG_C,
@@ -721,6 +746,14 @@ impl TerminalApp {
 }
 
 // ── Path utilities ────────────────────────────────────────────────────────────
+
+fn text_cols(width: usize) -> usize {
+    (width.saturating_sub(TERM_PAD_X * 2) / CHAR_W).max(1)
+}
+
+fn text_rows(content_h: usize) -> usize {
+    (content_h.saturating_sub(TERM_PAD_Y * 2) / LINE_H).max(1)
+}
 
 fn resolve_path(cwd: &str, input: &str) -> String {
     if input.starts_with('/') {
