@@ -2,10 +2,10 @@ use font8x8::UnicodeFonts;
 
 extern crate alloc;
 use alloc::vec::Vec;
-use alloc::string::String as String2;
+use alloc::string::String;
 
 use crate::fat32::DirEntryInfo;
-use crate::framebuffer::{BLACK, DARK_GRAY, GRAY, LIGHT_CYAN, LIGHT_GRAY, WHITE};
+use crate::framebuffer::{BLACK, DARK_GRAY, LIGHT_CYAN, LIGHT_GRAY, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const FILEMAN_W: i32 = 640;
@@ -15,53 +15,50 @@ const CW: usize = 8;
 const TOOLBAR_H: i32 = 24;
 const COL_HDR_H: i32 = 16;
 const STATUS_H: i32 = 18;
-const NAME_COL_W: i32 = 260;
-const SIZE_COL_W: i32 = 80;
+const NAME_COL_W: i32 = 288;
+const SIZE_COL_W: i32 = 72;
 const ROW_H: i32 = 16;
 
-const FM_BG: u32 = 0x00_02_07_12;
-const FM_PANEL: u32 = 0x00_00_0A_1C;
+const FM_BG: u32        = 0x00_02_07_12;
+const FM_PANEL: u32     = 0x00_00_0A_1C;
 const FM_PANEL_ALT: u32 = 0x00_00_0E_24;
-const FM_BORDER: u32 = 0x00_00_44_88;
-const FM_ACCENT: u32 = 0x00_00_99_FF;
-const FM_ROW_ALT: u32 = 0x00_00_0B_18;
-const FM_ROW_SEL: u32 = 0x00_00_24_46;
-const FM_STATUS: u32 = 0x00_00_08_14;
-const FOLDER_ICON: u32 = 0x00_55_DD_FF;
-const FILE_ICON: u32 = 0x00_AA_FF_CC;
-const TEXT_MUTED: u32 = 0x00_66_AA_DD;
+const FM_BORDER: u32    = 0x00_00_44_88;
+const FM_ACCENT: u32    = 0x00_00_99_FF;
+const FM_ROW_ALT: u32   = 0x00_00_0B_18;
+const FM_ROW_SEL: u32   = 0x00_00_24_46;
+const FM_STATUS: u32    = 0x00_00_08_14;
+const FOLDER_ICON: u32  = 0x00_55_DD_FF;
+const FILE_ICON: u32    = 0x00_AA_FF_CC;
+const TEXT_MUTED: u32   = 0x00_66_AA_DD;
+const COL_SEP: u32      = 0x00_00_22_44;
 
-const COL_SIZE: usize = NAME_COL_W as usize;
-const COL_TYPE: usize = NAME_COL_W as usize + SIZE_COL_W as usize;
+const COL_SIZE: usize = NAME_COL_W as usize + 4;
+const COL_TYPE: usize = NAME_COL_W as usize + SIZE_COL_W as usize + 4;
 
 #[derive(Clone, Copy, PartialEq)]
-enum EntryType {
-    Folder,
-    File,
-    Unknown,
-}
+enum EntryType { Folder, File, Unknown }
 
 pub struct FileManagerApp {
-    pub window: Window,
-    entries: Vec<DirEntryInfo>,
-    path: String2,
-    offset: usize,
-    view_h: i32,
-    selected: Option<usize>,
-    total_rows: usize,
-    pending_open: Option<String2>,
+    pub window:    Window,
+    entries:       Vec<DirEntryInfo>,
+    path:          String,
+    offset:        usize,
+    view_h:        i32,
+    selected:      Option<usize>,
+    total_rows:    usize,
+    pending_open:  Option<String>,
 }
 
 impl FileManagerApp {
     pub fn new(x: i32, y: i32) -> Self {
         let mut app = FileManagerApp {
-            window: Window::new(x, y, FILEMAN_W, FILEMAN_H, "File Manager"),
-            entries: Vec::new(),
-            path: String2::from("/"),
-            offset: 0,
-            view_h: 0,
-            selected: None,
-            total_rows: 0,
+            window:       Window::new(x, y, FILEMAN_W, FILEMAN_H, "File Manager"),
+            entries:      Vec::new(),
+            path:         String::from("/"),
+            offset:       0,
+            view_h:       0,
+            selected:     None,
+            total_rows:   0,
             pending_open: None,
         };
         app.load_dir("/");
@@ -95,6 +92,9 @@ impl FileManagerApp {
                     self.load_dir(&parent);
                 }
             }
+            '\u{F700}' => self.move_selection(-1), // up arrow
+            '\u{F701}' => self.move_selection(1),  // down arrow
+            '\n' => self.open_selected(),
             _ => {}
         }
     }
@@ -116,26 +116,17 @@ impl FileManagerApp {
                     let path_chars = (FILEMAN_W as usize - 44) / CW;
                     let clicked_char = rel_x / CW;
                     let path_start = self.path.len().saturating_sub(path_chars);
-                    let clicked = if path_start + clicked_char < self.path.len() {
-                        Some(path_start + clicked_char)
-                    } else {
-                        None
-                    };
-                    if let Some(pos) = clicked {
-                        self.navigate_to_pos(pos);
+                    if path_start + clicked_char < self.path.len() {
+                        self.navigate_to_pos(path_start + clicked_char);
                     }
                 }
             }
             return;
         }
-        if ly >= content_bottom {
-            return;
-        }
+        if ly >= content_bottom { return; }
 
         let content_y = ly - toolbar_bottom;
-        if content_y < 0 {
-            return;
-        }
+        if content_y < 0 { return; }
         let clicked_row = content_y as usize / ROW_H as usize;
         let entry_idx = self.offset + clicked_row;
         if entry_idx < self.entries.len() {
@@ -146,29 +137,22 @@ impl FileManagerApp {
 
     pub fn handle_dbl_click(&mut self, _lx: i32, ly: i32) {
         let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
-        if ly <= toolbar_bottom || ly >= toolbar_bottom + self.view_h {
-            return;
-        }
+        if ly <= toolbar_bottom || ly >= toolbar_bottom + self.view_h { return; }
         let content_y = ly - toolbar_bottom;
         let clicked_row = content_y as usize / ROW_H as usize;
         let entry_idx = self.offset + clicked_row;
         if entry_idx < self.entries.len() {
-            let abs = self.make_abs(entry_idx);
-            if self.is_dir_idx(entry_idx) {
-                self.load_dir(&abs);
-            } else {
-                self.pending_open = Some(abs);
-            }
+            self.selected = Some(entry_idx);
+            self.open_selected();
         }
     }
 
-    pub fn take_open_request(&mut self) -> Option<String2> {
-        self.pending_open.take()
-    }
+    pub fn take_open_request(&mut self) -> Option<String> { self.pending_open.take() }
 
     pub fn handle_scroll(&mut self, delta: i32) {
         let max_offset = self.entries.len().saturating_sub(self.total_rows);
-        let new_offset = (self.offset as i32 + delta.signum() * 3).clamp(0, max_offset as i32) as usize;
+        let new_offset = (self.offset as i32 + delta.signum() * 3)
+            .clamp(0, max_offset as i32) as usize;
         if new_offset != self.offset {
             self.offset = new_offset;
             self.render();
@@ -187,63 +171,77 @@ impl FileManagerApp {
         }
     }
 
-    fn parent_path(&self) -> String2 {
-        if self.path == "/" {
-            return String2::from("/");
-        }
-        let mut components: Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
-        if !components.is_empty() {
-            components.pop();
-        }
-        if components.is_empty() {
-            String2::from("/")
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    fn move_selection(&mut self, delta: i32) {
+        let len = self.entries.len();
+        if len == 0 { return; }
+        let new_sel = match self.selected {
+            Some(s) => (s as i32 + delta).clamp(0, len as i32 - 1) as usize,
+            None    => if delta > 0 { 0 } else { len - 1 },
+        };
+        self.selected = Some(new_sel);
+        self.ensure_selected_visible();
+        self.render();
+    }
+
+    fn open_selected(&mut self) {
+        let sel = match self.selected { Some(s) => s, None => return };
+        if sel >= self.entries.len() { return; }
+        let abs = self.make_abs(sel);
+        if self.is_dir_idx(sel) {
+            self.load_dir(&abs);
         } else {
-            String2::from("/") + &components.join("/")
+            self.pending_open = Some(abs);
+        }
+    }
+
+    fn ensure_selected_visible(&mut self) {
+        let sel = match self.selected { Some(s) => s, None => return };
+        if sel < self.offset {
+            self.offset = sel;
+        } else if self.total_rows > 0 && sel >= self.offset + self.total_rows {
+            self.offset = sel.saturating_sub(self.total_rows - 1);
+        }
+    }
+
+    fn parent_path(&self) -> String {
+        if self.path == "/" { return String::from("/"); }
+        let mut components: Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
+        if !components.is_empty() { components.pop(); }
+        if components.is_empty() {
+            String::from("/")
+        } else {
+            let mut s = String::from("/");
+            for (i, c) in components.iter().enumerate() {
+                if i > 0 { s.push('/'); }
+                s.push_str(c);
+            }
+            s
         }
     }
 
     fn navigate_to_pos(&mut self, pos: usize) {
-        if self.path == "/" {
-            return;
-        }
-
+        if self.path == "/" { return; }
         let bytes = self.path.as_bytes();
-        if pos >= bytes.len() {
-            return;
-        }
-        if pos == 0 {
-            self.load_dir("/");
-            return;
-        }
-
+        if pos >= bytes.len() { return; }
+        if pos == 0 { self.load_dir("/"); return; }
         let mut end = bytes.len();
         for (idx, &b) in bytes.iter().enumerate().skip(pos) {
-            if b == b'/' {
-                end = idx;
-                break;
-            }
+            if b == b'/' { end = idx; break; }
         }
-
-        if end == 0 {
-            self.load_dir("/");
-            return;
-        }
-
+        if end == 0 { self.load_dir("/"); return; }
         let target = &self.path[..end];
         if !target.is_empty() {
-            let mut normalized = String2::from(target);
-            while normalized.len() > 1 && normalized.ends_with('/') {
-                normalized.pop();
-            }
+            let mut normalized = String::from(target);
+            while normalized.len() > 1 && normalized.ends_with('/') { normalized.pop(); }
             self.load_dir(&normalized);
         }
     }
 
-    fn make_abs(&self, idx: usize) -> String2 {
-        let mut s = String2::from(&self.path);
-        if !s.ends_with('/') && self.path != "/" {
-            s.push('/');
-        }
+    fn make_abs(&self, idx: usize) -> String {
+        let mut s = String::from(&self.path);
+        if !s.ends_with('/') { s.push('/'); }
         s.push_str(&self.entries[idx].name);
         s
     }
@@ -252,75 +250,79 @@ impl FileManagerApp {
         self.entries.get(idx).map(|e| e.is_dir).unwrap_or(false)
     }
 
-    fn entry_type(idx: usize, entries: &[DirEntryInfo]) -> EntryType {
+    fn entry_type(entries: &[DirEntryInfo], idx: usize) -> EntryType {
         match entries.get(idx) {
             Some(e) if e.is_dir => EntryType::Folder,
             Some(_) => EntryType::File,
-            None => EntryType::Unknown,
+            None    => EntryType::Unknown,
         }
     }
 
-    fn format_size(size: u32) -> alloc::string::String {
-        if size == 0 {
-            return alloc::string::String::from("0 B");
-        }
-        let kb = size as u64 / 1024;
-        if kb == 0 {
-            let mut s = alloc::string::String::new();
-            let mut n = size as u64;
-            if n == 0 {
-                s.push('0');
-            } else {
-                let mut digits = [0u8; 12];
-                let mut len = 0usize;
-                while n > 0 {
-                    digits[len] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    len += 1;
-                }
-                for i in (0..len).rev() {
-                    s.push(digits[i] as char);
-                }
-            }
-            s.push_str(" B");
+    fn format_size(size: u32) -> String {
+        fn fmt_u32(n: u32) -> String {
+            if n == 0 { return String::from("0"); }
+            let mut digits = [0u8; 12];
+            let mut len = 0usize;
+            let mut v = n;
+            while v > 0 { digits[len] = b'0' + (v % 10) as u8; v /= 10; len += 1; }
+            let mut s = String::new();
+            for i in (0..len).rev() { s.push(digits[i] as char); }
             s
-        } else {
-            let mut s = alloc::string::String::new();
-            let mut n = kb;
-            if n == 0 {
-                s.push('0');
-            } else {
-                let mut digits = [0u8; 12];
-                let mut len = 0usize;
-                while n > 0 {
-                    digits[len] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    len += 1;
-                }
-                for i in (0..len).rev() {
-                    s.push(digits[i] as char);
-                }
-            }
+        }
+        if size >= 1024 * 1024 {
+            let mut s = fmt_u32(size / (1024 * 1024));
+            s.push_str(" MB");
+            s
+        } else if size >= 1024 {
+            let mut s = fmt_u32(size / 1024);
             s.push_str(" KB");
             s
+        } else {
+            let mut s = fmt_u32(size);
+            s.push_str(" B");
+            s
         }
     }
 
-    fn render(&mut self) {
-        let w = FILEMAN_W as usize;
-        let h = (FILEMAN_H - TITLE_H) as usize;
-
-        for p in self.window.buf.iter_mut() {
-            *p = FM_BG;
+    fn file_ext(name: &str) -> &str {
+        match name.rfind('.') {
+            Some(pos) if pos < name.len() - 1 => &name[pos + 1..],
+            _ => "",
         }
+    }
 
+    fn type_label(name: &str, is_dir: bool) -> &'static str {
+        if is_dir { return "Folder"; }
+        match Self::file_ext(name) {
+            "TXT" | "MD" | "LOG" | "RST" | "CSV" => "Text",
+            "RS"                                   => "Rust",
+            "C" | "H"                              => "C Source",
+            "CPP" | "HPP" | "CC"                   => "C++",
+            "ELF" | "BIN"                          => "Binary",
+            "JSON" | "TOML" | "YAML" | "YML"       => "Config",
+            "SH" | "BASH"                          => "Script",
+            "PY"                                   => "Python",
+            "JS" | "TS"                            => "JavaScript",
+            "ASM" | "S"                            => "Assembly",
+            ""                                     => "File",
+            _                                      => "File",
+        }
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+
+    fn render(&mut self) {
+        let w = self.window.width as usize;
+        let h = ((self.window.height - TITLE_H) as usize).max(0);
         let stride = w;
+
+        for p in self.window.buf.iter_mut() { *p = FM_BG; }
+
         self.view_h = h as i32 - TOOLBAR_H - COL_HDR_H - STATUS_H;
         self.total_rows = (self.view_h as usize) / ROW_H as usize;
 
-        // Sync scroll state so the compositor draws the scrollbar in the right position.
         self.window.scroll.content_h = self.entries.len() as i32 * ROW_H;
-        self.window.scroll.offset = self.offset as i32 * ROW_H;
+        self.window.scroll.offset    = self.offset as i32 * ROW_H;
         self.window.scroll.clamp(self.view_h);
 
         self.draw_toolbar(stride);
@@ -334,9 +336,7 @@ impl FileManagerApp {
         self.fill_rect(stride, 0, 0, FILEMAN_W as usize, 2, FM_ACCENT);
         self.fill_rect(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_PANEL);
         self.draw_rect_border(stride, 30, 3, (FILEMAN_W - 38) as usize, 18, FM_BORDER);
-
         self.draw_up_button(stride, 6, 3);
-
         let path_str = self.path.clone();
         self.draw_address_bar(&path_str, 38, 0, stride);
     }
@@ -344,32 +344,26 @@ impl FileManagerApp {
     fn draw_up_button(&mut self, stride: usize, px: usize, py: usize) {
         self.fill_rect(stride, px, py, 18, 18, FM_PANEL);
         self.draw_rect_border(stride, px, py, 18, 18, FM_BORDER);
-        for gy in 0..8 {
-            for gx in 0..8 {
-                let arrow_x = px + 5 + gx;
-                let arrow_y = py + 5 + gy;
-                let on_arrow = if gy == 0 {
-                    gx == 3 || gx == 4
-                } else if gy == 1 {
-                    gx == 2 || gx == 3 || gx == 4 || gx == 5
-                } else if gy == 2 {
-                    gx == 1 || gx == 2 || gx == 3 || gx == 4 || gx == 5 || gx == 6
-                } else if gy == 3 {
-                    gx <= 7
-                } else {
-                    false
-                };
-                let color = if on_arrow { WHITE } else { continue };
-                let idx = arrow_y * (FILEMAN_W as usize) + arrow_x;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
+        // Up arrow glyph
+        let arrow: [(usize, usize); 14] = [
+            (5,5),(6,5),  (4,6),(5,6),(6,6),(7,6),  (3,7),(4,7),(5,7),(6,7),(7,7),(8,7),
+            (5,8),(6,8),
+        ];
+        for (gx, gy) in arrow {
+            let idx = (py + gy) * FILEMAN_W as usize + (px + gx);
+            if idx < self.window.buf.len() { self.window.buf[idx] = WHITE; }
+        }
+        // Stem
+        for gy in 9..13 {
+            for gx in 5..7 {
+                let idx = (py + gy) * FILEMAN_W as usize + (px + gx);
+                if idx < self.window.buf.len() { self.window.buf[idx] = WHITE; }
             }
         }
     }
 
     fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, _stride: usize) {
-        let avail = (FILEMAN_W as usize - 44) - x0;
+        let avail = (FILEMAN_W as usize - 44).saturating_sub(x0);
         let display = if path_str.len() * CW > avail {
             let start = path_str.len() - avail / CW;
             &path_str[start..]
@@ -383,28 +377,35 @@ impl FileManagerApp {
         let y = TOOLBAR_H as usize;
         self.fill_rect(stride, 0, y, FILEMAN_W as usize, COL_HDR_H as usize, FM_PANEL);
         self.fill_rect(stride, 0, y + COL_HDR_H as usize - 1, FILEMAN_W as usize, 1, FM_BORDER);
+
         self.put_str(8, y + 4, "Name", TEXT_MUTED);
-        self.put_str(COL_SIZE, y + 3, "Size", GRAY);
-        self.put_str(COL_TYPE, y + 3, "Type", GRAY);
+        self.put_str(COL_SIZE, y + 4, "Size", TEXT_MUTED);
+        self.put_str(COL_TYPE, y + 4, "Type", TEXT_MUTED);
+
+        // Column separators
+        self.fill_rect(stride, NAME_COL_W as usize, y, 1, COL_HDR_H as usize, FM_BORDER);
+        self.fill_rect(stride, (NAME_COL_W + SIZE_COL_W) as usize, y, 1, COL_HDR_H as usize, FM_BORDER);
     }
 
     fn draw_entries(&mut self, stride: usize) {
         let y0 = (TOOLBAR_H + COL_HDR_H) as usize;
         let entries_copy: Vec<DirEntryInfo> = self.entries.clone();
+        let dir_count  = entries_copy.iter().filter(|e| e.is_dir).count();
+        let _ = dir_count; // used in status bar only
+
+        if entries_copy.is_empty() {
+            let msg_y = y0 + self.view_h as usize / 2 - 4;
+            self.put_str(FILEMAN_W as usize / 2 - 32, msg_y, "(empty folder)", TEXT_MUTED);
+        }
 
         for (row, entry) in entries_copy.iter().enumerate() {
-            if row < self.offset {
-                continue;
-            }
+            if row < self.offset { continue; }
             let visual_row = row - self.offset;
-            if visual_row >= self.total_rows {
-                break;
-            }
-            let py = y0 + visual_row * ROW_H as usize;
-            let entry_idx_val = row;
+            if visual_row >= self.total_rows { break; }
 
-            let is_selected = self.selected == Some(entry_idx_val);
-            let row_bg = if is_selected {
+            let py = y0 + visual_row * ROW_H as usize;
+            let is_sel = self.selected == Some(row);
+            let row_bg = if is_sel {
                 FM_ROW_SEL
             } else if visual_row % 2 == 0 {
                 FM_BG
@@ -412,27 +413,33 @@ impl FileManagerApp {
                 FM_ROW_ALT
             };
             self.fill_rect(stride, 0, py, FILEMAN_W as usize, ROW_H as usize, row_bg);
-            if is_selected {
+            if is_sel {
                 self.fill_rect(stride, 0, py, 3, ROW_H as usize, FM_ACCENT);
             }
 
-            let et = Self::entry_type(entry_idx_val, &entries_copy);
+            let et = Self::entry_type(&entries_copy, row);
             self.draw_entry_icon(stride, 8, py + 3, et);
+
+            // Column separator lines
+            self.fill_rect(stride, NAME_COL_W as usize, py, 1, ROW_H as usize, COL_SEP);
+            self.fill_rect(stride, (NAME_COL_W + SIZE_COL_W) as usize, py, 1, ROW_H as usize, COL_SEP);
+
             match et {
                 EntryType::Folder => {
-                    self.put_str(24, py + 3, &entry.name, LIGHT_CYAN);
-                    self.put_str(COL_SIZE, py + 3, "", GRAY);
-                    self.put_str(COL_TYPE, py + 3, "Folder", if is_selected { WHITE } else { GRAY });
+                    self.put_str(24, py + 4, &entry.name, if is_sel { WHITE } else { LIGHT_CYAN });
+                    self.put_str(COL_TYPE, py + 4, "Folder", if is_sel { WHITE } else { TEXT_MUTED });
                 }
                 EntryType::File => {
-                    self.put_str(24, py + 3, &entry.name, if is_selected { WHITE } else { LIGHT_GRAY });
+                    self.put_str(24, py + 4, &entry.name, if is_sel { WHITE } else { LIGHT_GRAY });
                     let size_str = Self::format_size(entry.size);
-                    self.put_str(COL_SIZE, py + 3, &size_str, if is_selected { WHITE } else { GRAY });
-                    let ext = Self::file_ext(&entry.name);
-                    self.put_str(COL_TYPE, py + 3, &ext, if is_selected { WHITE } else { GRAY });
+                    self.put_str(COL_SIZE, py + 4, &size_str, if is_sel { WHITE } else { TEXT_MUTED });
+                    let label = Self::type_label(&entry.name, false);
+                    self.put_str(COL_TYPE, py + 4, label, if is_sel { WHITE } else { TEXT_MUTED });
                 }
                 EntryType::Unknown => {}
             }
+
+            // Row divider
             self.fill_rect(stride, 8, py + ROW_H as usize - 1, FILEMAN_W as usize - 16, 1, DARK_GRAY);
         }
     }
@@ -442,30 +449,35 @@ impl FileManagerApp {
         self.fill_rect(stride, 0, y, FILEMAN_W as usize, STATUS_H as usize, FM_STATUS);
         self.fill_rect(stride, 0, y, FILEMAN_W as usize, 1, FM_BORDER);
 
-        let mut left = String2::from("items ");
-        let mut count_buf = [0u8; 20];
-        let count = self.entries.len();
-        let mut n = count;
-        let mut i = 20usize;
-        if n == 0 {
-            i -= 1;
-            count_buf[i] = b'0';
-        } else {
-            while n > 0 {
-                i -= 1;
-                count_buf[i] = b'0' + (n % 10) as u8;
-                n /= 10;
-            }
-        }
-        if let Ok(count_str) = core::str::from_utf8(&count_buf[i..]) {
-            left.push_str(count_str);
-        }
+        // Left: item counts
+        let n_dirs  = self.entries.iter().filter(|e| e.is_dir).count();
+        let n_files = self.entries.len() - n_dirs;
+        let mut left = String::new();
+        fmt_push_u(&mut left, n_dirs as u64);
+        left.push_str(" folders  ");
+        fmt_push_u(&mut left, n_files as u64);
+        left.push_str(" files");
         self.put_str(8, y + 5, &left, TEXT_MUTED);
 
-        if let Some(selected) = self.selected.and_then(|idx| self.entries.get(idx)) {
-            let label = if selected.is_dir { "selected folder" } else { "selected file" };
-            self.put_str(FILEMAN_W as usize - 140, y + 5, label, LIGHT_GRAY);
+        // Right: selected item info
+        if let Some(idx) = self.selected {
+            if let Some(e) = self.entries.get(idx) {
+                let mut right = String::new();
+                right.push_str(&e.name);
+                if !e.is_dir {
+                    right.push_str("  ");
+                    let sz = Self::format_size(e.size);
+                    right.push_str(&sz);
+                }
+                let right_x = FILEMAN_W as usize - right.len() * CW - 10;
+                self.put_str(right_x, y + 5, &right, LIGHT_GRAY);
+            }
         }
+
+        // Keyboard hints (centre)
+        let hint = "^/v select  Enter open  BS up";
+        let hint_x = (FILEMAN_W as usize - hint.len() * CW) / 2;
+        self.put_str(hint_x, y + 5, hint, FM_BORDER);
     }
 
     fn draw_entry_icon(&mut self, stride: usize, x: usize, y: usize, et: EntryType) {
@@ -473,42 +485,30 @@ impl FileManagerApp {
             EntryType::Folder => {
                 self.fill_rect(stride, x + 1, y, 6, 2, FOLDER_ICON);
                 self.fill_rect(stride, x, y + 2, 10, 6, FOLDER_ICON);
-                self.fill_rect(stride, x + 1, y + 3, 8, 4, blend_color(FOLDER_ICON, BLACK, 140));
+                self.fill_rect(stride, x + 1, y + 3, 8, 4, blend(FOLDER_ICON, BLACK, 140));
             }
             EntryType::File => {
                 self.fill_rect(stride, x + 1, y, 8, 10, FILE_ICON);
-                self.draw_rect_border(stride, x + 1, y, 8, 10, blend_color(FILE_ICON, BLACK, 120));
+                self.draw_rect_border(stride, x + 1, y, 8, 10, blend(FILE_ICON, BLACK, 120));
                 self.fill_rect(stride, x + 5, y, 4, 3, WHITE);
             }
             EntryType::Unknown => {}
         }
     }
 
-    fn file_ext(name: &str) -> alloc::string::String {
-        match name.rfind('.') {
-            Some(pos) if pos < name.len() - 1 => {
-                let ext = &name[pos + 1..];
-                alloc::string::String::from(ext)
-            }
-            _ => alloc::string::String::from("File"),
-        }
-    }
-
     fn put_str(&mut self, px: usize, py: usize, s: &str, color: u32) {
-        let stride = FILEMAN_W as usize;
-        let max_chars = (FILEMAN_W as usize - px) / CW;
+        let stride = self.window.width as usize;
+        let max_chars = stride.saturating_sub(px) / CW;
         for (ci, ch) in s.chars().take(max_chars).enumerate() {
             let glyph = font8x8::BASIC_FONTS
                 .get(ch)
                 .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
             for (gi, &byte) in glyph.iter().enumerate() {
                 for bit in 0..8 {
-                    if byte & (1 << bit) == 0 {
-                        continue;
-                    }
-                    let px = px + ci * CW + bit;
-                    let py = py + gi;
-                    let idx = py * stride + px;
+                    if byte & (1 << bit) == 0 { continue; }
+                    let x = px + ci * CW + bit;
+                    let y = py + gi;
+                    let idx = y * stride + x;
                     if idx < self.window.buf.len() {
                         self.window.buf[idx] = color;
                     }
@@ -518,29 +518,18 @@ impl FileManagerApp {
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        for row in y..(y + h).min(FILEMAN_H as usize) {
+        let max_h = if stride > 0 { self.window.buf.len() / stride } else { 0 };
+        for row in y..(y + h).min(max_h) {
             let base = row * stride;
-            for col in x..(x + w).min(FILEMAN_W as usize) {
+            for col in x..(x + w).min(stride) {
                 let idx = base + col;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
+                if idx < self.window.buf.len() { self.window.buf[idx] = color; }
             }
         }
     }
 
-    fn draw_rect_border(
-        &mut self,
-        stride: usize,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-        color: u32,
-    ) {
-        if w == 0 || h == 0 {
-            return;
-        }
+    fn draw_rect_border(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        if w == 0 || h == 0 { return; }
         self.fill_rect(stride, x, y, w, 1, color);
         self.fill_rect(stride, x, y + h - 1, w, 1, color);
         self.fill_rect(stride, x, y, 1, h, color);
@@ -548,16 +537,21 @@ impl FileManagerApp {
     }
 }
 
-fn blend_color(a: u32, b: u32, t: u32) -> u32 {
+fn blend(a: u32, b: u32, t: u32) -> u32 {
     let lerp = |ca: u32, cb: u32| -> u32 {
-        if cb >= ca {
-            (ca + (cb - ca) * t / 255).min(255)
-        } else {
-            ca - (ca - cb) * t / 255
-        }
+        if cb >= ca { (ca + (cb - ca) * t / 255).min(255) }
+        else        { ca - (ca - cb) * t / 255 }
     };
     let r = lerp((a >> 16) & 0xFF, (b >> 16) & 0xFF);
-    let g = lerp((a >> 8) & 0xFF, (b >> 8) & 0xFF);
+    let g = lerp((a >>  8) & 0xFF, (b >>  8) & 0xFF);
     let bl = lerp(a & 0xFF, b & 0xFF);
     (r << 16) | (g << 8) | bl
+}
+
+fn fmt_push_u(s: &mut String, mut n: u64) {
+    if n == 0 { s.push('0'); return; }
+    let mut buf = [0u8; 20];
+    let mut i = 20usize;
+    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+    for &b in &buf[i..] { s.push(b as char); }
 }

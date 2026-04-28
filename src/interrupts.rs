@@ -255,9 +255,17 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
-            if let DecodedKey::Unicode(c) = key {
-                // Push to the lock-free queue — never touch WM.lock() from
-                // interrupt context (compose() may already hold it).
+            // Push to the lock-free queue — never touch WM.lock() from
+            // interrupt context (compose() may already hold it).
+            let ch = match key {
+                DecodedKey::Unicode(c) => Some(c),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowUp)    => Some('\u{F700}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowDown)  => Some('\u{F701}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowLeft)  => Some('\u{F702}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowRight) => Some('\u{F703}'),
+                _ => None,
+            };
+            if let Some(c) = ch {
                 crate::keyboard::push(c);
                 crate::wm::request_repaint();
             }

@@ -15,9 +15,8 @@ use crate::wm::window::{Window, TITLE_H};
 
 const TASKBAR_H: i32 = 40; // Win11: 40px tall taskbar
 const START_BTN_W: i32 = 118; // home/start control hit zone
-const TASKBAR_HOME_W: i32 = 84; // desktop summary capsule
 const TASKBAR_CLOCK_W: i32 = 176; // tray + time readout + brand
-const TASKBAR_TRAY_W: i32 = 54;
+const TASKBAR_TRAY_W: i32 = 70;
 const SHOW_DESKTOP_W: i32 = 18;
 const BUTTON_W: i32 = 160;
 const WIN_BTN_W: i32 = crate::wm::window::WIN_BTN_W;
@@ -71,7 +70,6 @@ const ICON_TXT_ACC: u32 = 0x00_00_99_FF; // #0099FF  blue phosphor
 const ICON_COL_BG: u32 = 0x00_10_00_1E; // colour — dark purple-black
 const ICON_COL_ACC: u32 = 0x00_AA_44_FF; // #AA44FF  violet phosphor
 
-const ICON_SEL: u32 = 0x00_00_33_77;
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -173,39 +171,12 @@ impl DesktopIcon {
 }
 
 fn desktop_icons() -> [DesktopIcon; 5] {
-    // Column stride: ICON_SIZE(64) + 104px gap = 168 — gives 8-char label room before next tile.
-    // Row stride:    ICON_SIZE(64) + ICON_LABEL_H(14) + 20px gap = 98.
     [
-        DesktopIcon {
-            x: 20,
-            y: 20,
-            label: "Terminal",
-            app: "Terminal",
-        },
-        DesktopIcon {
-            x: 188,
-            y: 20,
-            label: "Sys Mon",
-            app: "System Mon",
-        },
-        DesktopIcon {
-            x: 20,
-            y: 118,
-            label: "Text View",
-            app: "Text Viewer",
-        },
-        DesktopIcon {
-            x: 188,
-            y: 118,
-            label: "Color Pick",
-            app: "Color Pick",
-        },
-        DesktopIcon {
-            x: 356,
-            y: 20,
-            label: "File Mgr",
-            app: "File Manager",
-        },
+        DesktopIcon { x: 20,  y: 20,  label: "Terminal", app: "Terminal"    },
+        DesktopIcon { x: 188, y: 20,  label: "Monitor",  app: "System Mon"  },
+        DesktopIcon { x: 356, y: 20,  label: "Files",    app: "File Manager"},
+        DesktopIcon { x: 20,  y: 118, label: "Viewer",   app: "Text Viewer" },
+        DesktopIcon { x: 188, y: 118, label: "Colors",   app: "Color Pick"  },
     ]
 }
 
@@ -217,7 +188,6 @@ const START_PINNED_APPS: [&str; 5] = [
     "File Manager",
 ];
 
-const START_QUICK_APPS: [&str; 3] = ["Terminal", "File Manager", "System Monitor"];
 
 fn canonical_app_title(name: &str) -> &str {
     match name {
@@ -781,13 +751,23 @@ impl WindowManager {
                 }
 
                 if my_i >= taskbar_y {
+                    // Tray icon click → open System Monitor
+                    let tray_clk_x = sw as i32 - TASKBAR_CLOCK_W;
+                    let t_gap = 20i32;
+                    let t_start = tray_clk_x + (TASKBAR_TRAY_W - (t_gap * 2 + 13)) / 2;
+                    if mx_i >= t_start && mx_i < t_start + t_gap * 2 + 14 {
+                        let off = self.windows.len() as i32 * 16;
+                        let wx = (10 + off).min(sw as i32 - 540);
+                        let wy = (10 + off).min(taskbar_y - 310);
+                        self.launch_app("System Monitor", wx, wy);
+                        crate::wm::request_repaint();
+                    }
                     let show_desktop_x = sw as i32 - TASKBAR_CLOCK_W - SHOW_DESKTOP_W - 8;
                     if mx_i >= show_desktop_x && mx_i < show_desktop_x + SHOW_DESKTOP_W {
                         self.toggle_show_desktop();
                         crate::wm::request_repaint();
                     } else {
-                        let taskbar_home_x = START_BTN_W + 6;
-                        let taskbar_btn_x0 = taskbar_home_x + TASKBAR_HOME_W + 10;
+                        let taskbar_btn_x0 = START_BTN_W + 8;
                         if mx_i >= taskbar_btn_x0 && mx_i < show_desktop_x - 6 {
                             let btn_idx = ((mx_i - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
                             let bx = taskbar_btn_x0 + btn_idx as i32 * (BUTTON_W + 6);
@@ -855,14 +835,11 @@ impl WindowManager {
             let menu_w = 460i32;
             let menu_h = 320i32;
             let left_w = 240i32;
-            let right_w = menu_w - left_w;
             let bottom_h = 36i32;
             let left_hdr_h = 32i32;
             let menu_x = 2i32;
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
-            let rc_x = menu_x + left_w + 1;
-            let rc_w = right_w - 2;
             if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
                 // Left column — app list rows
                 if mx_i < menu_x + left_w {
@@ -879,26 +856,6 @@ impl WindowManager {
                             self.launch_app(START_PINNED_APPS[item_idx], wx, wy);
                             self.start_menu_open = false;
                             crate::wm::request_repaint();
-                        }
-                    }
-                } else {
-                    let quick_y = bar_y - 66;
-                    let quick_w = (rc_w - 24) / 3;
-                    let quick_h = 52;
-                    for (i, &app_name) in START_QUICK_APPS.iter().enumerate() {
-                        let qx = rc_x + 8 + i as i32 * (quick_w + 4);
-                        if mx_i >= qx
-                            && mx_i < qx + quick_w
-                            && my_i >= quick_y
-                            && my_i < quick_y + quick_h
-                        {
-                            let off = self.windows.len() as i32 * 16;
-                            let wx = (24 + off).min(sw as i32 - 220);
-                            let wy = (24 + off).min(bar_y - 120);
-                            self.launch_app(app_name, wx, wy);
-                            self.start_menu_open = false;
-                            crate::wm::request_repaint();
-                            break;
                         }
                     }
                 }
@@ -964,11 +921,11 @@ impl WindowManager {
 
             // ── Desktop icons — drawn BEFORE windows so windows can cover them ────
             let icon_data: [(u32, u32); 5] = [
-                (ICON_TERM_BG, ICON_TERM_ACC),
-                (ICON_MON_BG, ICON_MON_ACC),
-                (ICON_TXT_BG, ICON_TXT_ACC),
-                (ICON_COL_BG, ICON_COL_ACC),
-                (0x00_00_0E_20, 0x00_55_DD_FF),
+                (ICON_TERM_BG, ICON_TERM_ACC),      // Terminal
+                (ICON_MON_BG,  ICON_MON_ACC),       // Monitor
+                (0x00_00_0E_20, 0x00_55_DD_FF),     // Files (File Manager)
+                (ICON_TXT_BG,  ICON_TXT_ACC),       // Viewer (Text Viewer)
+                (ICON_COL_BG,  ICON_COL_ACC),       // Colors (Color Picker)
             ];
             for (i, icon) in desktop_icons().iter().enumerate() {
                 let selected = self.icon_selected == Some(i);
@@ -1057,34 +1014,37 @@ impl WindowManager {
                 );
 
                 // ── Per-app pixel-art icon ────────────────────────────────────────
-match i {
+                match i {
                     0 => {
-                        // Terminal — pixelated ">" prompt + underscore cursor (scaled for 52px)
+                        // Terminal — ">" prompt + underscore cursor
                         let bx = icon.x + 8;
                         let by = icon.y + 14;
-                        // Top arm of >
-                        s_fill(s, sw, bx, by, 6, 3, icon_acc);
-                        s_fill(s, sw, bx + 6, by + 3, 6, 3, icon_acc);
-                        // Apex
-                        s_fill(s, sw, bx + 12, by + 6, 6, 3, icon_acc);
-                        // Bottom arm of >
-                        s_fill(s, sw, bx + 6, by + 9, 6, 3, icon_acc);
-                        s_fill(s, sw, bx, by + 12, 6, 3, icon_acc);
-                        // Cursor underscore
+                        s_fill(s, sw, bx,      by,      6, 3, icon_acc);
+                        s_fill(s, sw, bx + 6,  by + 3,  6, 3, icon_acc);
+                        s_fill(s, sw, bx + 12, by + 6,  6, 3, icon_acc);
+                        s_fill(s, sw, bx + 6,  by + 9,  6, 3, icon_acc);
+                        s_fill(s, sw, bx,      by + 12, 6, 3, icon_acc);
                         s_fill(s, sw, icon.x + 8, icon.y + 38, 22, 2, icon_acc);
                     }
                     1 => {
-                        // System Monitor — bar chart (scaled for 52px)
+                        // Monitor — bar chart
                         let base_y = icon.y + 44;
                         let bar_w = 8i32;
-                        s_fill(s, sw, icon.x + 6, base_y - 10, bar_w, 10, icon_acc);
+                        s_fill(s, sw, icon.x + 6,  base_y - 10, bar_w, 10, icon_acc);
                         s_fill(s, sw, icon.x + 18, base_y - 26, bar_w, 26, icon_acc);
                         s_fill(s, sw, icon.x + 30, base_y - 18, bar_w, 18, icon_acc);
-                        // Baseline
-                        s_fill(s, sw, icon.x + 4, base_y, 36, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 4,  base_y,      36,    2,  icon_acc);
                     }
                     2 => {
-                        // Text Viewer — document page (scaled for 52px)
+                        // Files — folder with content lines
+                        s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
+                        s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
+                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14,  8, icon_acc);
+                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28,  2, 0x00_00_0B_20);
+                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28,  2, 0x00_00_0B_20);
+                    }
+                    3 => {
+                        // Viewer — document page with text lines
                         draw_rect_border(s, sw, icon.x + 8, icon.y + 6, 36, 40, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 10, 28, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 16, 22, 2, icon_acc);
@@ -1092,22 +1052,13 @@ match i {
                         s_fill(s, sw, icon.x + 11, icon.y + 28, 16, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 34, 22, 2, icon_acc);
                     }
-                    3 => {
-                        // Color Picker — four colour quadrants (scaled for 52px)
-                        s_fill(s, sw, icon.x + 6, icon.y + 8, 16, 16, 0x00_FF_50_50); // red
-                        s_fill(s, sw, icon.x + 26, icon.y + 8, 16, 16, 0x00_50_FF_50); // green
-                        s_fill(s, sw, icon.x + 6, icon.y + 28, 16, 16, 0x00_50_50_FF); // blue
-                        s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50); // yellow
-                                                                                         // Central accent pip
-                        s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
-                    }
                     4 => {
-                        // File Manager — folder with open tab and content lines
-                        s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
-                        s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
-                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14, 8, icon_acc);
-                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28, 2, 0x00_00_0B_20);
-                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28, 2, 0x00_00_0B_20);
+                        // Colors — four colour quadrants
+                        s_fill(s, sw, icon.x + 6,  icon.y + 8,  16, 16, 0x00_FF_50_50);
+                        s_fill(s, sw, icon.x + 26, icon.y + 8,  16, 16, 0x00_50_FF_50);
+                        s_fill(s, sw, icon.x + 6,  icon.y + 28, 16, 16, 0x00_50_50_FF);
+                        s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50);
+                        s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
                     }
                     _ => unreachable!(),
                 }
@@ -1129,76 +1080,29 @@ match i {
                     s_fill(s, sw, icon.x + ICON_SIZE, icon.y, 1, ICON_SIZE, ring);
                 }
 
-                let led_x = icon.x + ICON_SIZE - 11;
-                let led_y = icon.y + 7;
-                let led_bg = if app_open {
-                    blend_color(icon_acc, WHITE, 48)
-                } else if hot {
-                    0x00_00_18_34
-                } else {
-                    0x00_00_09_16
-                };
-                s_fill(s, sw, led_x, led_y, 8, 8, led_bg);
-                draw_rect_border(
-                    s,
-                    sw,
-                    led_x,
-                    led_y,
-                    8,
-                    8,
-                    if app_open { icon_acc } else { 0x00_00_33_55 },
-                );
-                if app_open {
-                    s_fill(s, sw, led_x + 2, led_y + 2, 4, 4, icon_acc);
-                }
 
-                // Label below icon — centred under tile with readable pill background
-                // Uses 8 px (1×) font so labels stay compact under the 64 px tile.
+                // Label below icon — plain centred text, no box
                 let label_y = icon.y + ICON_SIZE + 8;
-                let label_w = icon.label.len() as i32 * 8; // 8px per char at 1× scale
+                let label_w = icon.label.len() as i32 * 8;
                 let label_x = (icon.x + (ICON_SIZE - label_w) / 2).max(1);
-                let label_bg = if selected {
-                    ICON_SEL
+                let label_fg = if selected {
+                    0x00_EE_FF_FF
+                } else if app_open {
+                    blend_color(icon_acc, 0x00_DD_FF_FF, 90)
                 } else if hot {
-                    blend_color(0x00_00_04_0E, icon_acc, 180)
+                    0x00_AA_DD_FF
                 } else {
-                    0x00_00_04_0E
+                    0x00_77_BB_EE
                 };
-                // Pill — sized for 8 px tall glyphs
-                s_fill(
-                    s,
-                    sw,
-                    label_x - 3,
-                    label_y - 2,
-                    label_w + 6,
-                    12, // 8px glyph + 2px pad top + 2px pad bottom
-                    label_bg,
-                );
-                draw_rect_border(s, sw, label_x - 3, label_y - 2, label_w + 6, 12, 0x00_00_22_44);
-                s_fill(
-                    s,
-                    sw,
-                    label_x - 1,
-                    label_y + 1,
-                    2,
-                    4,
-                    if app_open { icon_acc } else { 0x00_00_22_44 },
-                );
                 s_draw_str_small(
                     s,
                     sw,
-                    label_x + 3,
+                    label_x,
                     label_y,
                     icon.label,
-                    if selected {
-                        0x00_CC_EE_FF
-                    } else if app_open {
-                        blend_color(icon_acc, 0x00_DD_FF_FF, 90)
-                    } else {
-                        0x00_88_CC_FF
-                    },
-                    label_bg,
-                    label_x + label_w + 2,
+                    label_fg,
+                    0, // transparent bg — draws over wallpaper
+                    label_x + label_w + 4,
                 );
             }
 
@@ -1310,93 +1214,7 @@ match i {
                 start_bg,
                 pill_x + pill_w - 18,
             );
-            let badge_col = if self.windows.is_empty() {
-                0x00_00_22_44
-            } else if start_active {
-                WHITE
-            } else {
-                0x00_00_FF_AA
-            };
-            s_fill(s, sw, pill_x + pill_w - 11, pill_y + 10, 6, 6, badge_col);
 
-            // Taskbar separators and desktop capsule.
-            let sep_x = START_BTN_W + 2;
-            s_fill(s, sw, sep_x, taskbar_y + 3, 1, TASKBAR_H - 6, 0x00_00_88_CC);
-            s_fill(s, sw, sep_x + 1, taskbar_y + 3, 1, TASKBAR_H - 6, 0x00_00_22_44);
-
-            let taskbar_home_x = sep_x + 6;
-            let taskbar_home_y = taskbar_y + 6;
-            let taskbar_home_h = TASKBAR_H - 12;
-            let home_hot = mx_i >= taskbar_home_x
-                && mx_i < taskbar_home_x + TASKBAR_HOME_W
-                && my_i >= taskbar_home_y
-                && my_i < taskbar_home_y + taskbar_home_h;
-            let live_windows = self.windows.iter().filter(|w| !w.window().minimized).count();
-            let home_bg = if home_hot {
-                0x00_00_14_30
-            } else {
-                0x00_00_08_18
-            };
-            s_fill(
-                s,
-                sw,
-                taskbar_home_x,
-                taskbar_home_y,
-                TASKBAR_HOME_W,
-                taskbar_home_h,
-                home_bg,
-            );
-            draw_rect_border(
-                s,
-                sw,
-                taskbar_home_x,
-                taskbar_home_y,
-                TASKBAR_HOME_W,
-                taskbar_home_h,
-                0x00_00_33_66,
-            );
-            s_fill(
-                s,
-                sw,
-                taskbar_home_x + 4,
-                taskbar_home_y + 4,
-                3,
-                taskbar_home_h - 8,
-                if live_windows > 0 { ACCENT } else { 0x00_00_22_44 },
-            );
-            s_draw_str_small(
-                s,
-                sw,
-                taskbar_home_x + 12,
-                taskbar_home_y + 4,
-                "DESKTOP",
-                0x00_CC_EE_FF,
-                home_bg,
-                taskbar_home_x + TASKBAR_HOME_W - 16,
-            );
-            s_draw_str_small(
-                s,
-                sw,
-                taskbar_home_x + 12,
-                taskbar_home_y + 14,
-                if live_windows > 0 { "ACTIVE" } else { "IDLE" },
-                if live_windows > 0 {
-                    0x00_00_FF_AA
-                } else {
-                    0x00_44_88_BB
-                },
-                home_bg,
-                taskbar_home_x + TASKBAR_HOME_W - 16,
-            );
-            s_fill(
-                s,
-                sw,
-                taskbar_home_x + TASKBAR_HOME_W - 12,
-                taskbar_home_y + 8,
-                6,
-                6,
-                if live_windows > 0 { ACCENT_HOV } else { 0x00_00_22_44 },
-            );
 
             // ── Start menu — shell hub with pinned and quick-launch areas ─────────
             if self.start_menu_open {
@@ -1483,7 +1301,7 @@ match i {
                     s,
                     sw,
                     menu_x + 10,
-                    left_hdr_y + 12,
+                    left_hdr_y + 8,
                     "PINNED",
                     0x00_00_EE_FF,
                     left_hdr_bg,
@@ -1492,10 +1310,10 @@ match i {
                 s_draw_str_small(
                     s,
                     sw,
-                    menu_x + 72,
-                    left_hdr_y + 12,
-                    "daily stack",
-                    0x00_44_88_BB,
+                    menu_x + 10,
+                    left_hdr_y + 20,
+                    "quick access",
+                    0x00_33_66_88,
                     left_hdr_bg,
                     menu_x + left_w - 12,
                 );
@@ -1574,11 +1392,6 @@ match i {
                     let row_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_07_18 };
                     let acc = window_accent(name);
                     let glyph = window_glyph(name);
-                    let app_open = self
-                        .windows
-                        .iter()
-                        .any(|w| w.window().title == canonical_app_title(name));
-
                     if is_hov {
                         s_fill(s, sw, menu_x + 1, iy, left_w - 1, item_h - 1, row_bg);
                         s_fill(s, sw, menu_x + 1, iy + 8, 3, item_h - 17, ACCENT);
@@ -1599,15 +1412,6 @@ match i {
                         if is_hov { WHITE } else { 0x00_AA_DD_FF },
                         row_bg,
                         menu_x + left_w - 24,
-                    );
-                    s_fill(
-                        s,
-                        sw,
-                        menu_x + left_w - 16,
-                        iy + 16,
-                        6,
-                        6,
-                        if app_open { acc } else { 0x00_00_22_44 },
                     );
                     if i + 1 < START_PINNED_APPS.len() {
                         s_fill(
@@ -1689,15 +1493,6 @@ match i {
                     banner_bg,
                     banner_x + banner_w - 10,
                 );
-                s_fill(
-                    s,
-                    sw,
-                    banner_x + banner_w - 20,
-                    banner_y + 10,
-                    10,
-                    10,
-                    if usb_live { 0x00_00_FF_AA } else { 0x00_00_33_55 },
-                );
 
                 let chip_y = banner_y + 56;
                 let chip_w = 54;
@@ -1743,21 +1538,22 @@ match i {
                     chip3_x + chip_w - 4,
                 );
 
-                const SYS_LINKS: [&str; 7] = [
+                const SYS_LINKS: [&str; 9] = [
                     "Documents",
+                    "Downloads",
                     "Pictures",
-                    "Settings",
-                    "System",
-                    "Network",
-                    "Control Panel",
-                    "Help",
+                    "Music",
+                    "Videos",
+                    "Desktop",
+                    "Home",
+                    "Shared",
+                    "Trash",
                 ];
-                let quick_y = bar_y - 66;
                 let link_h = 24i32;
                 let links_y = banner_y + banner_h + 8;
                 for (i, &link_name) in SYS_LINKS.iter().enumerate() {
                     let ly = links_y + i as i32 * link_h;
-                    if ly + link_h > quick_y - 8 {
+                    if ly + link_h > bar_y - 8 {
                         break;
                     }
                     let is_hov =
@@ -1778,60 +1574,10 @@ match i {
                         rc_x + rc_w - 4,
                     );
                 }
-
-                s_draw_str_small(
-                    s,
-                    sw,
-                    rc_x + 8,
-                    quick_y - 12,
-                    "Quick Launch",
-                    0x00_00_EE_FF,
-                    0x00_00_05_12,
-                    rc_x + rc_w - 8,
-                );
-                let quick_w = (rc_w - 24) / 3;
-                let quick_h = 52;
-                for (i, &app_name) in START_QUICK_APPS.iter().enumerate() {
-                    let qx = rc_x + 8 + i as i32 * (quick_w + 4);
-                    let qhot =
-                        mx_i >= qx && mx_i < qx + quick_w && my_i >= quick_y && my_i < quick_y + quick_h;
-                    let qbg = if qhot { 0x00_00_14_30 } else { 0x00_00_08_18 };
-                    let acc = window_accent(app_name);
-                    let glyph = window_glyph(app_name);
-                    let label = match app_name {
-                        "Terminal" => "Shell",
-                        "File Manager" => "Files",
-                        "System Monitor" => "Stats",
-                        _ => "App",
-                    };
-                    s_fill(s, sw, qx, quick_y, quick_w, quick_h, qbg);
-                    draw_rect_border(s, sw, qx, quick_y, quick_w, quick_h, 0x00_00_33_66);
-                    s_fill(s, sw, qx, quick_y, quick_w, 3, acc);
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        qx + (quick_w - 16) / 2,
-                        quick_y + 16,
-                        glyph,
-                        acc,
-                        qbg,
-                        qx + quick_w - 4,
-                    );
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        qx + 8,
-                        quick_y + 36,
-                        label,
-                        if qhot { WHITE } else { 0x00_88_CC_FF },
-                        qbg,
-                        qx + quick_w - 4,
-                    );
-                }
             }
 
             // ── Taskbar window tabs — icon-first strip ───────────────────────────
-            let taskbar_btn_x0 = taskbar_home_x + TASKBAR_HOME_W + 10;
+            let taskbar_btn_x0 = START_BTN_W + 8;
             let show_desktop_x = sw as i32 - TASKBAR_CLOCK_W - SHOW_DESKTOP_W - 8;
             let hovered_btn = if mx_i >= taskbar_btn_x0
                 && mx_i < show_desktop_x - 6
@@ -1906,7 +1652,7 @@ match i {
                 draw_rect_border(s, sw, icon_x, icon_y, 16, 16, blend_color(accent, WHITE, 80));
                 s_draw_str_small(s, sw, icon_x + 3, icon_y + 4, glyph, accent, icon_bg, icon_x + 14);
 
-                let trunc = if title.len() > 9 { &title[..9] } else { title };
+                let trunc = if title.len() > 14 { &title[..14] } else { title };
                 let text_w = trunc.len() as i32 * 8;
                 let text_x = icon_x + 24;
                 s_draw_str_small(
@@ -1927,35 +1673,6 @@ match i {
                 );
             }
 
-            let desk_hot = mx_i >= show_desktop_x
-                && mx_i < show_desktop_x + SHOW_DESKTOP_W
-                && my_i >= taskbar_y + 4
-                && my_i < taskbar_y + TASKBAR_H - 4;
-            let desk_bg = if desk_hot { 0x00_00_14_30 } else { 0x00_00_08_18 };
-            s_fill(
-                s,
-                sw,
-                show_desktop_x,
-                taskbar_y + 4,
-                SHOW_DESKTOP_W,
-                TASKBAR_H - 8,
-                desk_bg,
-            );
-            draw_rect_border(
-                s,
-                sw,
-                show_desktop_x,
-                taskbar_y + 4,
-                SHOW_DESKTOP_W,
-                TASKBAR_H - 8,
-                if desk_hot { 0x00_00_55_99 } else { 0x00_00_33_66 },
-            );
-            let desk_col = if live_windows == 0 { 0x00_00_FF_AA } else { 0x00_44_88_BB };
-            s_fill(s, sw, show_desktop_x + 5, taskbar_y + 10, 2, 18, desk_col);
-            s_fill(s, sw, show_desktop_x + 9, taskbar_y + 10, 2, 18, desk_col);
-            s_fill(s, sw, show_desktop_x + 5, taskbar_y + 12, 6, 2, desk_col);
-            s_fill(s, sw, show_desktop_x + 5, taskbar_y + 24, 6, 2, desk_col);
-
             // ── Clock / system tray — refined phosphor readout ────────────────────
             let clock_sep_x = sw as i32 - TASKBAR_CLOCK_W - 4;
             // Thin left separator
@@ -1971,13 +1688,7 @@ match i {
 
             let clk_x = clock_sep_x + 4;
             let clk_w = TASKBAR_CLOCK_W - 4;
-            let tray_box_x = clk_x + 4;
-            let tray_box_y = taskbar_y + 5;
-            let tray_box_w = TASKBAR_TRAY_W - 10;
-            let tray_box_h = TASKBAR_H - 10;
-            let tray_x = tray_box_x + 4;
-            let tray_y = tray_box_y + 6;
-            let tray_icon_gap = 14;
+            let tray_icon_gap = 20i32;
             let clock_box_x = clk_x + TASKBAR_TRAY_W;
             let clock_box_w = clk_w - TASKBAR_TRAY_W;
             let usb_lines = crate::usb::status_lines();
@@ -1994,42 +1705,29 @@ match i {
             };
             let kbd_col = if usb_keyboard { 0x00_00_FF_88 } else { 0x00_33_55_44 };
             let mouse_col = if usb_mouse { 0x00_FF_DD_55 } else { 0x00_55_55_44 };
-            let tray_bg = if usb_active {
-                0x00_00_12_28
-            } else if usb_present {
-                0x00_00_0C_1F
-            } else {
-                0x00_00_07_16
-            };
-            s_fill(s, sw, tray_box_x, tray_box_y, tray_box_w, tray_box_h, tray_bg);
-            draw_rect_border(s, sw, tray_box_x, tray_box_y, tray_box_w, tray_box_h, 0x00_00_33_66);
 
-            // Clock hover tint
-            let clk_hot = mx_i >= clk_x
-                && mx_i < clk_x + clk_w
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H;
-            let clk_bg = 0x00_00_00_00; // fully transparent — glass shows through
+            // Center three icons horizontally in tray zone, vertically in taskbar.
+            let icon_span = tray_icon_gap * 2 + 13;
+            let tray_x = clk_x + (TASKBAR_TRAY_W - icon_span) / 2;
+            let tray_y = taskbar_y + (TASKBAR_H - 12) / 2;
+            let usb_hot = mx_i >= tray_x && mx_i < tray_x + 12
+                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
+            let kbd_hot = mx_i >= tray_x + tray_icon_gap && mx_i < tray_x + tray_icon_gap + 14
+                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
+            let mse_hot = mx_i >= tray_x + tray_icon_gap * 2 && mx_i < tray_x + tray_icon_gap * 2 + 14
+                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
+            if usb_hot { s_fill(s, sw, tray_x - 3, taskbar_y + 3, 17, TASKBAR_H - 6, 0x00_00_18_38); }
+            if kbd_hot { s_fill(s, sw, tray_x + tray_icon_gap - 3, taskbar_y + 3, 20, TASKBAR_H - 6, 0x00_00_18_38); }
+            if mse_hot { s_fill(s, sw, tray_x + tray_icon_gap * 2 - 3, taskbar_y + 3, 17, TASKBAR_H - 6, 0x00_00_18_38); }
+
+            // Clock hover tint (suppressed when hovering individual icons).
+            let clk_hot = !usb_hot && !kbd_hot && !mse_hot
+                && mx_i >= clk_x && mx_i < clk_x + clk_w
+                && my_i >= taskbar_y + 2 && my_i < taskbar_y + TASKBAR_H;
+            let clk_bg = 0x00_00_00_00;
             if clk_hot {
-                s_fill(
-                    s,
-                    sw,
-                    clk_x,
-                    taskbar_y + 2,
-                    clk_w,
-                    TASKBAR_H - 2,
-                    0x00_00_14_30,
-                );
-                // Thin border when hovered
-                draw_rect_border(
-                    s,
-                    sw,
-                    clk_x,
-                    taskbar_y + 2,
-                    clk_w,
-                    TASKBAR_H - 2,
-                    0x00_00_44_88,
-                );
+                s_fill(s, sw, clk_x, taskbar_y + 2, clk_w, TASKBAR_H - 2, 0x00_00_14_30);
+                draw_rect_border(s, sw, clk_x, taskbar_y + 2, clk_w, TASKBAR_H - 2, 0x00_00_44_88);
             }
 
             // Small tray icons: controller, keyboard, mouse.
@@ -2152,7 +1850,7 @@ match i {
                 // Per-app accent colours, matching the desktop icon set
                 const CTX_ACCENTS: [u32; 5] =
                     [ICON_TERM_ACC, ICON_MON_ACC, ICON_TXT_ACC, ICON_COL_ACC, 0x00_55_DD_FF];
-                const CTX_GLYPHS: [&str; 5] = [">_", "M#", "Tx", "CP", "Fm"];
+                const CTX_GLYPHS: [&str; 5] = ["T>", "M#", "Tx", "CP", "FM"];
 
                 for (i, &label) in CTX_ITEMS.iter().enumerate() {
                     let item_y = cm.y + CTX_HEADER_H + CTX_PAD + i as i32 * CTX_ITEM_H;

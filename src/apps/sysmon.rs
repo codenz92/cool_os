@@ -33,7 +33,7 @@ impl SysMonApp {
     }
 
     pub fn update(&mut self) {
-        let stride = SYSMON_W as usize;
+        let stride = self.window.width as usize;
         self.fill_background(stride);
 
         let cpuid = raw_cpuid::CpuId::new();
@@ -204,9 +204,10 @@ impl SysMonApp {
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        for row in y..(y + h).min(SYSMON_H as usize) {
+        let max_h = if stride > 0 { self.window.buf.len() / stride } else { 0 };
+        for row in y..(y + h).min(max_h) {
             let base = row * stride;
-            for col in x..(x + w).min(SYSMON_W as usize) {
+            for col in x..(x + w).min(stride) {
                 let idx = base + col;
                 if idx < self.window.buf.len() {
                     self.window.buf[idx] = color;

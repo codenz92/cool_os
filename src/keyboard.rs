@@ -118,7 +118,15 @@ pub fn handle_usb_boot_report(report: &[u8; 8]) {
 fn handle_usb_key_event(code: KeyCode, state: KeyState) {
     let mut keyboard = USB_KEYBOARD.lock();
     if let Some(decoded) = keyboard.process_keyevent(KeyEvent::new(code, state)) {
-        if let DecodedKey::Unicode(c) = decoded {
+        let ch = match decoded {
+            DecodedKey::Unicode(c) => Some(c),
+            DecodedKey::RawKey(KeyCode::ArrowUp)    => Some('\u{F700}'),
+            DecodedKey::RawKey(KeyCode::ArrowDown)  => Some('\u{F701}'),
+            DecodedKey::RawKey(KeyCode::ArrowLeft)  => Some('\u{F702}'),
+            DecodedKey::RawKey(KeyCode::ArrowRight) => Some('\u{F703}'),
+            _ => None,
+        };
+        if let Some(c) = ch {
             if USB_DEBUG_LOGS && USB_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 8 {
                 crate::println!("[usb-kbd] {:?}", c);
             }
