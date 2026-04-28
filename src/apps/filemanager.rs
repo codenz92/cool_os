@@ -222,6 +222,11 @@ impl FileManagerApp {
         }
     }
 
+    pub fn refresh_current_dir(&mut self) {
+        let path = self.path.clone();
+        self.load_dir(&path);
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     fn move_selection(&mut self, delta: i32) {

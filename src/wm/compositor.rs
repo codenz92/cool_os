@@ -7,7 +7,11 @@ use alloc::{string::String, vec::Vec};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::apps::{ColorPickerApp, FileManagerApp, SysMonApp, TerminalApp, TextViewerApp};
+use crate::apps::{
+    ColorPickerApp, DisplaySettingsApp, FileManagerApp, PersonalizeApp, SysMonApp, TerminalApp,
+    TextViewerApp,
+};
+use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
@@ -139,8 +143,8 @@ const CURSOR_RESIZE_OUTLINE: [u16; CURSOR_H] = [
 
 const CTX_W: i32 = 212;
 const CTX_SUB_W: i32 = 196;
-const CTX_ITEM_H: i32 = 28;
-const CTX_SEP_H: i32 = 10;
+const CTX_ITEM_H: i32 = 26;
+const CTX_SEP_H: i32 = 8;
 const CTX_HEADER_H: i32 = 0;
 const CTX_PAD: i32 = 4;
 
@@ -286,13 +290,6 @@ struct ContextMenu {
 const ICON_SIZE: i32 = 52;
 const ICON_LABEL_H: i32 = 14;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DesktopSortMode {
-    Default,
-    Name,
-    Type,
-}
-
 #[derive(Clone, Copy)]
 struct DesktopIconSpec {
     label: &'static str,
@@ -358,6 +355,8 @@ fn canonical_app_title(name: &str) -> &str {
         "System Mon" | "System Monitor" => "System Monitor",
         "Text View" | "Text Viewer" => "Text Viewer",
         "Color Pick" | "Color Picker" => "Color Picker",
+        "Display Settings" => "Display Settings",
+        "Personalize" => "Personalize",
         "File Mgr" | "File Manager" => "File Manager",
         _ => name,
     }
@@ -369,6 +368,8 @@ fn window_accent(title: &str) -> u32 {
         "System Monitor" => ICON_MON_ACC,
         "Text Viewer" => ICON_TXT_ACC,
         "Color Picker" => ICON_COL_ACC,
+        "Display Settings" => 0x00_66_CC_FF,
+        "Personalize" => 0x00_CC_66_FF,
         "File Manager" => 0x00_55_DD_FF,
         _ => ACCENT,
     }
@@ -380,6 +381,8 @@ fn window_glyph(title: &str) -> &'static str {
         "System Monitor" => "M#",
         "Text Viewer" => "Tx",
         "Color Picker" => "CP",
+        "Display Settings" => "DS",
+        "Personalize" => "P*",
         "File Manager" => "FM",
         _ => "[]",
     }
@@ -417,6 +420,8 @@ pub enum AppWindow {
     SysMon(SysMonApp),
     TextViewer(TextViewerApp),
     ColorPicker(ColorPickerApp),
+    DisplaySettings(DisplaySettingsApp),
+    Personalize(PersonalizeApp),
     FileManager(FileManagerApp),
 }
 
@@ -427,6 +432,8 @@ impl AppWindow {
             AppWindow::SysMon(s) => &s.window,
             AppWindow::TextViewer(v) => &v.window,
             AppWindow::ColorPicker(c) => &c.window,
+            AppWindow::DisplaySettings(d) => &d.window,
+            AppWindow::Personalize(p) => &p.window,
             AppWindow::FileManager(f) => &f.window,
         }
     }
@@ -436,6 +443,8 @@ impl AppWindow {
             AppWindow::SysMon(s) => &mut s.window,
             AppWindow::TextViewer(v) => &mut v.window,
             AppWindow::ColorPicker(c) => &mut c.window,
+            AppWindow::DisplaySettings(d) => &mut d.window,
+            AppWindow::Personalize(p) => &mut p.window,
             AppWindow::FileManager(f) => &mut f.window,
         }
     }
@@ -450,7 +459,9 @@ impl AppWindow {
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         match self {
             AppWindow::ColorPicker(cp) => cp.handle_click(lx, ly),
+            AppWindow::DisplaySettings(ds) => ds.handle_click(lx, ly),
             AppWindow::FileManager(fm) => fm.handle_click(lx, ly),
+            AppWindow::Personalize(p) => p.handle_click(lx, ly),
             _ => {}
         }
     }
@@ -478,7 +489,9 @@ impl AppWindow {
             AppWindow::SysMon(s) => s.update(),
             AppWindow::TextViewer(v) => v.update(),
             AppWindow::ColorPicker(c) => c.update(),
+            AppWindow::DisplaySettings(d) => d.update(),
             AppWindow::FileManager(f) => f.update(),
+            AppWindow::Personalize(p) => p.update(),
         }
     }
     pub fn is_minimized(&self) -> bool {
@@ -517,143 +530,16 @@ pub struct WindowManager {
     blit_scratch: Vec<u8>,
     /// Pre-baked wallpaper pixels — computed once in new(), blitted each frame.
     wallpaper: Vec<u32>,
+    wallpaper_preset: WallpaperPreset,
 }
 
 impl WindowManager {
     pub fn new() -> Self {
+        let settings = desktop_settings::snapshot();
         let w = crate::framebuffer::width();
         let h = crate::framebuffer::height();
         let taskbar_y = h - TASKBAR_H as usize;
-        crate::boot_splash::show(
-            "allocating desktop buffers",
-            15,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-        let mut wallpaper = alloc::vec![0u32; w * h];
-        crate::boot_splash::show(
-            "painting desktop background",
-            16,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-        let (fw, fh) = (w as f32, taskbar_y as f32);
-        let glow_mark = taskbar_y / 3;
-        let scanline_mark = taskbar_y * 2 / 3;
-        let mut glow_stage_shown = false;
-        let mut scanline_stage_shown = false;
-        for y in 0..taskbar_y {
-            if !glow_stage_shown && y >= glow_mark {
-                crate::boot_splash::show(
-                    "charging phosphor glow",
-                    17,
-                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
-                );
-                glow_stage_shown = true;
-            }
-            if !scanline_stage_shown && y >= scanline_mark {
-                crate::boot_splash::show(
-                    "laying scanlines",
-                    18,
-                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
-                );
-                scanline_stage_shown = true;
-            }
-            let ty = y as f32 / fh;
-            for x in 0..w {
-                let tx = x as f32 / fw;
-                let r = bilinear_u8(
-                    (DESK_TL >> 16) as u8,
-                    (DESK_TR >> 16) as u8,
-                    (DESK_BL >> 16) as u8,
-                    (DESK_BR >> 16) as u8,
-                    tx,
-                    ty,
-                );
-                let g = bilinear_u8(
-                    (DESK_TL >> 8) as u8,
-                    (DESK_TR >> 8) as u8,
-                    (DESK_BL >> 8) as u8,
-                    (DESK_BR >> 8) as u8,
-                    tx,
-                    ty,
-                );
-                let b = bilinear_u8(
-                    DESK_TL as u8,
-                    DESK_TR as u8,
-                    DESK_BL as u8,
-                    DESK_BR as u8,
-                    tx,
-                    ty,
-                );
-                let dx = tx - 0.50;
-                let dy = ty - 0.45;
-                let dist_sq = dx * dx + dy * dy;
-                let t_b = 1.0f32 - (dist_sq / 0.20f32).min(1.0f32); // tighter, brighter bloom
-                let bloom = t_b * t_b * t_b * 1.4f32; // boosted bloom intensity
-                let br = (r as f32 + bloom * ((BLOOM_1 >> 16) as u8 as f32)).min(255.0) as u32;
-                let bg = (g as f32 + bloom * ((BLOOM_1 >> 8) as u8 as f32)).min(255.0) as u32;
-                let bb = (b as f32 + bloom * (BLOOM_1 as u8 as f32)).min(255.0) as u32;
-
-                // ── CRT scanline — stronger 3-step phosphor falloff ─────────────
-                let scan: u32 = match y % 3 {
-                    0 => 255, // bright phosphor line
-                    1 => 210, // soft shoulder (stronger shadow vs before)
-                    _ => 175, // dim valley (deeper shadow for contrast)
-                };
-
-                // ── Phosphor triad dot-mask — column 2 of every 3 gets blue boost ─
-                let dot_boost: u32 = if x % 3 == 2 { 14 } else { 0 };
-
-                let fr = br * scan / 255;
-                let fg = bg * scan / 255;
-                let fb = (bb * scan / 255).saturating_add(dot_boost).min(255);
-
-                wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
-            }
-        }
-        crate::boot_splash::show(
-            "finishing wallpaper",
-            19,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-
-        if taskbar_y > 0 && w > 0 {
-            crate::boot_splash::show(
-                "placing starfield",
-                20,
-                crate::boot_splash::BOOT_PROGRESS_TOTAL,
-            );
-            let mut seed = 0xC001_D00Du32;
-            let star_count = ((w * taskbar_y) / 12_000).max(48); // denser star field
-            for _ in 0..star_count {
-                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                let sx = (seed as usize) % w;
-                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                let sy = (seed as usize) % taskbar_y;
-                let core = if seed & 3 == 0 {
-                    0x00_FF_FF_FF // bright white star
-                } else if seed & 3 == 1 {
-                    0x00_EE_FF_FF // cool white
-                } else {
-                    0x00_88_CC_FF // blue phosphor
-                };
-                let glow = blend_color(core, DESK_TR, 160);
-                let dim_glow = blend_color(core, DESK_TR, 210);
-                wallpaper[sy * w + sx] = core;
-                // 4-point cross halo
-                if sx + 1 < w {
-                    wallpaper[sy * w + sx + 1] = glow;
-                }
-                if sx > 0 {
-                    wallpaper[sy * w + sx - 1] = dim_glow;
-                }
-                if sy + 1 < taskbar_y {
-                    wallpaper[(sy + 1) * w + sx] = glow;
-                }
-                if sy > 0 {
-                    wallpaper[(sy - 1) * w + sx] = dim_glow;
-                }
-            }
-        }
+        let wallpaper = build_wallpaper(w, taskbar_y, settings.wallpaper, true);
         crate::boot_splash::show(
             "allocating render buffer",
             21,
@@ -678,9 +564,9 @@ impl WindowManager {
             prev_left: false,
             prev_right: false,
             context_menu: None,
-            desktop_show_icons: true,
-            desktop_compact_spacing: false,
-            desktop_sort: DesktopSortMode::Default,
+            desktop_show_icons: settings.show_icons,
+            desktop_compact_spacing: settings.compact_spacing,
+            desktop_sort: settings.sort_mode,
             icon_selected: None,
             pressed_icon: None,
             start_menu_open: false,
@@ -693,6 +579,7 @@ impl WindowManager {
             shadow_height: h,
             blit_scratch: alloc::vec![0u8; w * 3],
             wallpaper,
+            wallpaper_preset: settings.wallpaper,
         }
     }
 
@@ -703,13 +590,48 @@ impl WindowManager {
         self.focused = Some(idx);
     }
 
+    fn sync_desktop_settings(&mut self) {
+        let settings = desktop_settings::snapshot();
+        self.desktop_show_icons = settings.show_icons;
+        self.desktop_compact_spacing = settings.compact_spacing;
+        self.desktop_sort = settings.sort_mode;
+        if !self.desktop_show_icons {
+            self.icon_selected = None;
+            self.pressed_icon = None;
+        }
+        if self.wallpaper_preset != settings.wallpaper {
+            let taskbar_y = self.shadow_height.saturating_sub(TASKBAR_H as usize);
+            self.wallpaper =
+                build_wallpaper(self.shadow_width, taskbar_y, settings.wallpaper, false);
+            self.wallpaper_preset = settings.wallpaper;
+        }
+    }
+
+    fn refresh_desktop_state(&mut self) {
+        self.sync_desktop_settings();
+        let taskbar_y = self.shadow_height.saturating_sub(TASKBAR_H as usize);
+        self.wallpaper =
+            build_wallpaper(self.shadow_width, taskbar_y, self.wallpaper_preset, false);
+        self.icon_selected = None;
+        self.pressed_icon = None;
+        for window in self.windows.iter_mut() {
+            if let AppWindow::FileManager(fm) = window {
+                fm.refresh_current_dir();
+            }
+        }
+    }
+
     fn launch_app(&mut self, name: &str, wx: i32, wy: i32) {
         match canonical_app_title(name) {
             "Terminal" => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
             "System Monitor" => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
             "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
             "Color Picker" => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
+            "Display Settings" => {
+                self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::new(wx, wy)))
+            }
             "File Manager" => self.add_window(AppWindow::FileManager(FileManagerApp::new(wx, wy))),
+            "Personalize" => self.add_window(AppWindow::Personalize(PersonalizeApp::new(wx, wy))),
             _ => {}
         }
     }
@@ -848,22 +770,22 @@ impl WindowManager {
     fn run_context_command(&mut self, cmd: DesktopContextCommand, sw: i32, taskbar_y: i32) {
         match cmd {
             DesktopContextCommand::ToggleDesktopIcons => {
-                self.desktop_show_icons = !self.desktop_show_icons;
-                if !self.desktop_show_icons {
-                    self.icon_selected = None;
-                    self.pressed_icon = None;
-                }
+                desktop_settings::set_show_icons(!self.desktop_show_icons);
+                self.sync_desktop_settings();
             }
             DesktopContextCommand::ToggleCompactSpacing => {
-                self.desktop_compact_spacing = !self.desktop_compact_spacing;
+                desktop_settings::set_compact_spacing(!self.desktop_compact_spacing);
+                self.sync_desktop_settings();
             }
             DesktopContextCommand::SortByName => {
-                self.desktop_sort = DesktopSortMode::Name;
+                desktop_settings::set_sort_mode(DesktopSortMode::Name);
+                self.sync_desktop_settings();
             }
             DesktopContextCommand::SortByType => {
-                self.desktop_sort = DesktopSortMode::Type;
+                desktop_settings::set_sort_mode(DesktopSortMode::Type);
+                self.sync_desktop_settings();
             }
-            DesktopContextCommand::Refresh => {}
+            DesktopContextCommand::Refresh => self.refresh_desktop_state(),
             DesktopContextCommand::CreateFolder => {
                 if let Ok(path) = create_root_item("DIR", None, true) {
                     let off = self.windows.len() as i32 * 16;
@@ -904,15 +826,16 @@ impl WindowManager {
             }
             DesktopContextCommand::DisplaySettings => {
                 let off = self.windows.len() as i32 * 16;
-                let wx = (10 + off).min(sw - 540);
-                let wy = (10 + off).min(taskbar_y - 310);
-                self.launch_app("System Monitor", wx, wy);
+                let wx = (10 + off).min(sw - crate::apps::displaysettings::DISPLAY_SETTINGS_W);
+                let wy =
+                    (10 + off).min(taskbar_y - crate::apps::displaysettings::DISPLAY_SETTINGS_H);
+                self.launch_app("Display Settings", wx, wy);
             }
             DesktopContextCommand::Personalize => {
                 let off = self.windows.len() as i32 * 16;
-                let wx = (10 + off).min(sw - 460);
-                let wy = (10 + off).min(taskbar_y - 340);
-                self.launch_app("Color Picker", wx, wy);
+                let wx = (10 + off).min(sw - crate::apps::personalize::PERSONALIZE_W);
+                let wy = (10 + off).min(taskbar_y - crate::apps::personalize::PERSONALIZE_H);
+                self.launch_app("Personalize", wx, wy);
             }
         }
         crate::wm::request_repaint();
@@ -1323,6 +1246,8 @@ impl WindowManager {
                 crate::wm::request_repaint();
             }
         }
+
+        self.sync_desktop_settings();
 
         // ── Render ────────────────────────────────────────────────────────────
         // Blit wallpaper before taking the exclusive &mut shadow borrow,
@@ -3036,6 +2961,198 @@ fn push_decimal(out: &mut String, mut n: u64) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct WallpaperPalette {
+    tl: u32,
+    tr: u32,
+    bl: u32,
+    br: u32,
+    bloom: u32,
+    star_tint: u32,
+}
+
+fn wallpaper_palette(preset: WallpaperPreset) -> WallpaperPalette {
+    match preset {
+        WallpaperPreset::Phosphor => WallpaperPalette {
+            tl: DESK_TL,
+            tr: DESK_TR,
+            bl: DESK_BL,
+            br: DESK_BR,
+            bloom: BLOOM_1,
+            star_tint: DESK_TR,
+        },
+        WallpaperPreset::Aurora => WallpaperPalette {
+            tl: 0x00_00_05_0C,
+            tr: 0x00_00_10_12,
+            bl: 0x00_00_03_08,
+            br: 0x00_00_08_10,
+            bloom: 0x00_11_BB_AA,
+            star_tint: 0x00_00_10_12,
+        },
+        WallpaperPreset::Midnight => WallpaperPalette {
+            tl: 0x00_03_01_0C,
+            tr: 0x00_02_02_10,
+            bl: 0x00_01_00_08,
+            br: 0x00_01_01_0A,
+            bloom: 0x00_22_44_AA,
+            star_tint: 0x00_02_02_10,
+        },
+    }
+}
+
+fn build_wallpaper(
+    w: usize,
+    taskbar_y: usize,
+    preset: WallpaperPreset,
+    show_progress: bool,
+) -> Vec<u32> {
+    let palette = wallpaper_palette(preset);
+    if show_progress {
+        crate::boot_splash::show(
+            "allocating desktop buffers",
+            15,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
+    }
+    let mut wallpaper = alloc::vec![0u32; w * crate::framebuffer::height()];
+    if show_progress {
+        crate::boot_splash::show(
+            "painting desktop background",
+            16,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
+    }
+
+    if w > 0 && taskbar_y > 0 {
+        let (fw, fh) = (w as f32, taskbar_y as f32);
+        let glow_mark = taskbar_y / 3;
+        let scanline_mark = taskbar_y * 2 / 3;
+        let mut glow_stage_shown = false;
+        let mut scanline_stage_shown = false;
+        for y in 0..taskbar_y {
+            if show_progress && !glow_stage_shown && y >= glow_mark {
+                crate::boot_splash::show(
+                    "charging phosphor glow",
+                    17,
+                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
+                );
+                glow_stage_shown = true;
+            }
+            if show_progress && !scanline_stage_shown && y >= scanline_mark {
+                crate::boot_splash::show(
+                    "laying scanlines",
+                    18,
+                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
+                );
+                scanline_stage_shown = true;
+            }
+
+            let ty = y as f32 / fh;
+            for x in 0..w {
+                let tx = x as f32 / fw;
+                let r = bilinear_u8(
+                    (palette.tl >> 16) as u8,
+                    (palette.tr >> 16) as u8,
+                    (palette.bl >> 16) as u8,
+                    (palette.br >> 16) as u8,
+                    tx,
+                    ty,
+                );
+                let g = bilinear_u8(
+                    (palette.tl >> 8) as u8,
+                    (palette.tr >> 8) as u8,
+                    (palette.bl >> 8) as u8,
+                    (palette.br >> 8) as u8,
+                    tx,
+                    ty,
+                );
+                let b = bilinear_u8(
+                    palette.tl as u8,
+                    palette.tr as u8,
+                    palette.bl as u8,
+                    palette.br as u8,
+                    tx,
+                    ty,
+                );
+                let dx = tx - 0.50;
+                let dy = ty - 0.45;
+                let dist_sq = dx * dx + dy * dy;
+                let t_b = 1.0f32 - (dist_sq / 0.20f32).min(1.0f32);
+                let bloom = t_b * t_b * t_b * 1.4f32;
+                let br =
+                    (r as f32 + bloom * ((palette.bloom >> 16) as u8 as f32)).min(255.0) as u32;
+                let bg = (g as f32 + bloom * ((palette.bloom >> 8) as u8 as f32)).min(255.0) as u32;
+                let bb = (b as f32 + bloom * (palette.bloom as u8 as f32)).min(255.0) as u32;
+
+                let scan: u32 = match y % 3 {
+                    0 => 255,
+                    1 => 210,
+                    _ => 175,
+                };
+                let dot_boost: u32 = if x % 3 == 2 { 14 } else { 0 };
+                let fr = br * scan / 255;
+                let fg = bg * scan / 255;
+                let fb = (bb * scan / 255).saturating_add(dot_boost).min(255);
+                wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
+            }
+        }
+    }
+
+    if show_progress {
+        crate::boot_splash::show(
+            "finishing wallpaper",
+            19,
+            crate::boot_splash::BOOT_PROGRESS_TOTAL,
+        );
+    }
+
+    if taskbar_y > 0 && w > 0 {
+        if show_progress {
+            crate::boot_splash::show(
+                "placing starfield",
+                20,
+                crate::boot_splash::BOOT_PROGRESS_TOTAL,
+            );
+        }
+        let mut seed: u32 = match preset {
+            WallpaperPreset::Phosphor => 0xC001_D00D,
+            WallpaperPreset::Aurora => 0xA11E_7A1A,
+            WallpaperPreset::Midnight => 0x0B5C_0DED,
+        };
+        let star_count = ((w * taskbar_y) / 12_000).max(48);
+        for _ in 0..star_count {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let sx = (seed as usize) % w;
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let sy = (seed as usize) % taskbar_y;
+            let core = if seed & 3 == 0 {
+                0x00_FF_FF_FF
+            } else if seed & 3 == 1 {
+                0x00_EE_FF_FF
+            } else {
+                0x00_88_CC_FF
+            };
+            let glow = blend_color(core, palette.star_tint, 160);
+            let dim_glow = blend_color(core, palette.star_tint, 210);
+            wallpaper[sy * w + sx] = core;
+            if sx + 1 < w {
+                wallpaper[sy * w + sx + 1] = glow;
+            }
+            if sx > 0 {
+                wallpaper[sy * w + sx - 1] = dim_glow;
+            }
+            if sy + 1 < taskbar_y {
+                wallpaper[(sy + 1) * w + sx] = glow;
+            }
+            if sy > 0 {
+                wallpaper[(sy - 1) * w + sx] = dim_glow;
+            }
+        }
+    }
+
+    wallpaper
+}
+
 fn draw_desktop_context_menu(
     s: &mut [u32],
     sw: usize,
@@ -3096,19 +3213,32 @@ fn draw_context_panel(
     desktop_sort: DesktopSortMode,
 ) {
     let menu_h = ctx_menu_height(entries);
-    let bg = 0x00_E4_E5_E8;
-    let border = 0x00_8A_8E_95;
-    let inner = 0x00_F8_F8_FA;
-    let hover_bg = 0x00_F3_F9_FE;
-    let hover_border = 0x00_7A_B8_E7;
-    let text = 0x00_12_14_17;
-    let muted = 0x00_8A_8D_94;
-    let sep = 0x00_B9_BC_C2;
+    let bg = 0x00_00_09_1E;
+    let bg_inner = 0x00_00_07_18;
+    let border = ACCENT;
+    let inner = 0x00_00_33_55;
+    let top_glow = 0x00_00_14_30;
+    let hover_bg = 0x00_00_12_2C;
+    let hover_border = 0x00_00_66_99;
+    let text = 0x00_88_CC_FF;
+    let text_hot = WHITE;
+    let muted = 0x00_44_77_99;
+    let sep = 0x00_00_1A_33;
 
-    s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_20_20_20);
+    s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_00_00_24);
     s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, bg);
     draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, border);
     draw_rect_border(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, menu_h - 2, inner);
+    s_fill(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, 3, top_glow);
+    s_fill(
+        s,
+        sw,
+        menu_x + 1,
+        menu_y + menu_h - 2,
+        menu_w - 2,
+        1,
+        0x00_00_05_10,
+    );
 
     let mut row_y = menu_y + CTX_HEADER_H + CTX_PAD;
     for (idx, entry) in entries.iter().enumerate() {
@@ -3127,6 +3257,8 @@ fn draw_context_panel(
             }
             _ => {
                 let hot = hovered == Some(idx) && entry.enabled;
+                let text_y = row_y + (CTX_ITEM_H - 8) / 2;
+                let mark_y = row_y + (CTX_ITEM_H - 8) / 2 - 1;
                 if hot {
                     s_fill(s, sw, menu_x + 2, row_y, menu_w - 4, CTX_ITEM_H, hover_bg);
                     draw_rect_border(
@@ -3138,6 +3270,7 @@ fn draw_context_panel(
                         CTX_ITEM_H,
                         hover_border,
                     );
+                    s_fill(s, sw, menu_x + 2, row_y + 4, 3, CTX_ITEM_H - 8, ACCENT);
                 }
 
                 if let Some(mark) = ctx_menu_mark(
@@ -3148,24 +3281,26 @@ fn draw_context_panel(
                     desktop_sort,
                 ) {
                     match mark {
-                        MenuMark::Check => {
-                            draw_menu_check(s, sw, menu_x + 8, row_y + 9, 0x00_26_68_9D)
-                        }
-                        MenuMark::Dot => {
-                            s_fill(s, sw, menu_x + 11, row_y + 11, 5, 5, 0x00_26_68_9D)
-                        }
+                        MenuMark::Check => draw_menu_check(s, sw, menu_x + 8, mark_y, ACCENT_HOV),
+                        MenuMark::Dot => s_fill(s, sw, menu_x + 11, mark_y + 2, 5, 5, ACCENT_HOV),
                     }
                 }
 
-                let fg = if entry.enabled { text } else { muted };
+                let fg = if !entry.enabled {
+                    muted
+                } else if hot {
+                    text_hot
+                } else {
+                    text
+                };
                 s_draw_str_small(
                     s,
                     sw,
                     menu_x + 24,
-                    row_y + 10,
+                    text_y,
                     entry.label,
                     fg,
-                    if hot { hover_bg } else { bg },
+                    if hot { hover_bg } else { bg_inner },
                     menu_x + menu_w - 18,
                 );
 
@@ -3174,8 +3309,14 @@ fn draw_context_panel(
                         s,
                         sw,
                         menu_x + menu_w - 16,
-                        row_y + 10,
-                        if entry.enabled { text } else { muted },
+                        text_y,
+                        if !entry.enabled {
+                            muted
+                        } else if hot {
+                            text_hot
+                        } else {
+                            text
+                        },
                     );
                 }
 

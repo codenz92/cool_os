@@ -8,6 +8,7 @@ mod allocator;
 mod apps;
 mod ata;
 mod boot_splash;
+mod desktop_settings;
 mod elf;
 mod fat32;
 mod framebuffer;
