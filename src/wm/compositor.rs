@@ -1305,7 +1305,7 @@ impl WindowManager {
             let left_w = 240i32;
             let bottom_h = 36i32;
             let left_hdr_h = 32i32;
-            let menu_x = 2i32;
+            let menu_x = 0i32;
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
             let rc_x = menu_x + left_w + 1;
@@ -1709,14 +1709,14 @@ impl WindowManager {
                 let right_w = menu_w - left_w;
                 let bottom_h = 36i32;
                 let left_hdr_h = 32i32;
-                let menu_x = 2i32;
+                let menu_x = 0i32;
                 let menu_y = taskbar_y - menu_h;
                 let bar_y = menu_y + menu_h - bottom_h;
                 let rc_x = menu_x + left_w + 1;
                 let rc_w = right_w - 2;
                 let (banner_time, banner_date) = start_menu_banner_clock(uptime_ticks);
 
-                s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_00_00_18);
+                s_fill(s, sw, menu_x, menu_y + 4, menu_w + 4, menu_h, 0x00_00_00_18);
                 s_fill(s, sw, menu_x, menu_y, left_w, menu_h, 0x00_00_07_18);
                 s_fill(
                     s,
