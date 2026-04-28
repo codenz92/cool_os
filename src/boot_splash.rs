@@ -100,17 +100,24 @@ fn draw_static() {
         PANEL_EDGE_DIM,
     );
 
-    let icon_x = panel_x + 34;
     let icon_s = 84;
     let title_y = panel_y + 34;
     let subtitle_y = panel_y + 82;
+    let title_w = text_width_scaled_with_tracking("coolOS", 4, 0);
+    let subtitle_w = text_width_scaled("PHOSPHOR DESKTOP", 1);
+    let text_w = title_w.max(subtitle_w);
+    let lockup_gap = 28;
+    let lockup_w = icon_s + lockup_gap + text_w;
+    let lockup_x = panel_x + (panel_w - lockup_w) / 2;
+    let icon_x = lockup_x;
+    let text_x = icon_x + icon_s + lockup_gap;
     let logo_size = 18 * 4;
     let logo_y = title_y + (((subtitle_y + 8) - title_y) - logo_size) / 2;
     draw_logo_icon(icon_x + 6, logo_y);
 
-    draw_str_scaled(icon_x + icon_s + 28, title_y, "coolOS", TITLE, 4);
+    draw_str_scaled_with_tracking(text_x, title_y, "coolOS", TITLE, 4, 0);
     draw_str_scaled(
-        icon_x + icon_s + 30,
+        text_x + (text_w - subtitle_w) / 2,
         subtitle_y,
         "PHOSPHOR DESKTOP",
         SUBTITLE,
@@ -232,10 +239,34 @@ fn draw_rect(x: i32, y: i32, w: i32, h: i32, color: u32) {
 }
 
 fn draw_str_scaled(x: i32, y: i32, text: &str, color: u32, scale: usize) {
+    draw_str_scaled_with_tracking(x, y, text, color, scale, scale as i32);
+}
+
+fn draw_str_scaled_with_tracking(
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
+    scale: usize,
+    tracking: i32,
+) {
     let mut cx = x;
     for ch in text.chars() {
         draw_char_scaled(cx, y, ch, color, scale);
-        cx += (8 * scale + scale) as i32;
+        cx += 8 * scale as i32 + tracking;
+    }
+}
+
+fn text_width_scaled(text: &str, scale: usize) -> i32 {
+    text_width_scaled_with_tracking(text, scale, scale as i32)
+}
+
+fn text_width_scaled_with_tracking(text: &str, scale: usize, tracking: i32) -> i32 {
+    let chars = text.chars().count() as i32;
+    if chars == 0 {
+        0
+    } else {
+        chars * (8 * scale as i32) + (chars - 1) * tracking
     }
 }
 
