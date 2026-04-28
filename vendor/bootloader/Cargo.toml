@@ -31,6 +31,9 @@ rustc-args = [
     "docsrs_dummy_build",
 ]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs_dummy_build)"] }
+
 [features]
 bios = ["dep:mbrman"]
 default = [
