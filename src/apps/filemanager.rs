@@ -5,36 +5,49 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::fat32::DirEntryInfo;
-use crate::framebuffer::{BLACK, DARK_GRAY, LIGHT_CYAN, LIGHT_GRAY, WHITE};
+use crate::framebuffer::{BLACK, WHITE};
 use crate::wm::window::{Window, TITLE_H};
 
-pub const FILEMAN_W: i32 = 640;
-pub const FILEMAN_H: i32 = 440;
+pub const FILEMAN_W: i32 = 760;
+pub const FILEMAN_H: i32 = 500;
 
 const CW: usize = 8;
-const TOOLBAR_H: i32 = 24;
-const COL_HDR_H: i32 = 16;
-const STATUS_H: i32 = 18;
-const NAV_BTN_W: usize = 20;
-const NAV_BTN_H: usize = 18;
-const NAV_BTN_GAP: usize = 4;
-const ACTION_BTN_W: usize = 44;
-const ACTION_BTN_H: usize = 18;
-const ACTION_BTN_GAP: usize = 6;
-const ROW_H: i32 = 16;
+const COMMAND_H: i32 = 28;
+const PATHBAR_H: i32 = 30;
+const STATUS_H: i32 = 20;
+const SIDEBAR_W: i32 = 176;
+const SECTION_HDR_H: i32 = 18;
+const TILE_H: i32 = 58;
+const TILE_GAP_X: i32 = 12;
+const TILE_GAP_Y: i32 = 10;
+const DRIVE_H: i32 = 52;
+const DRIVE_GAP_Y: i32 = 10;
+const LIST_ROW_H: i32 = 18;
+const NAV_ROW_H: i32 = 18;
+const NAV_BTN_W: i32 = 26;
+const ACTION_BTN_W: i32 = 74;
 
-const FM_BG: u32 = 0x00_02_07_12;
-const FM_PANEL: u32 = 0x00_00_0A_1C;
-const FM_PANEL_ALT: u32 = 0x00_00_0E_24;
-const FM_BORDER: u32 = 0x00_00_44_88;
-const FM_ACCENT: u32 = 0x00_00_99_FF;
-const FM_ROW_ALT: u32 = 0x00_00_0B_18;
-const FM_ROW_SEL: u32 = 0x00_00_24_46;
-const FM_STATUS: u32 = 0x00_00_08_14;
-const FOLDER_ICON: u32 = 0x00_55_DD_FF;
-const FILE_ICON: u32 = 0x00_AA_FF_CC;
-const TEXT_MUTED: u32 = 0x00_66_AA_DD;
-const COL_SEP: u32 = 0x00_00_22_44;
+const FM_BG_TOP: u32 = 0x00_06_0C_18;
+const FM_BG_BOT: u32 = 0x00_03_07_12;
+const FM_SHELL: u32 = 0x00_08_11_20;
+const FM_PANEL: u32 = 0x00_0D_18_2A;
+const FM_PANEL_ALT: u32 = 0x00_12_1E_33;
+const FM_PANEL_SOFT: u32 = 0x00_10_1A_2B;
+const FM_BORDER: u32 = 0x00_26_4A_72;
+const FM_BORDER_SOFT: u32 = 0x00_1B_33_50;
+const FM_ACCENT: u32 = 0x00_44_C8_F5;
+const FM_ACCENT_SOFT: u32 = 0x00_1D_73_A2;
+const FM_SELECTION: u32 = 0x00_17_3A_58;
+const FM_SELECTION_GLOW: u32 = 0x00_27_9B_CB;
+const FM_TEXT: u32 = 0x00_E7_F6_FF;
+const FM_TEXT_DIM: u32 = 0x00_99_BF_DA;
+const FM_TEXT_MUTED: u32 = 0x00_6F_91_AE;
+const FM_FOLDER: u32 = 0x00_54_B9_FF;
+const FM_FOLDER_SHADE: u32 = 0x00_2D_73_B0;
+const FM_FILE: u32 = 0x00_8F_E4_D0;
+const FM_DRIVE: u32 = 0x00_C9_EE_FD;
+const FM_DRIVE_FILL: u32 = 0x00_3C_DA_F8;
+const FM_SEARCH: u32 = 0x00_0B_14_24;
 
 #[derive(Clone, Copy, PartialEq)]
 enum EntryType {
@@ -61,24 +74,27 @@ impl SortColumn {
 }
 
 #[derive(Clone, Copy)]
-struct ToolbarLayout {
-    up_x: usize,
-    home_x: usize,
-    refresh_x: usize,
-    address_x: usize,
-    address_w: usize,
-    file_btn_x: usize,
-    dir_btn_x: usize,
+struct Layout {
+    width: i32,
+    height: i32,
+    sidebar_w: i32,
+    main_x: i32,
+    main_w: i32,
+    status_y: i32,
 }
 
 #[derive(Clone, Copy)]
-struct ColumnLayout {
-    name_sep_x: usize,
-    size_x: usize,
-    size_w: usize,
-    size_sep_x: usize,
-    type_x: usize,
-    type_w: usize,
+struct Rect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+impl Rect {
+    fn hit(self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
 }
 
 pub struct FileManagerApp {
@@ -152,8 +168,8 @@ impl FileManagerApp {
     pub fn handle_key(&mut self, c: char) {
         match c {
             '\u{0008}' => self.navigate_up(),
-            '\u{F700}' => self.move_selection(-1), // up arrow
-            '\u{F701}' => self.move_selection(1),  // down arrow
+            '\u{F700}' => self.move_selection(-1),
+            '\u{F701}' => self.move_selection(1),
             'n' | 'N' => self.create_new_file(),
             'd' | 'D' => self.create_new_dir(),
             'h' | 'H' => self.navigate_home(),
@@ -165,84 +181,93 @@ impl FileManagerApp {
     }
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
-        let window_w = self.window.width.max(0) as usize;
-        let toolbar = Self::toolbar_layout(window_w);
-        let columns = Self::column_layout(window_w);
-        let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
-        let content_bottom = toolbar_bottom + self.view_h;
-        if ly < toolbar_bottom {
-            if ly < TOOLBAR_H {
-                if Self::hit_toolbar_button(lx, ly, toolbar.up_x, NAV_BTN_W) {
-                    self.navigate_up();
-                    return;
-                }
-                if Self::hit_toolbar_button(lx, ly, toolbar.home_x, NAV_BTN_W) {
-                    self.navigate_home();
-                    return;
-                }
-                if Self::hit_toolbar_button(lx, ly, toolbar.refresh_x, NAV_BTN_W) {
-                    self.refresh_current_dir();
-                    return;
-                }
-                if Self::hit_toolbar_button(lx, ly, toolbar.file_btn_x, ACTION_BTN_W) {
-                    self.create_new_file();
-                    return;
-                }
-                if Self::hit_toolbar_button(lx, ly, toolbar.dir_btn_x, ACTION_BTN_W) {
-                    self.create_new_dir();
-                    return;
-                }
-                if lx >= toolbar.address_x as i32
-                    && lx < toolbar.address_x as i32 + toolbar.address_w as i32
-                {
-                    let rel_x = (lx - toolbar.address_x as i32) as usize;
-                    let path_chars = toolbar.address_w / CW;
-                    let clicked_char = rel_x / CW;
-                    let path_start = self.path.len().saturating_sub(path_chars);
-                    if path_start + clicked_char < self.path.len() {
-                        self.navigate_to_pos(path_start + clicked_char);
-                    }
-                }
-            } else {
-                if lx < columns.name_sep_x as i32 {
-                    self.change_sort(SortColumn::Name);
-                } else if columns.size_w > 0
-                    && lx >= columns.size_x as i32 - 4
-                    && lx < columns.size_sep_x as i32
-                {
-                    self.change_sort(SortColumn::Size);
-                } else if columns.type_w > 0 && lx >= columns.type_x as i32 - 4 {
-                    self.change_sort(SortColumn::Type);
+        let layout = self.layout();
+
+        if let Some(path) = self.hit_navigation(lx, ly) {
+            self.load_dir(&path);
+            return;
+        }
+
+        if ly < COMMAND_H {
+            if (Rect {
+                x: 10,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            })
+            .hit(lx, ly)
+            {
+                self.navigate_up();
+                return;
+            }
+            if (Rect {
+                x: 42,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            })
+            .hit(lx, ly)
+            {
+                self.navigate_home();
+                return;
+            }
+            if (Rect {
+                x: 74,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            })
+            .hit(lx, ly)
+            {
+                self.refresh_current_dir();
+                return;
+            }
+
+            let new_file_rect = Rect {
+                x: layout.width - ACTION_BTN_W * 2 - 24,
+                y: 4,
+                w: ACTION_BTN_W,
+                h: 20,
+            };
+            let new_dir_rect = Rect {
+                x: layout.width - ACTION_BTN_W - 12,
+                y: 4,
+                w: ACTION_BTN_W,
+                h: 20,
+            };
+            if new_file_rect.hit(lx, ly) {
+                self.create_new_file();
+                return;
+            }
+            if new_dir_rect.hit(lx, ly) {
+                self.create_new_dir();
+                return;
+            }
+        }
+
+        if ly >= COMMAND_H && ly < COMMAND_H + PATHBAR_H {
+            let crumb_rect = self.breadcrumb_rect();
+            if crumb_rect.hit(lx, ly) {
+                let rel_x = (lx - crumb_rect.x).max(0) as usize;
+                let clicked_char = rel_x / CW;
+                let path_chars = (crumb_rect.w.max(0) as usize) / CW;
+                let path_start = self.path.len().saturating_sub(path_chars);
+                if path_start + clicked_char < self.path.len() {
+                    self.navigate_to_pos(path_start + clicked_char);
                 }
             }
             return;
         }
-        if ly >= content_bottom {
-            return;
-        }
 
-        let content_y = ly - toolbar_bottom;
-        if content_y < 0 {
-            return;
-        }
-        let clicked_row = content_y as usize / ROW_H as usize;
-        let entry_idx = self.offset + clicked_row;
-        if entry_idx < self.entries.len() {
-            self.selected = Some(entry_idx);
+        if let Some(idx) = self.hit_main_entry(lx, ly) {
+            self.selected = Some(idx);
             self.render();
         }
     }
 
-    pub fn handle_dbl_click(&mut self, _lx: i32, ly: i32) {
-        let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
-        if ly <= toolbar_bottom || ly >= toolbar_bottom + self.view_h {
-            return;
-        }
-        let content_y = ly - toolbar_bottom;
-        let clicked_row = content_y as usize / ROW_H as usize;
-        let entry_idx = self.offset + clicked_row;
-        if entry_idx < self.entries.len() {
-            self.selected = Some(entry_idx);
+    pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
+        if let Some(idx) = self.hit_main_entry(lx, ly) {
+            self.selected = Some(idx);
             self.open_selected();
         }
     }
@@ -252,7 +277,10 @@ impl FileManagerApp {
     }
 
     pub fn handle_scroll(&mut self, delta: i32) {
-        let max_offset = self.entries.len().saturating_sub(self.total_rows);
+        if self.path == "/" {
+            return;
+        }
+        let max_offset = self.entries.len().saturating_sub(self.total_rows.max(1));
         let new_offset =
             (self.offset as i32 + delta.signum() * 3).clamp(0, max_offset as i32) as usize;
         if new_offset != self.offset {
@@ -269,14 +297,14 @@ impl FileManagerApp {
             return;
         }
 
-        let expected = self.offset as i32 * ROW_H;
-        if self.window.scroll.offset != expected {
-            let content_area_h = (self.window.height - TITLE_H).max(0);
-            let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
-            let visible_rows = (entries_area_h / ROW_H) as usize;
-            let max_row = self.entries.len().saturating_sub(visible_rows);
-            self.offset = ((self.window.scroll.offset / ROW_H) as usize).min(max_row);
-            self.render();
+        if self.path != "/" {
+            let expected = self.offset as i32 * LIST_ROW_H;
+            if self.window.scroll.offset != expected {
+                let visible_rows = self.visible_row_capacity();
+                let max_row = self.entries.len().saturating_sub(visible_rows.max(1));
+                self.offset = ((self.window.scroll.offset / LIST_ROW_H) as usize).min(max_row);
+                self.render();
+            }
         }
     }
 
@@ -288,8 +316,6 @@ impl FileManagerApp {
         self.status_note = Some(String::from("refreshed"));
         self.render();
     }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
 
     fn move_selection(&mut self, delta: i32) {
         let len = self.entries.len();
@@ -328,6 +354,9 @@ impl FileManagerApp {
     }
 
     fn ensure_selected_visible(&mut self) {
+        if self.path == "/" {
+            return;
+        }
         let sel = match self.selected {
             Some(s) => s,
             None => return,
@@ -485,8 +514,9 @@ impl FileManagerApp {
 
     fn visible_row_capacity(&self) -> usize {
         let content_area_h = (self.window.height - TITLE_H).max(0);
-        let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
-        (entries_area_h / ROW_H) as usize
+        let entries_area_h =
+            (content_area_h - COMMAND_H - PATHBAR_H - STATUS_H - SECTION_HDR_H - 52).max(0);
+        (entries_area_h / LIST_ROW_H) as usize
     }
 
     fn sort_entries(entries: &mut [DirEntryInfo], sort_column: SortColumn, sort_desc: bool) {
@@ -583,414 +613,896 @@ impl FileManagerApp {
         self.render();
     }
 
-    // ── Render ────────────────────────────────────────────────────────────────
-
     fn render(&mut self) {
-        let w = self.window.width as usize;
-        let h = (self.window.height - TITLE_H).max(0) as usize;
-        let stride = w;
+        let layout = self.layout();
+        self.last_width = self.window.width;
+        self.last_height = self.window.height;
+        self.view_h = (layout.height - COMMAND_H - PATHBAR_H - STATUS_H).max(0);
 
-        for p in self.window.buf.iter_mut() {
-            *p = FM_BG;
-        }
-
-        self.view_h = (h as i32 - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
-        self.total_rows = (self.view_h as usize) / ROW_H as usize;
-
-        self.window.scroll.content_h = self.entries.len() as i32 * ROW_H;
-        self.window.scroll.offset = self.offset as i32 * ROW_H;
-        self.window.scroll.clamp(self.view_h);
-
-        self.draw_toolbar(stride);
-        self.draw_column_header(stride);
-        self.draw_entries(stride);
-        self.draw_status_bar(stride);
-    }
-
-    fn draw_toolbar(&mut self, stride: usize) {
-        let window_w = self.window.width.max(0) as usize;
-        let layout = Self::toolbar_layout(window_w);
-        self.fill_rect(stride, 0, 0, window_w, TOOLBAR_H as usize, FM_PANEL_ALT);
-        self.fill_rect(
-            stride,
-            layout.address_x,
-            3,
-            layout.address_w,
-            ACTION_BTN_H,
-            FM_PANEL,
-        );
-        self.draw_rect_border(
-            stride,
-            layout.address_x,
-            3,
-            layout.address_w,
-            ACTION_BTN_H,
-            FM_BORDER,
-        );
-        self.draw_toolbar_button(stride, layout.up_x, 3, NAV_BTN_W, "UP", WHITE);
-        self.draw_toolbar_button(stride, layout.home_x, 3, NAV_BTN_W, "HM", WHITE);
-        self.draw_toolbar_button(stride, layout.refresh_x, 3, NAV_BTN_W, "RF", WHITE);
-        self.draw_toolbar_button(stride, layout.file_btn_x, 3, ACTION_BTN_W, "FILE", WHITE);
-        self.draw_toolbar_button(stride, layout.dir_btn_x, 3, ACTION_BTN_W, "DIR", WHITE);
-        let path_str = self.path.clone();
-        self.draw_address_bar(
-            &path_str,
-            layout.address_x + 8,
-            0,
-            layout.address_w.saturating_sub(16),
-        );
-    }
-
-    fn draw_toolbar_button(
-        &mut self,
-        stride: usize,
-        px: usize,
-        py: usize,
-        w: usize,
-        label: &str,
-        color: u32,
-    ) {
-        self.fill_rect(stride, px, py, w, ACTION_BTN_H, FM_PANEL);
-        self.draw_rect_border(stride, px, py, w, ACTION_BTN_H, FM_BORDER);
-        let label_x = px + w.saturating_sub(label.len() * CW) / 2;
-        self.put_str(label_x, py + 6, label, color);
-    }
-
-    fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, avail: usize) {
-        let display = if path_str.len() * CW > avail {
-            let start = path_str.len() - avail / CW;
-            &path_str[start..]
+        self.fill_background();
+        self.draw_command_bar(layout);
+        self.draw_path_bar(layout);
+        self.draw_sidebar(layout);
+        self.draw_main_shell(layout);
+        if self.path == "/" {
+            self.window.scroll.content_h = 0;
+            self.window.scroll.offset = 0;
+            self.draw_root_overview(layout);
         } else {
-            path_str
+            self.draw_directory_view(layout);
+        }
+        self.draw_status_bar(layout);
+    }
+
+    fn layout(&self) -> Layout {
+        let width = self.window.width.max(0);
+        let height = (self.window.height - TITLE_H).max(0);
+        let sidebar_w = SIDEBAR_W.min(width / 3).max(140);
+        let main_x = sidebar_w + 1;
+        let main_w = (width - main_x).max(0);
+        let status_y = (height - STATUS_H).max(0);
+        Layout {
+            width,
+            height,
+            sidebar_w,
+            main_x,
+            main_w,
+            status_y,
+        }
+    }
+
+    fn draw_command_bar(&mut self, layout: Layout) {
+        self.fill_rect(0, 0, layout.width, COMMAND_H, FM_SHELL);
+        self.fill_rect(0, COMMAND_H - 1, layout.width, 1, FM_BORDER_SOFT);
+
+        self.draw_command_button(
+            Rect {
+                x: 10,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            },
+            "<",
+        );
+        self.draw_command_button(
+            Rect {
+                x: 42,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            },
+            "^",
+        );
+        self.draw_command_button(
+            Rect {
+                x: 74,
+                y: 4,
+                w: NAV_BTN_W,
+                h: 20,
+            },
+            "R",
+        );
+
+        self.draw_action_button(
+            Rect {
+                x: layout.width - ACTION_BTN_W * 2 - 24,
+                y: 4,
+                w: ACTION_BTN_W,
+                h: 20,
+            },
+            "NEW FILE",
+        );
+        self.draw_action_button(
+            Rect {
+                x: layout.width - ACTION_BTN_W - 12,
+                y: 4,
+                w: ACTION_BTN_W,
+                h: 20,
+            },
+            "NEW FOLDER",
+        );
+    }
+
+    fn draw_path_bar(&mut self, layout: Layout) {
+        let crumb = self.breadcrumb_rect();
+        let search = Rect {
+            x: layout.width - 170,
+            y: COMMAND_H + 4,
+            w: 156,
+            h: 22,
         };
-        self.put_str(x0, y0 + 6, display, WHITE);
-    }
 
-    fn draw_column_header(&mut self, stride: usize) {
-        let window_w = self.window.width.max(0) as usize;
-        let columns = Self::column_layout(window_w);
-        let y = TOOLBAR_H as usize;
-        self.fill_rect(stride, 0, y, window_w, COL_HDR_H as usize, FM_PANEL);
+        self.fill_rect(0, COMMAND_H, layout.width, PATHBAR_H, FM_PANEL_ALT);
         self.fill_rect(
-            stride,
             0,
-            y + COL_HDR_H as usize - 1,
-            window_w,
+            COMMAND_H + PATHBAR_H - 1,
+            layout.width,
             1,
-            FM_BORDER,
+            FM_BORDER_SOFT,
         );
 
-        self.draw_header_label(
-            stride,
-            8,
-            y + 4,
-            SortColumn::Name,
-            columns.name_sep_x.saturating_sub(16),
+        self.fill_rect(crumb.x, crumb.y, crumb.w, crumb.h, FM_PANEL);
+        self.draw_rect_border(crumb.x, crumb.y, crumb.w, crumb.h, FM_BORDER);
+        self.put_str(
+            (crumb.x + 10) as usize,
+            (crumb.y + 7) as usize,
+            &Self::clip_text(
+                &self.breadcrumb_text(),
+                (crumb.w as usize).saturating_sub(20) / CW,
+            ),
+            FM_TEXT,
         );
-        if columns.size_w > 0 {
-            self.draw_header_label(
-                stride,
-                columns.size_x,
-                y + 4,
-                SortColumn::Size,
-                columns.size_w,
-            );
-        }
-        if columns.type_w > 0 {
-            self.draw_header_label(
-                stride,
-                columns.type_x,
-                y + 4,
-                SortColumn::Type,
-                columns.type_w,
-            );
-        }
 
-        // Column separators
-        self.fill_rect(
-            stride,
-            columns.name_sep_x,
-            y,
-            1,
-            COL_HDR_H as usize,
-            FM_BORDER,
+        self.fill_rect(search.x, search.y, search.w, search.h, FM_SEARCH);
+        self.draw_rect_border(search.x, search.y, search.w, search.h, FM_BORDER_SOFT);
+        self.put_str(
+            (search.x + 10) as usize,
+            (search.y + 7) as usize,
+            "search",
+            FM_TEXT_MUTED,
         );
-        if columns.size_w > 0 {
-            self.fill_rect(
-                stride,
-                columns.size_sep_x,
-                y,
-                1,
-                COL_HDR_H as usize,
-                FM_BORDER,
-            );
+    }
+
+    fn breadcrumb_rect(&self) -> Rect {
+        let layout = self.layout();
+        Rect {
+            x: 116,
+            y: COMMAND_H + 4,
+            w: (layout.width - 294).max(140),
+            h: 22,
         }
     }
 
-    fn draw_entries(&mut self, stride: usize) {
-        let y0 = (TOOLBAR_H + COL_HDR_H) as usize;
-        let window_w = self.window.width.max(0) as usize;
-        let columns = Self::column_layout(window_w);
-        let entries_copy: Vec<DirEntryInfo> = self.entries.clone();
+    fn draw_sidebar(&mut self, layout: Layout) {
+        self.fill_rect(
+            0,
+            COMMAND_H + PATHBAR_H,
+            layout.sidebar_w,
+            layout.status_y - COMMAND_H - PATHBAR_H,
+            FM_PANEL_SOFT,
+        );
+        self.fill_rect(
+            layout.sidebar_w,
+            COMMAND_H + PATHBAR_H,
+            1,
+            layout.status_y - COMMAND_H - PATHBAR_H,
+            FM_BORDER_SOFT,
+        );
 
-        if entries_copy.is_empty() {
-            let msg_y = y0 + self.view_h as usize / 2 - 4;
-            self.put_str(
-                window_w.saturating_sub(64) / 2,
-                msg_y,
-                "(empty folder)",
-                TEXT_MUTED,
+        let mut y = COMMAND_H + PATHBAR_H + 14;
+        self.put_str(18, y as usize, "QUICK ACCESS", FM_TEXT_MUTED);
+        y += 16;
+
+        for (label, path, active) in self.sidebar_items() {
+            self.draw_sidebar_item(
+                Rect {
+                    x: 10,
+                    y,
+                    w: layout.sidebar_w - 20,
+                    h: NAV_ROW_H,
+                },
+                &label,
+                path.is_some(),
+                active,
             );
+            y += NAV_ROW_H + 4;
+        }
+    }
+
+    fn sidebar_items(&self) -> Vec<(String, Option<String>, bool)> {
+        let mut items = Vec::new();
+        items.push((
+            String::from("Home"),
+            Some(String::from("/")),
+            self.path == "/",
+        ));
+        items.push((
+            String::from("This PC"),
+            Some(String::from("/")),
+            self.path == "/",
+        ));
+
+        for name in self.root_directory_names().into_iter().take(7) {
+            let mut path = String::from("/");
+            path.push_str(&name);
+            let active = self.path.eq_ignore_ascii_case(&path);
+            items.push((String::new(), None, false));
+            items.push((name, Some(path), active));
         }
 
-        for (row, entry) in entries_copy.iter().enumerate() {
-            if row < self.offset {
-                continue;
-            }
-            let visual_row = row - self.offset;
-            if visual_row >= self.total_rows {
+        items
+    }
+
+    fn draw_sidebar_item(&mut self, rect: Rect, label: &str, clickable: bool, active: bool) {
+        if !clickable || label.is_empty() {
+            return;
+        }
+        if active {
+            self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_SELECTION);
+            self.fill_rect(rect.x, rect.y, 3, rect.h, FM_SELECTION_GLOW);
+        }
+        self.put_str(
+            (rect.x + 10) as usize,
+            (rect.y + 5) as usize,
+            label,
+            if active { FM_TEXT } else { FM_TEXT_DIM },
+        );
+    }
+
+    fn draw_main_shell(&mut self, layout: Layout) {
+        self.fill_rect(
+            layout.main_x,
+            COMMAND_H + PATHBAR_H,
+            layout.main_w,
+            layout.status_y - COMMAND_H - PATHBAR_H,
+            FM_BG_BOT,
+        );
+    }
+
+    fn draw_root_overview(&mut self, layout: Layout) {
+        let top = COMMAND_H + PATHBAR_H + 14;
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            top as usize,
+            "This PC",
+            FM_TEXT,
+        );
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            (top + 14) as usize,
+            "coolOS shell view",
+            FM_TEXT_MUTED,
+        );
+
+        let folders = self.folder_indices();
+        let files = self.file_indices();
+        let section_y = top + 34;
+        let tiles_h = self.draw_folder_section(layout, section_y, &folders, true);
+        let drives_y = section_y + tiles_h + 20;
+        self.draw_drive_section(
+            layout,
+            drives_y,
+            if files.is_empty() { &folders } else { &files },
+        );
+    }
+
+    fn draw_directory_view(&mut self, layout: Layout) {
+        let top = COMMAND_H + PATHBAR_H + 14;
+        let title = if self.path == "/" {
+            "This PC"
+        } else {
+            self.path.as_str()
+        };
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            top as usize,
+            &Self::clip_text(title, 34),
+            FM_TEXT,
+        );
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            (top + 14) as usize,
+            "folders first, files below",
+            FM_TEXT_MUTED,
+        );
+
+        let folders = self.folder_indices();
+        let files = self.file_indices();
+        let section_y = top + 34;
+        let folders_h = self.draw_folder_section(layout, section_y, &folders, false);
+        let files_y = section_y + folders_h + 18;
+        self.draw_file_list_section(layout, files_y, &files);
+    }
+
+    fn draw_folder_section(
+        &mut self,
+        layout: Layout,
+        y: i32,
+        indices: &[usize],
+        root_mode: bool,
+    ) -> i32 {
+        let title = if root_mode { "Folders" } else { "Subfolders" };
+        let count = indices.len();
+        let mut label = String::from(title);
+        label.push(' ');
+        label.push('(');
+        fmt_push_u(&mut label, count as u64);
+        label.push(')');
+
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            y as usize,
+            &label,
+            FM_TEXT_DIM,
+        );
+        self.fill_rect(
+            layout.main_x + 18,
+            y + SECTION_HDR_H - 2,
+            layout.main_w - 36,
+            1,
+            FM_BORDER_SOFT,
+        );
+
+        if indices.is_empty() {
+            self.put_str(
+                (layout.main_x + 28) as usize,
+                (y + 24) as usize,
+                "(no folders)",
+                FM_TEXT_MUTED,
+            );
+            return 40;
+        }
+
+        let tile_y = y + 22;
+        let tile_w = ((layout.main_w - 60 - TILE_GAP_X * 2) / 3).max(140);
+        let cols = ((layout.main_w - 36) / (tile_w + TILE_GAP_X)).max(1) as usize;
+
+        for (visual_idx, &entry_idx) in indices.iter().take(9).enumerate() {
+            let col = (visual_idx % cols).min(2);
+            let row = visual_idx / cols;
+            let rect = Rect {
+                x: layout.main_x + 18 + col as i32 * (tile_w + TILE_GAP_X),
+                y: tile_y + row as i32 * (TILE_H + TILE_GAP_Y),
+                w: tile_w,
+                h: TILE_H,
+            };
+            self.draw_folder_tile(rect, entry_idx);
+        }
+
+        let rows = ((indices.len().min(9) + cols - 1) / cols).max(1) as i32;
+        22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
+    }
+
+    fn draw_drive_section(&mut self, layout: Layout, y: i32, indices: &[usize]) {
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            y as usize,
+            "Devices and drives",
+            FM_TEXT_DIM,
+        );
+        self.fill_rect(
+            layout.main_x + 18,
+            y + SECTION_HDR_H - 2,
+            layout.main_w - 36,
+            1,
+            FM_BORDER_SOFT,
+        );
+
+        if indices.is_empty() {
+            self.put_str(
+                (layout.main_x + 28) as usize,
+                (y + 24) as usize,
+                "(no items)",
+                FM_TEXT_MUTED,
+            );
+            return;
+        }
+
+        let card_w = ((layout.main_w - 54) / 2).max(180);
+        let cols = if layout.main_w > 420 { 2 } else { 1 };
+        let max_items = if cols == 2 { 4 } else { 3 };
+        for (visual_idx, &entry_idx) in indices.iter().take(max_items).enumerate() {
+            let col = (visual_idx % cols as usize) as i32;
+            let row = (visual_idx / cols as usize) as i32;
+            let rect = Rect {
+                x: layout.main_x + 18 + col * (card_w + 12),
+                y: y + 22 + row * (DRIVE_H + DRIVE_GAP_Y),
+                w: card_w,
+                h: DRIVE_H,
+            };
+            self.draw_drive_card(rect, entry_idx);
+        }
+    }
+
+    fn draw_file_list_section(&mut self, layout: Layout, y: i32, file_indices: &[usize]) {
+        self.put_str(
+            (layout.main_x + 18) as usize,
+            y as usize,
+            "Files",
+            FM_TEXT_DIM,
+        );
+        self.fill_rect(
+            layout.main_x + 18,
+            y + SECTION_HDR_H - 2,
+            layout.main_w - 36,
+            1,
+            FM_BORDER_SOFT,
+        );
+
+        let list_y = y + 22;
+        let list_h = (layout.status_y - list_y - 10).max(0);
+        self.view_h = list_h;
+        self.total_rows = (list_h / LIST_ROW_H).max(0) as usize;
+        self.window.scroll.content_h = file_indices.len() as i32 * LIST_ROW_H;
+        self.window.scroll.offset = self.offset as i32 * LIST_ROW_H;
+        self.window.scroll.clamp(list_h);
+
+        if file_indices.is_empty() {
+            self.put_str(
+                (layout.main_x + 28) as usize,
+                (list_y + 8) as usize,
+                "(no files)",
+                FM_TEXT_MUTED,
+            );
+            return;
+        }
+
+        let visible = self.total_rows.max(1);
+        let max_offset = file_indices.len().saturating_sub(visible);
+        self.offset = self.offset.min(max_offset);
+        let name_w = (layout.main_w - 250).max(120) as usize / CW;
+
+        for visual_row in 0..visible {
+            let idx_in_files = self.offset + visual_row;
+            if idx_in_files >= file_indices.len() {
                 break;
             }
-
-            let py = y0 + visual_row * ROW_H as usize;
-            let is_sel = self.selected == Some(row);
-            let row_bg = if is_sel {
-                FM_ROW_SEL
-            } else if visual_row % 2 == 0 {
-                FM_BG
-            } else {
-                FM_ROW_ALT
+            let entry_idx = file_indices[idx_in_files];
+            let (name, size) = match self.entries.get(entry_idx) {
+                Some(entry) => (entry.name.clone(), entry.size),
+                None => continue,
             };
-            self.fill_rect(stride, 0, py, window_w, ROW_H as usize, row_bg);
-            if is_sel {
-                self.fill_rect(stride, 0, py, 3, ROW_H as usize, FM_ACCENT);
-            }
-
-            let et = Self::entry_type(&entries_copy, row);
-            self.draw_entry_icon(stride, 8, py + 3, et);
-
-            // Column separator lines
-            self.fill_rect(stride, columns.name_sep_x, py, 1, ROW_H as usize, COL_SEP);
-            if columns.size_w > 0 {
-                self.fill_rect(stride, columns.size_sep_x, py, 1, ROW_H as usize, COL_SEP);
-            }
-
-            match et {
-                EntryType::Folder => {
-                    let name =
-                        Self::clip_text(&entry.name, columns.name_sep_x.saturating_sub(28) / CW);
-                    self.put_str(24, py + 4, &name, if is_sel { WHITE } else { LIGHT_CYAN });
-                    if columns.type_w > 0 {
-                        self.put_str(
-                            columns.type_x,
-                            py + 4,
-                            "Folder",
-                            if is_sel { WHITE } else { TEXT_MUTED },
-                        );
-                    }
-                }
-                EntryType::File => {
-                    let name =
-                        Self::clip_text(&entry.name, columns.name_sep_x.saturating_sub(28) / CW);
-                    self.put_str(24, py + 4, &name, if is_sel { WHITE } else { LIGHT_GRAY });
-                    let size_str = Self::format_size(entry.size);
-                    if columns.size_w > 0 {
-                        self.put_str(
-                            columns.size_x,
-                            py + 4,
-                            &size_str,
-                            if is_sel { WHITE } else { TEXT_MUTED },
-                        );
-                    }
-                    let label = Self::type_label(&entry.name, false);
-                    if columns.type_w > 0 {
-                        self.put_str(
-                            columns.type_x,
-                            py + 4,
-                            label,
-                            if is_sel { WHITE } else { TEXT_MUTED },
-                        );
-                    }
-                }
-                EntryType::Unknown => {}
-            }
-
-            // Row divider
+            let row_y = list_y + visual_row as i32 * LIST_ROW_H;
+            let selected = self.selected == Some(entry_idx);
             self.fill_rect(
-                stride,
-                8,
-                py + ROW_H as usize - 1,
-                window_w.saturating_sub(16),
+                layout.main_x + 18,
+                row_y,
+                layout.main_w - 36,
+                LIST_ROW_H,
+                if selected {
+                    FM_SELECTION
+                } else if visual_row % 2 == 0 {
+                    FM_PANEL_SOFT
+                } else {
+                    FM_BG_BOT
+                },
+            );
+            if selected {
+                self.fill_rect(layout.main_x + 18, row_y, 3, LIST_ROW_H, FM_SELECTION_GLOW);
+            }
+            self.draw_file_icon((layout.main_x + 28) as usize, (row_y + 4) as usize);
+
+            let name = Self::clip_text(&name, name_w);
+            self.put_str(
+                (layout.main_x + 46) as usize,
+                (row_y + 5) as usize,
+                &name,
+                if selected { FM_TEXT } else { FM_TEXT_DIM },
+            );
+            self.put_str(
+                (layout.main_x + layout.main_w - 180) as usize,
+                (row_y + 5) as usize,
+                Self::type_label(&name, false),
+                FM_TEXT_MUTED,
+            );
+            let size = Self::format_size(size);
+            self.put_str(
+                (layout.main_x + layout.main_w - 84) as usize,
+                (row_y + 5) as usize,
+                &size,
+                if selected { FM_TEXT } else { FM_TEXT_DIM },
+            );
+            self.fill_rect(
+                layout.main_x + 18,
+                row_y + LIST_ROW_H - 1,
+                layout.main_w - 36,
                 1,
-                DARK_GRAY,
+                FM_BORDER_SOFT,
             );
         }
     }
 
-    fn draw_status_bar(&mut self, stride: usize) {
-        let window_w = self.window.width.max(0) as usize;
-        let y = (TOOLBAR_H + COL_HDR_H + self.view_h) as usize;
-        self.fill_rect(stride, 0, y, window_w, STATUS_H as usize, FM_STATUS);
-        self.fill_rect(stride, 0, y, window_w, 1, FM_BORDER);
+    fn draw_status_bar(&mut self, layout: Layout) {
+        self.fill_rect(0, layout.status_y, layout.width, STATUS_H, FM_SHELL);
+        self.fill_rect(0, layout.status_y, layout.width, 1, FM_BORDER_SOFT);
 
-        // Left: item counts
-        let n_dirs = self.entries.iter().filter(|e| e.is_dir).count();
-        let n_files = self.entries.len() - n_dirs;
+        let folders = self.entries.iter().filter(|e| e.is_dir).count();
+        let files = self.entries.len().saturating_sub(folders);
         let mut left = String::new();
-        fmt_push_u(&mut left, n_dirs as u64);
+        fmt_push_u(&mut left, folders as u64);
         left.push_str(" folders  ");
-        fmt_push_u(&mut left, n_files as u64);
+        fmt_push_u(&mut left, files as u64);
         left.push_str(" files");
-        left.push_str("  sort ");
-        left.push_str(self.sort_column.label());
-        left.push(' ');
-        left.push(if self.sort_desc { 'v' } else { '^' });
-        self.put_str(8, y + 5, &left, TEXT_MUTED);
+        self.put_str(10, (layout.status_y + 6) as usize, &left, FM_TEXT_MUTED);
 
-        // Right: selected item info
+        let hint = self.status_note.clone().unwrap_or_else(|| {
+            String::from("Enter open  Backspace up  H home  R refresh  S sort  N file  D folder")
+        });
+        let hint_x = ((layout.width as usize).saturating_sub(hint.len() * CW)) / 2;
+        self.put_str(hint_x, (layout.status_y + 6) as usize, &hint, FM_TEXT_MUTED);
+
         if let Some(idx) = self.selected {
-            if let Some(e) = self.entries.get(idx) {
-                let mut right = String::new();
-                right.push_str(&e.name);
+            if let Some(entry) = self.entries.get(idx) {
+                let entry_name = entry.name.clone();
+                let entry_is_dir = entry.is_dir;
+                let entry_size = entry.size;
+                let mut right = String::from(&entry_name);
                 right.push_str("  ");
-                right.push_str(Self::type_label(&e.name, e.is_dir));
-                if !e.is_dir {
+                right.push_str(Self::type_label(&entry_name, entry_is_dir));
+                if !entry_is_dir {
                     right.push_str("  ");
-                    let sz = Self::format_size(e.size);
-                    right.push_str(&sz);
+                    right.push_str(&Self::format_size(entry_size));
                 }
-                right.push_str("  ");
-                fmt_push_u(&mut right, (idx + 1) as u64);
-                right.push('/');
-                fmt_push_u(&mut right, self.entries.len() as u64);
-                let right_x = window_w.saturating_sub(right.len() * CW + 10);
-                self.put_str(right_x, y + 5, &right, LIGHT_GRAY);
+                let right_x = (layout.width as usize)
+                    .saturating_sub(right.len() * CW)
+                    .saturating_sub(10);
+                self.put_str(right_x, (layout.status_y + 6) as usize, &right, FM_TEXT_DIM);
             }
         }
-
-        // Keyboard hints (centre)
-        let hint_note = self.status_note.clone();
-        let hint = hint_note
-            .as_deref()
-            .unwrap_or("Enter open  BS up  H home  R refresh  S sort  N file  D dir");
-        let hint_x = window_w.saturating_sub(hint.len() * CW) / 2;
-        self.put_str(hint_x, y + 5, hint, FM_BORDER);
     }
 
-    fn draw_header_label(
-        &mut self,
-        _stride: usize,
-        x: usize,
-        y: usize,
-        column: SortColumn,
-        width: usize,
-    ) {
-        if width == 0 {
-            return;
+    fn fill_background(&mut self) {
+        let stride = self.window.width.max(0) as usize;
+        let height = (self.window.height - TITLE_H).max(0) as usize;
+        for row in 0..height {
+            let t = (row as u32).saturating_mul(255) / height.max(1) as u32;
+            let row_color = blend(FM_BG_TOP, FM_BG_BOT, t);
+            let base = row * stride;
+            for col in 0..stride {
+                let idx = base + col;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = row_color;
+                }
+            }
         }
-        let mut label = String::from(match column {
-            SortColumn::Name => "Name",
-            SortColumn::Size => "Size",
-            SortColumn::Type => "Type",
-        });
-        if self.sort_column == column {
-            label.push(' ');
-            label.push(if self.sort_desc { 'v' } else { '^' });
+    }
+
+    fn folder_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| if entry.is_dir { Some(idx) } else { None })
+            .collect()
+    }
+
+    fn file_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| if entry.is_dir { None } else { Some(idx) })
+            .collect()
+    }
+
+    fn root_directory_names(&self) -> Vec<String> {
+        crate::fat32::list_dir("/")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.name)
+            .collect()
+    }
+
+    fn breadcrumb_text(&self) -> String {
+        if self.path == "/" {
+            return String::from("This PC");
         }
-        let clipped = Self::clip_text(&label, width / CW);
+
+        let mut out = String::from("This PC");
+        for component in self.path.split('/').filter(|s| !s.is_empty()) {
+            out.push_str(" > ");
+            out.push_str(component);
+        }
+        out
+    }
+
+    fn draw_command_button(&mut self, rect: Rect, label: &str) {
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER_SOFT);
+        let label_x = rect.x + (rect.w - (label.len() as i32 * CW as i32)) / 2;
         self.put_str(
-            x,
-            y,
-            &clipped,
-            if self.sort_column == column {
-                WHITE
-            } else {
-                TEXT_MUTED
-            },
+            label_x.max(0) as usize,
+            (rect.y + 6) as usize,
+            label,
+            FM_TEXT,
         );
     }
 
-    fn draw_entry_icon(&mut self, stride: usize, x: usize, y: usize, et: EntryType) {
-        match et {
-            EntryType::Folder => {
-                self.fill_rect(stride, x + 1, y, 6, 2, FOLDER_ICON);
-                self.fill_rect(stride, x, y + 2, 10, 6, FOLDER_ICON);
-                self.fill_rect(stride, x + 1, y + 3, 8, 4, blend(FOLDER_ICON, BLACK, 140));
-            }
-            EntryType::File => {
-                self.fill_rect(stride, x + 1, y, 8, 10, FILE_ICON);
-                self.draw_rect_border(stride, x + 1, y, 8, 10, blend(FILE_ICON, BLACK, 120));
-                self.fill_rect(stride, x + 5, y, 4, 3, WHITE);
-            }
-            EntryType::Unknown => {}
+    fn draw_action_button(&mut self, rect: Rect, label: &str) {
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_ACCENT_SOFT);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_SELECTION_GLOW);
+        let label_x = rect.x + (rect.w - (label.len() as i32 * CW as i32)) / 2;
+        self.put_str(
+            label_x.max(0) as usize,
+            (rect.y + 6) as usize,
+            label,
+            FM_TEXT,
+        );
+    }
+
+    fn draw_folder_tile(&mut self, rect: Rect, entry_idx: usize) {
+        let selected = self.selected == Some(entry_idx);
+        self.fill_rect(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if selected { FM_SELECTION } else { FM_PANEL },
+        );
+        self.draw_rect_border(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if selected {
+                FM_SELECTION_GLOW
+            } else {
+                FM_BORDER
+            },
+        );
+        self.fill_rect(rect.x + 10, rect.y + 12, 18, 12, FM_FOLDER);
+        self.fill_rect(rect.x + 8, rect.y + 16, 28, 18, FM_FOLDER);
+        self.fill_rect(rect.x + 10, rect.y + 20, 24, 10, FM_FOLDER_SHADE);
+
+        if let Some(entry) = self.entries.get(entry_idx) {
+            let entry_name = entry.name.clone();
+            self.put_str(
+                (rect.x + 46) as usize,
+                (rect.y + 14) as usize,
+                &Self::clip_text(&entry_name, ((rect.w - 56).max(8) as usize) / CW),
+                if selected { FM_TEXT } else { FM_TEXT_DIM },
+            );
+            self.put_str(
+                (rect.x + 46) as usize,
+                (rect.y + 28) as usize,
+                "File folder",
+                FM_TEXT_MUTED,
+            );
         }
     }
 
-    fn put_str(&mut self, px: usize, py: usize, s: &str, color: u32) {
-        let stride = self.window.width as usize;
-        let max_chars = stride.saturating_sub(px) / CW;
-        for (ci, ch) in s.chars().take(max_chars).enumerate() {
-            let glyph = font8x8::BASIC_FONTS
-                .get(ch)
-                .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-            for (gi, &byte) in glyph.iter().enumerate() {
-                for bit in 0..8 {
-                    if byte & (1 << bit) == 0 {
-                        continue;
-                    }
-                    let x = px + ci * CW + bit;
-                    let y = py + gi;
-                    let idx = y * stride + x;
-                    if idx < self.window.buf.len() {
-                        self.window.buf[idx] = color;
-                    }
-                }
-            }
+    fn draw_drive_card(&mut self, rect: Rect, entry_idx: usize) {
+        let selected = self.selected == Some(entry_idx);
+        self.fill_rect(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if selected { FM_SELECTION } else { FM_PANEL },
+        );
+        self.draw_rect_border(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if selected {
+                FM_SELECTION_GLOW
+            } else {
+                FM_BORDER
+            },
+        );
+
+        self.draw_drive_icon((rect.x + 10) as usize, (rect.y + 12) as usize);
+        if let Some(entry) = self.entries.get(entry_idx) {
+            let entry_name = entry.name.clone();
+            let entry_is_dir = entry.is_dir;
+            let entry_size = entry.size;
+            let label = Self::clip_text(&entry_name, ((rect.w - 62).max(8) as usize) / CW);
+            self.put_str(
+                (rect.x + 46) as usize,
+                (rect.y + 10) as usize,
+                &label,
+                if selected { FM_TEXT } else { FM_TEXT_DIM },
+            );
+            let detail = if entry_is_dir {
+                "Folder root"
+            } else {
+                Self::type_label(&entry_name, false)
+            };
+            self.put_str(
+                (rect.x + 46) as usize,
+                (rect.y + 22) as usize,
+                detail,
+                FM_TEXT_MUTED,
+            );
+
+            let usage = Self::usage_ratio(&DirEntryInfo {
+                name: entry_name.clone(),
+                is_dir: entry_is_dir,
+                size: entry_size,
+            });
+            self.fill_rect(rect.x + 46, rect.y + 35, rect.w - 58, 8, FM_SEARCH);
+            self.draw_rect_border(rect.x + 46, rect.y + 35, rect.w - 58, 8, FM_BORDER_SOFT);
+            self.fill_rect(
+                rect.x + 47,
+                rect.y + 36,
+                ((rect.w - 60) * usage / 100).max(6),
+                6,
+                FM_DRIVE_FILL,
+            );
+
+            let size = if entry_is_dir {
+                String::from("shell view")
+            } else {
+                Self::format_size(entry_size)
+            };
+            self.put_str(
+                (rect.x + rect.w - 10 - size.len() as i32 * CW as i32).max(rect.x + 46) as usize,
+                (rect.y + 10) as usize,
+                &size,
+                FM_TEXT,
+            );
         }
     }
 
-    fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        let max_h = if stride > 0 {
-            self.window.buf.len() / stride
+    fn draw_drive_icon(&mut self, x: usize, y: usize) {
+        self.fill_rect(x as i32, y as i32 + 8, 22, 8, FM_DRIVE);
+        self.fill_rect(
+            x as i32 + 2,
+            y as i32 + 4,
+            18,
+            6,
+            blend(FM_DRIVE, WHITE, 90),
+        );
+        self.fill_rect(x as i32 + 5, y as i32 + 11, 12, 2, FM_ACCENT);
+        self.draw_rect_border(x as i32, y as i32 + 8, 22, 8, blend(FM_DRIVE, BLACK, 120));
+    }
+
+    fn draw_file_icon(&mut self, x: usize, y: usize) {
+        self.fill_rect(x as i32 + 1, y as i32, 10, 12, FM_FILE);
+        self.draw_rect_border(x as i32 + 1, y as i32, 10, 12, blend(FM_FILE, BLACK, 120));
+        self.fill_rect(x as i32 + 6, y as i32, 4, 3, WHITE);
+    }
+
+    fn usage_ratio(entry: &DirEntryInfo) -> i32 {
+        if entry.is_dir {
+            ((entry.name.len() as i32 * 11) % 62) + 20
+        } else if entry.size == 0 {
+            8
         } else {
-            0
-        };
-        for row in y..(y + h).min(max_h) {
-            let base = row * stride;
-            for col in x..(x + w).min(stride) {
-                let idx = base + col;
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
-            }
+            ((entry.size % 100) as i32).clamp(12, 92)
         }
     }
 
-    fn draw_rect_border(
-        &mut self,
-        stride: usize,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-        color: u32,
-    ) {
-        if w == 0 || h == 0 {
-            return;
+    fn hit_navigation(&self, lx: i32, ly: i32) -> Option<String> {
+        let layout = self.layout();
+        if lx >= layout.sidebar_w || ly < COMMAND_H + PATHBAR_H {
+            return None;
         }
-        self.fill_rect(stride, x, y, w, 1, color);
-        self.fill_rect(stride, x, y + h - 1, w, 1, color);
-        self.fill_rect(stride, x, y, 1, h, color);
-        self.fill_rect(stride, x + w - 1, y, 1, h, color);
+        let mut y = COMMAND_H + PATHBAR_H + 30;
+        for (_label, path, _active) in self.sidebar_items() {
+            let rect = Rect {
+                x: 10,
+                y,
+                w: layout.sidebar_w - 20,
+                h: NAV_ROW_H,
+            };
+            if let Some(path) = path {
+                if rect.hit(lx, ly) {
+                    return Some(path);
+                }
+                y += NAV_ROW_H + 4;
+            } else {
+                y += NAV_ROW_H + 4;
+            }
+        }
+        None
+    }
+
+    fn hit_main_entry(&self, lx: i32, ly: i32) -> Option<usize> {
+        let layout = self.layout();
+        if lx < layout.main_x || ly < COMMAND_H + PATHBAR_H {
+            return None;
+        }
+
+        if self.path == "/" {
+            self.hit_root_entry(lx, ly)
+        } else {
+            self.hit_directory_entry(lx, ly)
+        }
+    }
+
+    fn hit_root_entry(&self, lx: i32, ly: i32) -> Option<usize> {
+        let layout = self.layout();
+        let folders = self.folder_indices();
+        let files = self.file_indices();
+        let top = COMMAND_H + PATHBAR_H + 14 + 34;
+        if let Some(idx) = self.hit_folder_grid(layout, top, &folders, true, lx, ly) {
+            return Some(idx);
+        }
+        let tiles_h = self.folder_section_height(layout, &folders);
+        let drives_y = top + tiles_h + 20;
+        self.hit_drive_grid(
+            layout,
+            drives_y,
+            if files.is_empty() { &folders } else { &files },
+            lx,
+            ly,
+        )
+    }
+
+    fn hit_directory_entry(&self, lx: i32, ly: i32) -> Option<usize> {
+        let layout = self.layout();
+        let folders = self.folder_indices();
+        let files = self.file_indices();
+        let top = COMMAND_H + PATHBAR_H + 14 + 34;
+        if let Some(idx) = self.hit_folder_grid(layout, top, &folders, false, lx, ly) {
+            return Some(idx);
+        }
+
+        let files_y = top + self.folder_section_height(layout, &folders) + 18;
+        let list_y = files_y + 22;
+        if ly < list_y || ly >= layout.status_y - 10 {
+            return None;
+        }
+        let visible = self.total_rows.max(1);
+        let idx_in_files = self.offset + ((ly - list_y) / LIST_ROW_H) as usize;
+        if idx_in_files >= files.len() || idx_in_files >= self.offset + visible {
+            return None;
+        }
+        Some(files[idx_in_files])
+    }
+
+    fn hit_folder_grid(
+        &self,
+        layout: Layout,
+        top: i32,
+        indices: &[usize],
+        root_mode: bool,
+        lx: i32,
+        ly: i32,
+    ) -> Option<usize> {
+        let tile_y = top + 22;
+        let tile_w = ((layout.main_w - 60 - TILE_GAP_X * 2) / 3).max(140);
+        let cols = ((layout.main_w - 36) / (tile_w + TILE_GAP_X)).max(1) as usize;
+        let max = if root_mode { 9 } else { indices.len().min(9) };
+        for (visual_idx, &entry_idx) in indices.iter().take(max).enumerate() {
+            let col = (visual_idx % cols).min(2);
+            let row = visual_idx / cols;
+            let rect = Rect {
+                x: layout.main_x + 18 + col as i32 * (tile_w + TILE_GAP_X),
+                y: tile_y + row as i32 * (TILE_H + TILE_GAP_Y),
+                w: tile_w,
+                h: TILE_H,
+            };
+            if rect.hit(lx, ly) {
+                return Some(entry_idx);
+            }
+        }
+        None
+    }
+
+    fn hit_drive_grid(
+        &self,
+        layout: Layout,
+        y: i32,
+        indices: &[usize],
+        lx: i32,
+        ly: i32,
+    ) -> Option<usize> {
+        let card_w = ((layout.main_w - 54) / 2).max(180);
+        let cols = if layout.main_w > 420 { 2 } else { 1 };
+        let max_items = if cols == 2 { 4 } else { 3 };
+        for (visual_idx, &entry_idx) in indices.iter().take(max_items).enumerate() {
+            let col = (visual_idx % cols as usize) as i32;
+            let row = (visual_idx / cols as usize) as i32;
+            let rect = Rect {
+                x: layout.main_x + 18 + col * (card_w + 12),
+                y: y + 22 + row * (DRIVE_H + DRIVE_GAP_Y),
+                w: card_w,
+                h: DRIVE_H,
+            };
+            if rect.hit(lx, ly) {
+                return Some(entry_idx);
+            }
+        }
+        None
+    }
+
+    fn folder_section_height(&self, layout: Layout, indices: &[usize]) -> i32 {
+        if indices.is_empty() {
+            return 40;
+        }
+        let tile_w = ((layout.main_w - 60 - TILE_GAP_X * 2) / 3).max(140);
+        let cols = ((layout.main_w - 36) / (tile_w + TILE_GAP_X)).max(1) as usize;
+        let rows = ((indices.len().min(9) + cols - 1) / cols).max(1) as i32;
+        22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
     }
 
     fn create_new_file(&mut self) {
         let name = self.next_available_name("FILE", Some("TXT"));
         let path = self.join_child_path(&name);
         match crate::fat32::create_file(&path) {
-            Ok(()) => {
-                self.reload_after_create(&name, "created");
-            }
+            Ok(()) => self.reload_after_create(&name, "created"),
             Err(err) => {
                 self.set_status_error("file", err.as_str());
                 self.render();
@@ -1002,9 +1514,7 @@ impl FileManagerApp {
         let name = self.next_available_name("DIR", None);
         let path = self.join_child_path(&name);
         match crate::fat32::create_dir(&path) {
-            Ok(()) => {
-                self.reload_after_create(&name, "created");
-            }
+            Ok(()) => self.reload_after_create(&name, "created"),
             Err(err) => {
                 self.set_status_error("folder", err.as_str());
                 self.render();
@@ -1086,64 +1596,71 @@ impl FileManagerApp {
         clipped
     }
 
-    fn toolbar_layout(window_w: usize) -> ToolbarLayout {
-        let up_x = 6usize;
-        let home_x = up_x + NAV_BTN_W + NAV_BTN_GAP;
-        let refresh_x = home_x + NAV_BTN_W + NAV_BTN_GAP;
-        let dir_btn_x = window_w.saturating_sub(ACTION_BTN_W + 6);
-        let file_btn_x = dir_btn_x.saturating_sub(ACTION_BTN_W + ACTION_BTN_GAP);
-        let address_x = refresh_x + NAV_BTN_W + 8;
-        let address_w = file_btn_x.saturating_sub(address_x + 8);
-        ToolbarLayout {
-            up_x,
-            home_x,
-            refresh_x,
-            address_x,
-            address_w,
-            file_btn_x,
-            dir_btn_x,
+    fn put_str(&mut self, px: usize, py: usize, s: &str, color: u32) {
+        let stride = self.window.width.max(0) as usize;
+        let max_chars = stride.saturating_sub(px) / CW;
+        for (ci, ch) in s.chars().take(max_chars).enumerate() {
+            let glyph = font8x8::BASIC_FONTS
+                .get(ch)
+                .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+            for (gi, &byte) in glyph.iter().enumerate() {
+                for bit in 0..8 {
+                    if byte & (1 << bit) == 0 {
+                        continue;
+                    }
+                    let x = px + ci * CW + bit;
+                    let y = py + gi;
+                    let idx = y * stride + x;
+                    if idx < self.window.buf.len() {
+                        self.window.buf[idx] = color;
+                    }
+                }
+            }
         }
     }
 
-    fn column_layout(window_w: usize) -> ColumnLayout {
-        let right_pad = 8usize;
-        let gap = 8usize;
-        let side_budget = window_w
-            .saturating_sub(16)
-            .saturating_sub(120)
-            .min(84 + gap + 96);
-        let size_w = 84usize.min(side_budget.saturating_sub(gap));
-        let type_w = 96usize.min(side_budget.saturating_sub(size_w + gap));
-        let type_x = window_w.saturating_sub(right_pad + type_w);
-        let size_x = type_x.saturating_sub(gap + size_w);
-        let name_sep_x = size_x.saturating_sub(gap);
-        let size_sep_x = type_x.saturating_sub(gap);
-        ColumnLayout {
-            name_sep_x,
-            size_x,
-            size_w,
-            size_sep_x,
-            type_x,
-            type_w,
+    fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: u32) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let stride = self.window.width.max(0) as usize;
+        let max_h = if stride > 0 {
+            self.window.buf.len() / stride
+        } else {
+            0
+        };
+        let start_x = x.max(0) as usize;
+        let start_y = y.max(0) as usize;
+        let end_x = (x + w).max(0) as usize;
+        let end_y = (y + h).max(0) as usize;
+        for row in start_y..end_y.min(max_h) {
+            let base = row * stride;
+            for col in start_x..end_x.min(stride) {
+                let idx = base + col;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
+                }
+            }
         }
     }
 
-    fn hit_toolbar_button(lx: i32, ly: i32, px: usize, w: usize) -> bool {
-        lx >= px as i32 && lx < (px + w) as i32 && ly >= 3 && ly < (3 + NAV_BTN_H as i32)
+    fn draw_rect_border(&mut self, x: i32, y: i32, w: i32, h: i32, color: u32) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        self.fill_rect(x, y, w, 1, color);
+        self.fill_rect(x, y + h - 1, w, 1, color);
+        self.fill_rect(x, y, 1, h, color);
+        self.fill_rect(x + w - 1, y, 1, h, color);
     }
 }
 
 fn blend(a: u32, b: u32, t: u32) -> u32 {
-    let lerp = |ca: u32, cb: u32| -> u32 {
-        if cb >= ca {
-            (ca + (cb - ca) * t / 255).min(255)
-        } else {
-            ca - (ca - cb) * t / 255
-        }
-    };
-    let r = lerp((a >> 16) & 0xFF, (b >> 16) & 0xFF);
-    let g = lerp((a >> 8) & 0xFF, (b >> 8) & 0xFF);
-    let bl = lerp(a & 0xFF, b & 0xFF);
+    let clamped = t.min(255);
+    let inv = 255 - clamped;
+    let r = (((a >> 16) & 0xFF) * inv + ((b >> 16) & 0xFF) * clamped) / 255;
+    let g = (((a >> 8) & 0xFF) * inv + ((b >> 8) & 0xFF) * clamped) / 255;
+    let bl = ((a & 0xFF) * inv + (b & 0xFF) * clamped) / 255;
     (r << 16) | (g << 8) | bl
 }
 
