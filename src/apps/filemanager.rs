@@ -15,11 +15,12 @@ const CW: usize = 8;
 const TOOLBAR_H: i32 = 24;
 const COL_HDR_H: i32 = 16;
 const STATUS_H: i32 = 18;
+const NAV_BTN_W: usize = 20;
+const NAV_BTN_H: usize = 18;
+const NAV_BTN_GAP: usize = 4;
 const ACTION_BTN_W: usize = 44;
 const ACTION_BTN_H: usize = 18;
 const ACTION_BTN_GAP: usize = 6;
-const NAME_COL_W: i32 = 288;
-const SIZE_COL_W: i32 = 72;
 const ROW_H: i32 = 16;
 
 const FM_BG: u32 = 0x00_02_07_12;
@@ -35,14 +36,49 @@ const FILE_ICON: u32 = 0x00_AA_FF_CC;
 const TEXT_MUTED: u32 = 0x00_66_AA_DD;
 const COL_SEP: u32 = 0x00_00_22_44;
 
-const COL_SIZE: usize = NAME_COL_W as usize + 4;
-const COL_TYPE: usize = NAME_COL_W as usize + SIZE_COL_W as usize + 4;
-
 #[derive(Clone, Copy, PartialEq)]
 enum EntryType {
     Folder,
     File,
     Unknown,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortColumn {
+    Name,
+    Size,
+    Type,
+}
+
+impl SortColumn {
+    fn label(self) -> &'static str {
+        match self {
+            SortColumn::Name => "name",
+            SortColumn::Size => "size",
+            SortColumn::Type => "type",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ToolbarLayout {
+    up_x: usize,
+    home_x: usize,
+    refresh_x: usize,
+    address_x: usize,
+    address_w: usize,
+    file_btn_x: usize,
+    dir_btn_x: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ColumnLayout {
+    name_sep_x: usize,
+    size_x: usize,
+    size_w: usize,
+    size_sep_x: usize,
+    type_x: usize,
+    type_w: usize,
 }
 
 pub struct FileManagerApp {
@@ -57,6 +93,8 @@ pub struct FileManagerApp {
     status_note: Option<String>,
     last_width: i32,
     last_height: i32,
+    sort_column: SortColumn,
+    sort_desc: bool,
 }
 
 impl FileManagerApp {
@@ -73,88 +111,108 @@ impl FileManagerApp {
             status_note: None,
             last_width: FILEMAN_W,
             last_height: FILEMAN_H,
+            sort_column: SortColumn::Name,
+            sort_desc: false,
         };
         app.load_dir("/");
         app
     }
 
     pub fn load_dir(&mut self, dir: &str) {
+        self.load_dir_with_state(dir, None, None);
+    }
+
+    fn load_dir_with_state(
+        &mut self,
+        dir: &str,
+        selected_name: Option<&str>,
+        preferred_offset: Option<usize>,
+    ) {
         self.path.clear();
         self.path.push_str(dir);
         let mut new_entries = crate::fat32::list_dir(dir).unwrap_or_default();
-        new_entries.sort_by(|a, b| {
-            if a.is_dir == b.is_dir {
-                a.name.to_lowercase().cmp(&b.name.to_lowercase())
-            } else if a.is_dir {
-                core::cmp::Ordering::Less
-            } else {
-                core::cmp::Ordering::Greater
-            }
-        });
+        Self::sort_entries(&mut new_entries, self.sort_column, self.sort_desc);
         self.entries = new_entries;
-        self.offset = 0;
-        self.selected = self.entries.first().map(|_| 0);
+        self.selected = selected_name.and_then(|name| {
+            self.entries
+                .iter()
+                .position(|entry| entry.name.eq_ignore_ascii_case(name))
+        });
+        if self.selected.is_none() {
+            self.selected = self.entries.first().map(|_| 0);
+        }
+        let visible_rows = self.visible_row_capacity();
+        let max_offset = self.entries.len().saturating_sub(visible_rows.max(1));
+        self.offset = preferred_offset.unwrap_or(0).min(max_offset);
+        self.ensure_selected_visible();
         self.status_note = None;
         self.render();
     }
 
     pub fn handle_key(&mut self, c: char) {
         match c {
-            '\u{0008}' => {
-                if self.path.len() > 1 {
-                    let parent = self.parent_path();
-                    self.load_dir(&parent);
-                }
-            }
+            '\u{0008}' => self.navigate_up(),
             '\u{F700}' => self.move_selection(-1), // up arrow
             '\u{F701}' => self.move_selection(1),  // down arrow
             'n' | 'N' => self.create_new_file(),
             'd' | 'D' => self.create_new_dir(),
+            'h' | 'H' => self.navigate_home(),
+            'r' | 'R' => self.refresh_current_dir(),
+            's' | 'S' => self.cycle_sort(),
             '\n' => self.open_selected(),
             _ => {}
         }
     }
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
+        let window_w = self.window.width.max(0) as usize;
+        let toolbar = Self::toolbar_layout(window_w);
+        let columns = Self::column_layout(window_w);
         let toolbar_bottom = TOOLBAR_H + COL_HDR_H;
         let content_bottom = toolbar_bottom + self.view_h;
         if ly < toolbar_bottom {
             if ly < TOOLBAR_H {
-                if lx >= 6 && lx < 6 + 18 && ly >= 3 && ly < 3 + 18 {
-                    if self.path.len() > 1 {
-                        let parent = self.parent_path();
-                        self.load_dir(&parent);
-                    }
+                if Self::hit_toolbar_button(lx, ly, toolbar.up_x, NAV_BTN_W) {
+                    self.navigate_up();
                     return;
                 }
-                let window_w = self.window.width.max(0) as usize;
-                let (file_btn_x, dir_btn_x) = Self::toolbar_button_x(window_w);
-                if lx >= file_btn_x as i32
-                    && lx < (file_btn_x + ACTION_BTN_W) as i32
-                    && ly >= 3
-                    && ly < (3 + ACTION_BTN_H as i32)
-                {
+                if Self::hit_toolbar_button(lx, ly, toolbar.home_x, NAV_BTN_W) {
+                    self.navigate_home();
+                    return;
+                }
+                if Self::hit_toolbar_button(lx, ly, toolbar.refresh_x, NAV_BTN_W) {
+                    self.refresh_current_dir();
+                    return;
+                }
+                if Self::hit_toolbar_button(lx, ly, toolbar.file_btn_x, ACTION_BTN_W) {
                     self.create_new_file();
                     return;
                 }
-                if lx >= dir_btn_x as i32
-                    && lx < (dir_btn_x + ACTION_BTN_W) as i32
-                    && ly >= 3
-                    && ly < (3 + ACTION_BTN_H as i32)
-                {
+                if Self::hit_toolbar_button(lx, ly, toolbar.dir_btn_x, ACTION_BTN_W) {
                     self.create_new_dir();
                     return;
                 }
-                let window_w = self.window.width.max(0);
-                let address_w = Self::address_bar_w(window_w as usize) as i32;
-                if lx >= 32 && lx < 32 + address_w {
-                    let rel_x = (lx - 32) as usize;
-                    let path_chars = address_w.max(0) as usize / CW;
+                if lx >= toolbar.address_x as i32
+                    && lx < toolbar.address_x as i32 + toolbar.address_w as i32
+                {
+                    let rel_x = (lx - toolbar.address_x as i32) as usize;
+                    let path_chars = toolbar.address_w / CW;
                     let clicked_char = rel_x / CW;
                     let path_start = self.path.len().saturating_sub(path_chars);
                     if path_start + clicked_char < self.path.len() {
                         self.navigate_to_pos(path_start + clicked_char);
                     }
+                }
+            } else {
+                if lx < columns.name_sep_x as i32 {
+                    self.change_sort(SortColumn::Name);
+                } else if columns.size_w > 0
+                    && lx >= columns.size_x as i32 - 4
+                    && lx < columns.size_sep_x as i32
+                {
+                    self.change_sort(SortColumn::Size);
+                } else if columns.type_w > 0 && lx >= columns.type_x as i32 - 4 {
+                    self.change_sort(SortColumn::Type);
                 }
             }
             return;
@@ -224,7 +282,11 @@ impl FileManagerApp {
 
     pub fn refresh_current_dir(&mut self) {
         let path = self.path.clone();
-        self.load_dir(&path);
+        let selected = self.selected_name();
+        let offset = self.offset;
+        self.load_dir_with_state(&path, selected.as_deref(), Some(offset));
+        self.status_note = Some(String::from("refreshed"));
+        self.render();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -270,10 +332,11 @@ impl FileManagerApp {
             Some(s) => s,
             None => return,
         };
+        let visible_rows = self.visible_row_capacity().max(1);
         if sel < self.offset {
             self.offset = sel;
-        } else if self.total_rows > 0 && sel >= self.offset + self.total_rows {
-            self.offset = sel.saturating_sub(self.total_rows - 1);
+        } else if sel >= self.offset + visible_rows {
+            self.offset = sel.saturating_sub(visible_rows - 1);
         }
     }
 
@@ -414,6 +477,112 @@ impl FileManagerApp {
         }
     }
 
+    fn selected_name(&self) -> Option<String> {
+        self.selected
+            .and_then(|idx| self.entries.get(idx))
+            .map(|entry| entry.name.clone())
+    }
+
+    fn visible_row_capacity(&self) -> usize {
+        let content_area_h = (self.window.height - TITLE_H).max(0);
+        let entries_area_h = (content_area_h - TOOLBAR_H - COL_HDR_H - STATUS_H).max(0);
+        (entries_area_h / ROW_H) as usize
+    }
+
+    fn sort_entries(entries: &mut [DirEntryInfo], sort_column: SortColumn, sort_desc: bool) {
+        entries.sort_by(|a, b| {
+            if a.is_dir != b.is_dir {
+                return if a.is_dir {
+                    core::cmp::Ordering::Less
+                } else {
+                    core::cmp::Ordering::Greater
+                };
+            }
+
+            let base = match sort_column {
+                SortColumn::Name => a
+                    .name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase()),
+                SortColumn::Size => a.size.cmp(&b.size).then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                }),
+                SortColumn::Type => Self::type_label(&a.name, a.is_dir)
+                    .cmp(Self::type_label(&b.name, b.is_dir))
+                    .then_with(|| {
+                        a.name
+                            .to_ascii_lowercase()
+                            .cmp(&b.name.to_ascii_lowercase())
+                    }),
+            };
+
+            if sort_desc {
+                base.reverse()
+            } else {
+                base
+            }
+        });
+    }
+
+    fn resort_entries(&mut self, note: &str) {
+        let selected = self.selected_name();
+        Self::sort_entries(&mut self.entries, self.sort_column, self.sort_desc);
+        self.selected = selected.and_then(|name| {
+            self.entries
+                .iter()
+                .position(|entry| entry.name.eq_ignore_ascii_case(&name))
+        });
+        if self.selected.is_none() {
+            self.selected = self.entries.first().map(|_| 0);
+        }
+        self.ensure_selected_visible();
+        self.status_note = Some(String::from(note));
+        self.render();
+    }
+
+    fn change_sort(&mut self, column: SortColumn) {
+        if self.sort_column == column {
+            self.sort_desc = !self.sort_desc;
+        } else {
+            self.sort_column = column;
+            self.sort_desc = false;
+        }
+        let mut note = String::from("sort ");
+        note.push_str(column.label());
+        note.push(' ');
+        note.push_str(if self.sort_desc { "desc" } else { "asc" });
+        self.resort_entries(&note);
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sort_column = match self.sort_column {
+            SortColumn::Name => SortColumn::Size,
+            SortColumn::Size => SortColumn::Type,
+            SortColumn::Type => SortColumn::Name,
+        };
+        self.sort_desc = false;
+        let mut note = String::from("sort ");
+        note.push_str(self.sort_column.label());
+        self.resort_entries(&note);
+    }
+
+    fn navigate_up(&mut self) {
+        if self.path.len() > 1 {
+            let parent = self.parent_path();
+            self.load_dir(&parent);
+            self.status_note = Some(String::from("up one folder"));
+            self.render();
+        }
+    }
+
+    fn navigate_home(&mut self) {
+        self.load_dir("/");
+        self.status_note = Some(String::from("home"));
+        self.render();
+    }
+
     // ── Render ────────────────────────────────────────────────────────────────
 
     fn render(&mut self) {
@@ -440,60 +609,51 @@ impl FileManagerApp {
 
     fn draw_toolbar(&mut self, stride: usize) {
         let window_w = self.window.width.max(0) as usize;
-        let address_w = Self::address_bar_w(window_w);
-        let (file_btn_x, dir_btn_x) = Self::toolbar_button_x(window_w);
+        let layout = Self::toolbar_layout(window_w);
         self.fill_rect(stride, 0, 0, window_w, TOOLBAR_H as usize, FM_PANEL_ALT);
-        self.fill_rect(stride, 30, 3, address_w, 18, FM_PANEL);
-        self.draw_rect_border(stride, 30, 3, address_w, 18, FM_BORDER);
-        self.draw_up_button(stride, 6, 3);
-        self.draw_toolbar_button(stride, file_btn_x, 3, "FILE");
-        self.draw_toolbar_button(stride, dir_btn_x, 3, "DIR");
+        self.fill_rect(
+            stride,
+            layout.address_x,
+            3,
+            layout.address_w,
+            ACTION_BTN_H,
+            FM_PANEL,
+        );
+        self.draw_rect_border(
+            stride,
+            layout.address_x,
+            3,
+            layout.address_w,
+            ACTION_BTN_H,
+            FM_BORDER,
+        );
+        self.draw_toolbar_button(stride, layout.up_x, 3, NAV_BTN_W, "UP", WHITE);
+        self.draw_toolbar_button(stride, layout.home_x, 3, NAV_BTN_W, "HM", WHITE);
+        self.draw_toolbar_button(stride, layout.refresh_x, 3, NAV_BTN_W, "RF", WHITE);
+        self.draw_toolbar_button(stride, layout.file_btn_x, 3, ACTION_BTN_W, "FILE", WHITE);
+        self.draw_toolbar_button(stride, layout.dir_btn_x, 3, ACTION_BTN_W, "DIR", WHITE);
         let path_str = self.path.clone();
-        self.draw_address_bar(&path_str, 38, 0, address_w);
+        self.draw_address_bar(
+            &path_str,
+            layout.address_x + 8,
+            0,
+            layout.address_w.saturating_sub(16),
+        );
     }
 
-    fn draw_up_button(&mut self, stride: usize, px: usize, py: usize) {
-        self.fill_rect(stride, px, py, 18, 18, FM_PANEL);
-        self.draw_rect_border(stride, px, py, 18, 18, FM_BORDER);
-        // Up arrow glyph
-        let arrow: [(usize, usize); 14] = [
-            (5, 5),
-            (6, 5),
-            (4, 6),
-            (5, 6),
-            (6, 6),
-            (7, 6),
-            (3, 7),
-            (4, 7),
-            (5, 7),
-            (6, 7),
-            (7, 7),
-            (8, 7),
-            (5, 8),
-            (6, 8),
-        ];
-        for (gx, gy) in arrow {
-            let idx = (py + gy) * stride + (px + gx);
-            if idx < self.window.buf.len() {
-                self.window.buf[idx] = WHITE;
-            }
-        }
-        // Stem
-        for gy in 9..13 {
-            for gx in 5..7 {
-                let idx = (py + gy) * stride + (px + gx);
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = WHITE;
-                }
-            }
-        }
-    }
-
-    fn draw_toolbar_button(&mut self, stride: usize, px: usize, py: usize, label: &str) {
-        self.fill_rect(stride, px, py, ACTION_BTN_W, ACTION_BTN_H, FM_PANEL);
-        self.draw_rect_border(stride, px, py, ACTION_BTN_W, ACTION_BTN_H, FM_BORDER);
-        let label_x = px + ACTION_BTN_W.saturating_sub(label.len() * CW) / 2;
-        self.put_str(label_x, py + 6, label, WHITE);
+    fn draw_toolbar_button(
+        &mut self,
+        stride: usize,
+        px: usize,
+        py: usize,
+        w: usize,
+        label: &str,
+        color: u32,
+    ) {
+        self.fill_rect(stride, px, py, w, ACTION_BTN_H, FM_PANEL);
+        self.draw_rect_border(stride, px, py, w, ACTION_BTN_H, FM_BORDER);
+        let label_x = px + w.saturating_sub(label.len() * CW) / 2;
+        self.put_str(label_x, py + 6, label, color);
     }
 
     fn draw_address_bar(&mut self, path_str: &str, x0: usize, y0: usize, avail: usize) {
@@ -508,6 +668,7 @@ impl FileManagerApp {
 
     fn draw_column_header(&mut self, stride: usize) {
         let window_w = self.window.width.max(0) as usize;
+        let columns = Self::column_layout(window_w);
         let y = TOOLBAR_H as usize;
         self.fill_rect(stride, 0, y, window_w, COL_HDR_H as usize, FM_PANEL);
         self.fill_rect(
@@ -519,35 +680,58 @@ impl FileManagerApp {
             FM_BORDER,
         );
 
-        self.put_str(8, y + 4, "Name", TEXT_MUTED);
-        self.put_str(COL_SIZE, y + 4, "Size", TEXT_MUTED);
-        self.put_str(COL_TYPE, y + 4, "Type", TEXT_MUTED);
+        self.draw_header_label(
+            stride,
+            8,
+            y + 4,
+            SortColumn::Name,
+            columns.name_sep_x.saturating_sub(16),
+        );
+        if columns.size_w > 0 {
+            self.draw_header_label(
+                stride,
+                columns.size_x,
+                y + 4,
+                SortColumn::Size,
+                columns.size_w,
+            );
+        }
+        if columns.type_w > 0 {
+            self.draw_header_label(
+                stride,
+                columns.type_x,
+                y + 4,
+                SortColumn::Type,
+                columns.type_w,
+            );
+        }
 
         // Column separators
         self.fill_rect(
             stride,
-            NAME_COL_W as usize,
+            columns.name_sep_x,
             y,
             1,
             COL_HDR_H as usize,
             FM_BORDER,
         );
-        self.fill_rect(
-            stride,
-            (NAME_COL_W + SIZE_COL_W) as usize,
-            y,
-            1,
-            COL_HDR_H as usize,
-            FM_BORDER,
-        );
+        if columns.size_w > 0 {
+            self.fill_rect(
+                stride,
+                columns.size_sep_x,
+                y,
+                1,
+                COL_HDR_H as usize,
+                FM_BORDER,
+            );
+        }
     }
 
     fn draw_entries(&mut self, stride: usize) {
         let y0 = (TOOLBAR_H + COL_HDR_H) as usize;
         let window_w = self.window.width.max(0) as usize;
+        let columns = Self::column_layout(window_w);
         let entries_copy: Vec<DirEntryInfo> = self.entries.clone();
-        let dir_count = entries_copy.iter().filter(|e| e.is_dir).count();
-        let _ = dir_count; // used in status bar only
 
         if entries_copy.is_empty() {
             let msg_y = y0 + self.view_h as usize / 2 - 4;
@@ -586,52 +770,47 @@ impl FileManagerApp {
             self.draw_entry_icon(stride, 8, py + 3, et);
 
             // Column separator lines
-            self.fill_rect(stride, NAME_COL_W as usize, py, 1, ROW_H as usize, COL_SEP);
-            self.fill_rect(
-                stride,
-                (NAME_COL_W + SIZE_COL_W) as usize,
-                py,
-                1,
-                ROW_H as usize,
-                COL_SEP,
-            );
+            self.fill_rect(stride, columns.name_sep_x, py, 1, ROW_H as usize, COL_SEP);
+            if columns.size_w > 0 {
+                self.fill_rect(stride, columns.size_sep_x, py, 1, ROW_H as usize, COL_SEP);
+            }
 
             match et {
                 EntryType::Folder => {
-                    self.put_str(
-                        24,
-                        py + 4,
-                        &entry.name,
-                        if is_sel { WHITE } else { LIGHT_CYAN },
-                    );
-                    self.put_str(
-                        COL_TYPE,
-                        py + 4,
-                        "Folder",
-                        if is_sel { WHITE } else { TEXT_MUTED },
-                    );
+                    let name =
+                        Self::clip_text(&entry.name, columns.name_sep_x.saturating_sub(28) / CW);
+                    self.put_str(24, py + 4, &name, if is_sel { WHITE } else { LIGHT_CYAN });
+                    if columns.type_w > 0 {
+                        self.put_str(
+                            columns.type_x,
+                            py + 4,
+                            "Folder",
+                            if is_sel { WHITE } else { TEXT_MUTED },
+                        );
+                    }
                 }
                 EntryType::File => {
-                    self.put_str(
-                        24,
-                        py + 4,
-                        &entry.name,
-                        if is_sel { WHITE } else { LIGHT_GRAY },
-                    );
+                    let name =
+                        Self::clip_text(&entry.name, columns.name_sep_x.saturating_sub(28) / CW);
+                    self.put_str(24, py + 4, &name, if is_sel { WHITE } else { LIGHT_GRAY });
                     let size_str = Self::format_size(entry.size);
-                    self.put_str(
-                        COL_SIZE,
-                        py + 4,
-                        &size_str,
-                        if is_sel { WHITE } else { TEXT_MUTED },
-                    );
+                    if columns.size_w > 0 {
+                        self.put_str(
+                            columns.size_x,
+                            py + 4,
+                            &size_str,
+                            if is_sel { WHITE } else { TEXT_MUTED },
+                        );
+                    }
                     let label = Self::type_label(&entry.name, false);
-                    self.put_str(
-                        COL_TYPE,
-                        py + 4,
-                        label,
-                        if is_sel { WHITE } else { TEXT_MUTED },
-                    );
+                    if columns.type_w > 0 {
+                        self.put_str(
+                            columns.type_x,
+                            py + 4,
+                            label,
+                            if is_sel { WHITE } else { TEXT_MUTED },
+                        );
+                    }
                 }
                 EntryType::Unknown => {}
             }
@@ -662,6 +841,10 @@ impl FileManagerApp {
         left.push_str(" folders  ");
         fmt_push_u(&mut left, n_files as u64);
         left.push_str(" files");
+        left.push_str("  sort ");
+        left.push_str(self.sort_column.label());
+        left.push(' ');
+        left.push(if self.sort_desc { 'v' } else { '^' });
         self.put_str(8, y + 5, &left, TEXT_MUTED);
 
         // Right: selected item info
@@ -669,11 +852,17 @@ impl FileManagerApp {
             if let Some(e) = self.entries.get(idx) {
                 let mut right = String::new();
                 right.push_str(&e.name);
+                right.push_str("  ");
+                right.push_str(Self::type_label(&e.name, e.is_dir));
                 if !e.is_dir {
                     right.push_str("  ");
                     let sz = Self::format_size(e.size);
                     right.push_str(&sz);
                 }
+                right.push_str("  ");
+                fmt_push_u(&mut right, (idx + 1) as u64);
+                right.push('/');
+                fmt_push_u(&mut right, self.entries.len() as u64);
                 let right_x = window_w.saturating_sub(right.len() * CW + 10);
                 self.put_str(right_x, y + 5, &right, LIGHT_GRAY);
             }
@@ -683,9 +872,42 @@ impl FileManagerApp {
         let hint_note = self.status_note.clone();
         let hint = hint_note
             .as_deref()
-            .unwrap_or("N file  D dir  Enter open  BS up");
+            .unwrap_or("Enter open  BS up  H home  R refresh  S sort  N file  D dir");
         let hint_x = window_w.saturating_sub(hint.len() * CW) / 2;
         self.put_str(hint_x, y + 5, hint, FM_BORDER);
+    }
+
+    fn draw_header_label(
+        &mut self,
+        _stride: usize,
+        x: usize,
+        y: usize,
+        column: SortColumn,
+        width: usize,
+    ) {
+        if width == 0 {
+            return;
+        }
+        let mut label = String::from(match column {
+            SortColumn::Name => "Name",
+            SortColumn::Size => "Size",
+            SortColumn::Type => "Type",
+        });
+        if self.sort_column == column {
+            label.push(' ');
+            label.push(if self.sort_desc { 'v' } else { '^' });
+        }
+        let clipped = Self::clip_text(&label, width / CW);
+        self.put_str(
+            x,
+            y,
+            &clipped,
+            if self.sort_column == column {
+                WHITE
+            } else {
+                TEXT_MUTED
+            },
+        );
     }
 
     fn draw_entry_icon(&mut self, stride: usize, x: usize, y: usize, et: EntryType) {
@@ -792,12 +1014,7 @@ impl FileManagerApp {
 
     fn reload_after_create(&mut self, name: &str, verb: &str) {
         let current = self.path.clone();
-        self.load_dir(&current);
-        self.selected = self
-            .entries
-            .iter()
-            .position(|entry| entry.name.eq_ignore_ascii_case(name));
-        self.ensure_selected_visible();
+        self.load_dir_with_state(&current, Some(name), Some(self.offset));
         let mut note = String::from(verb);
         note.push(' ');
         note.push_str(name);
@@ -851,15 +1068,68 @@ impl FileManagerApp {
         path
     }
 
-    fn toolbar_button_x(window_w: usize) -> (usize, usize) {
-        let dir_btn_x = window_w.saturating_sub(ACTION_BTN_W + 6);
-        let file_btn_x = dir_btn_x.saturating_sub(ACTION_BTN_W + ACTION_BTN_GAP);
-        (file_btn_x, dir_btn_x)
+    fn clip_text(text: &str, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
+        }
+        if text.len() <= max_chars {
+            return String::from(text);
+        }
+        if max_chars == 1 {
+            return String::from("~");
+        }
+        let mut clipped = String::new();
+        for ch in text.chars().take(max_chars - 1) {
+            clipped.push(ch);
+        }
+        clipped.push('~');
+        clipped
     }
 
-    fn address_bar_w(window_w: usize) -> usize {
-        let (file_btn_x, _) = Self::toolbar_button_x(window_w);
-        file_btn_x.saturating_sub(36)
+    fn toolbar_layout(window_w: usize) -> ToolbarLayout {
+        let up_x = 6usize;
+        let home_x = up_x + NAV_BTN_W + NAV_BTN_GAP;
+        let refresh_x = home_x + NAV_BTN_W + NAV_BTN_GAP;
+        let dir_btn_x = window_w.saturating_sub(ACTION_BTN_W + 6);
+        let file_btn_x = dir_btn_x.saturating_sub(ACTION_BTN_W + ACTION_BTN_GAP);
+        let address_x = refresh_x + NAV_BTN_W + 8;
+        let address_w = file_btn_x.saturating_sub(address_x + 8);
+        ToolbarLayout {
+            up_x,
+            home_x,
+            refresh_x,
+            address_x,
+            address_w,
+            file_btn_x,
+            dir_btn_x,
+        }
+    }
+
+    fn column_layout(window_w: usize) -> ColumnLayout {
+        let right_pad = 8usize;
+        let gap = 8usize;
+        let side_budget = window_w
+            .saturating_sub(16)
+            .saturating_sub(120)
+            .min(84 + gap + 96);
+        let size_w = 84usize.min(side_budget.saturating_sub(gap));
+        let type_w = 96usize.min(side_budget.saturating_sub(size_w + gap));
+        let type_x = window_w.saturating_sub(right_pad + type_w);
+        let size_x = type_x.saturating_sub(gap + size_w);
+        let name_sep_x = size_x.saturating_sub(gap);
+        let size_sep_x = type_x.saturating_sub(gap);
+        ColumnLayout {
+            name_sep_x,
+            size_x,
+            size_w,
+            size_sep_x,
+            type_x,
+            type_w,
+        }
+    }
+
+    fn hit_toolbar_button(lx: i32, ly: i32, px: usize, w: usize) -> bool {
+        lx >= px as i32 && lx < (px + w) as i32 && ly >= 3 && ly < (3 + NAV_BTN_H as i32)
     }
 }
 
