@@ -62,6 +62,7 @@ impl SysMonApp {
 
         let used = crate::allocator::heap_used();
         let heap_total = crate::allocator::HEAP_SIZE;
+        let heap_free = heap_total.saturating_sub(used);
         let heap_ratio = if heap_total > 0 {
             (used.saturating_mul(100) / heap_total).min(100)
         } else {
@@ -101,13 +102,18 @@ impl SysMonApp {
         self.put_str_px(stride, 28, 58, "CPU VENDOR", LABEL);
         self.put_str_px(stride, 28, 76, vendor, GREEN);
 
-        self.put_str_px(stride, 280, 58, "HEAP LOAD", LABEL);
-        let mut heap_line = NumberLine::new();
-        heap_line.push_usize(used);
-        heap_line.push_str(" / ");
-        heap_line.push_usize(heap_total);
-        heap_line.push_str(" B");
-        self.put_str_px(stride, 280, 76, heap_line.as_str(), YELLOW);
+        self.put_str_px(stride, 280, 58, "HEAP USED", LABEL);
+        let mut heap_used_line = NumberLine::new();
+        heap_used_line.push_size(used);
+        heap_used_line.push_str(" of ");
+        heap_used_line.push_size(heap_total);
+        self.put_str_px(stride, 280, 72, heap_used_line.as_str(), YELLOW);
+        let mut heap_free_line = NumberLine::new();
+        heap_free_line.push_size(heap_free);
+        heap_free_line.push_str(" free   ");
+        heap_free_line.push_usize(heap_ratio);
+        heap_free_line.push_str("%");
+        self.put_str_px(stride, 280, 82, heap_free_line.as_str(), MUTED);
         self.draw_bar(
             stride,
             280,
@@ -377,6 +383,38 @@ impl NumberLine {
 
     fn push_usize(&mut self, n: usize) {
         self.push_u64(n as u64);
+    }
+
+    fn push_size(&mut self, bytes: usize) {
+        const KIB: usize = 1024;
+        const MIB: usize = 1024 * 1024;
+        const GIB: usize = 1024 * 1024 * 1024;
+
+        if bytes >= GIB {
+            self.push_fixed_1(bytes, GIB);
+            self.push_str(" GiB");
+        } else if bytes >= MIB {
+            self.push_fixed_1(bytes, MIB);
+            self.push_str(" MiB");
+        } else if bytes >= KIB {
+            self.push_fixed_1(bytes, KIB);
+            self.push_str(" KiB");
+        } else {
+            self.push_usize(bytes);
+            self.push_str(" B");
+        }
+    }
+
+    fn push_fixed_1(&mut self, value: usize, unit: usize) {
+        let mut whole = value / unit;
+        let mut frac = ((value % unit) * 10 + unit / 2) / unit;
+        if frac >= 10 {
+            whole += 1;
+            frac = 0;
+        }
+        self.push_usize(whole);
+        self.push_str(".");
+        self.push_usize(frac);
     }
 
     fn as_str(&self) -> &str {

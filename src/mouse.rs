@@ -7,32 +7,15 @@
 /// Call `init_cursor()` once after the framebuffer is ready. If PS/2 mouse
 /// fallback is needed, follow it with `enable_ps2_fallback()`. After that,
 /// the IRQ12 handler in `interrupts.rs` feeds packets to `handle_packet()`.
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use x86_64::instructions::port::Port;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-struct MouseState {
-    x: usize,
-    y: usize,
-    left: bool,
-    right: bool,
-}
-
-impl MouseState {
-    const fn new() -> Self {
-        // Start at (0,0); mouse::init_cursor() will centre after framebuffer is ready.
-        MouseState {
-            x: 0,
-            y: 0,
-            left: false,
-            right: false,
-        }
-    }
-}
-
-static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
+static MOUSE_X: AtomicUsize = AtomicUsize::new(0);
+static MOUSE_Y: AtomicUsize = AtomicUsize::new(0);
+static MOUSE_LEFT: AtomicBool = AtomicBool::new(false);
+static MOUSE_RIGHT: AtomicBool = AtomicBool::new(false);
 const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
 static USB_MOUSE_LOG_COUNT: AtomicI32 = AtomicI32::new(0);
 static PS2_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -46,11 +29,10 @@ static SCROLL_ACCUM: AtomicI32 = AtomicI32::new(0);
 
 /// Centre the logical cursor on screen.
 pub fn init_cursor() {
-    {
-        let mut m = MOUSE.lock();
-        m.x = crate::framebuffer::width() / 2;
-        m.y = crate::framebuffer::height() / 2;
-    }
+    MOUSE_X.store(crate::framebuffer::width() / 2, Ordering::Relaxed);
+    MOUSE_Y.store(crate::framebuffer::height() / 2, Ordering::Relaxed);
+    MOUSE_LEFT.store(false, Ordering::Relaxed);
+    MOUSE_RIGHT.store(false, Ordering::Relaxed);
 }
 
 /// Ensure the PS/2 mouse fallback is live when no USB mouse is active.
@@ -77,14 +59,18 @@ pub fn disable_ps2_fallback() {
 
 /// Returns the current cursor position as `(x, y)`.
 pub fn pos() -> (usize, usize) {
-    let m = MOUSE.lock();
-    (m.x, m.y)
+    (
+        MOUSE_X.load(Ordering::Relaxed),
+        MOUSE_Y.load(Ordering::Relaxed),
+    )
 }
 
 /// Returns `(left_down, right_down)`.
 pub fn buttons() -> (bool, bool) {
-    let m = MOUSE.lock();
-    (m.left, m.right)
+    (
+        MOUSE_LEFT.load(Ordering::Relaxed),
+        MOUSE_RIGHT.load(Ordering::Relaxed),
+    )
 }
 
 /// True when the PS/2 mouse is in IntelliMouse (4-byte packet) mode.
@@ -183,13 +169,14 @@ pub fn handle_usb_boot_report(report: &[u8]) {
 }
 
 fn apply_motion(dx: i32, dy: i32, left: bool, right: bool) {
-    let mut m = MOUSE.lock();
-    let w = crate::framebuffer::width().saturating_sub(1);
-    let h = crate::framebuffer::height().saturating_sub(1);
-    m.x = ((m.x as i32 + dx).max(0) as usize).min(w);
-    m.y = ((m.y as i32 + dy).max(0) as usize).min(h);
-    m.left = left;
-    m.right = right;
+    let w = crate::framebuffer::width().saturating_sub(1) as i32;
+    let h = crate::framebuffer::height().saturating_sub(1) as i32;
+    let x = (MOUSE_X.load(Ordering::Relaxed) as i32 + dx).clamp(0, w) as usize;
+    let y = (MOUSE_Y.load(Ordering::Relaxed) as i32 + dy).clamp(0, h) as usize;
+    MOUSE_X.store(x, Ordering::Relaxed);
+    MOUSE_Y.store(y, Ordering::Relaxed);
+    MOUSE_LEFT.store(left, Ordering::Relaxed);
+    MOUSE_RIGHT.store(right, Ordering::Relaxed);
 }
 
 // ── Hardware init ─────────────────────────────────────────────────────────────
