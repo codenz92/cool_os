@@ -586,7 +586,7 @@ impl TerminalApp {
 
     fn cmd_uptime(&mut self) {
         let ticks = crate::interrupts::ticks();
-        let secs = ticks / 100;
+        let secs = crate::interrupts::uptime_secs();
         let mins = secs / 60;
         let hours = mins / 60;
         let s = secs % 60;

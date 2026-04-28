@@ -85,7 +85,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
 
     unsafe { interrupts::PICS.lock().initialize() };
-    interrupts::init_pit(100);
+    interrupts::init_pit(interrupts::TIMER_HZ);
     boot_splash::show(
         "starting interrupt controller",
         3,
@@ -145,7 +145,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = scheduler::SCHEDULER.lock();
         sched.add_idle();
-        sched.spawn("counter", counter_task);
         // fs_test runs on its own 64 KiB kernel stack — avoids blowing the
         // limited boot stack with the 512-byte sector buffers.
         sched.spawn("fs-test", fs_test_task);
@@ -209,15 +208,6 @@ fn fs_test_task() -> ! {
     });
     loop {
         x86_64::instructions::hlt();
-    }
-}
-
-/// Background task: increments BACKGROUND_COUNTER as fast as possible.
-/// The sysmon window displays this counter, proving that preemption works —
-/// the counter advances even while the WM (idle task) is compositing.
-fn counter_task() -> ! {
-    loop {
-        scheduler::BACKGROUND_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 

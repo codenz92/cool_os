@@ -13,15 +13,29 @@ pub static PICS: spin::Mutex<ChainedPics> =
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
+/// PIT frequency used for the preemptive scheduler and desktop repaint cadence.
+///
+/// The compositor lives in the idle task. With the always-ready demo counter
+/// task also running, the idle task gets roughly every other timeslice, so
+/// 288 Hz yields about 144 desktop frames per second on a typical boot.
+pub const TIMER_HZ: u32 = 288;
+
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
+}
+
+pub fn uptime_secs() -> u64 {
+    ticks() / TIMER_HZ as u64
+}
+
+pub const fn ticks_for_millis(ms: u64) -> u64 {
+    ((TIMER_HZ as u64 * ms) + 999) / 1000
 }
 
 /// Reprogram the PIT channel 0 to fire at `hz` Hz.
 ///
 /// Default PIT rate is ~18.2 Hz (divisor 65535). At that rate, round-robin
-/// between the idle and counter tasks gives ~9 renders/second. 100 Hz gives
-/// ~50 renders/second with the same 2-task setup.
+/// between the idle and counter tasks gives ~9 desktop renders/second.
 pub fn init_pit(hz: u32) {
     use x86_64::instructions::port::Port;
     // PIT input clock is 1_193_180 Hz. Clamp divisor to [1, 65535].
@@ -226,6 +240,7 @@ unsafe extern "C" fn timer_naked() {
 #[inline(never)]
 extern "C" fn timer_inner(current_rsp: usize) -> usize {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    crate::scheduler::BACKGROUND_COUNTER.fetch_add(1, Ordering::Relaxed);
     crate::wm::request_repaint();
     unsafe {
         PICS.lock()

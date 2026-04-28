@@ -21,18 +21,35 @@ const USB_WARN: u32 = 0x00_DD_AA_44;
 
 pub struct SysMonApp {
     pub window: Window,
+    last_redraw_tick: u64,
+    last_width: i32,
+    last_height: i32,
 }
 
 impl SysMonApp {
     pub fn new(x: i32, y: i32) -> Self {
         let mut app = SysMonApp {
             window: Window::new(x, y, SYSMON_W, SYSMON_H, "System Monitor"),
+            last_redraw_tick: 0,
+            last_width: SYSMON_W,
+            last_height: SYSMON_H,
         };
         app.update();
         app
     }
 
     pub fn update(&mut self) {
+        let ticks = crate::interrupts::ticks();
+        let resized =
+            self.window.width != self.last_width || self.window.height != self.last_height;
+        let redraw_interval = (crate::interrupts::TIMER_HZ / 12).max(1) as u64;
+        if !resized && ticks.wrapping_sub(self.last_redraw_tick) < redraw_interval {
+            return;
+        }
+        self.last_redraw_tick = ticks;
+        self.last_width = self.window.width;
+        self.last_height = self.window.height;
+
         let stride = self.window.width as usize;
         self.fill_background(stride);
 
@@ -51,8 +68,7 @@ impl SysMonApp {
             0
         };
 
-        let ticks = crate::interrupts::ticks();
-        let secs = ticks / 18;
+        let secs = crate::interrupts::uptime_secs();
         let hrs = (secs / 3600) % 24;
         let mins = (secs / 60) % 60;
         let secs_only = secs % 60;

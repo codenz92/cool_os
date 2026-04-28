@@ -377,13 +377,11 @@ pub struct WindowManager {
     last_click_window: Option<usize>,
     last_click_x: i32,
     last_click_y: i32,
-    /// Frame counter — used to drive the uptime clock display.
-    /// Replace with a real RTC read once the kernel time API is wired up.
-    tick: u64,
     /// Shadow buffer — screen_width × screen_height u32 pixels.
     shadow: Vec<u32>,
     shadow_width: usize,
     shadow_height: usize,
+    blit_scratch: Vec<u8>,
     /// Pre-baked wallpaper pixels — computed once in new(), blitted each frame.
     wallpaper: Vec<u32>,
 }
@@ -554,10 +552,10 @@ impl WindowManager {
             last_click_window: None,
             last_click_x: 0,
             last_click_y: 0,
-            tick: 0,
             shadow,
             shadow_width: w,
             shadow_height: h,
+            blit_scratch: alloc::vec![0u8; w * 3],
             wallpaper,
         }
     }
@@ -683,9 +681,8 @@ impl WindowManager {
         let sh = self.shadow_height;
         let taskbar_y = sh as i32 - TASKBAR_H;
 
-        // Advance uptime counter and snapshot it for use inside the shadow borrow block.
-        self.tick = self.tick.wrapping_add(1);
-        let current_tick = self.tick;
+        // Snapshot the real boot tick count for time-based UI.
+        let uptime_ticks = crate::interrupts::ticks();
 
         let (mx, my) = crate::mouse::pos();
         let (left, right) = crate::mouse::buttons();
@@ -817,7 +814,8 @@ impl WindowManager {
                         }
                         self.windows[win_idx].handle_click(lx, ly);
                         let is_double_click = self.last_click_window == Some(win_idx)
-                            && self.tick.wrapping_sub(self.last_click_tick) <= 25
+                            && uptime_ticks.wrapping_sub(self.last_click_tick)
+                                <= crate::interrupts::ticks_for_millis(500)
                             && (self.last_click_x - lx).abs() <= 6
                             && (self.last_click_y - ly).abs() <= 6;
                         if is_double_click {
@@ -844,7 +842,7 @@ impl WindowManager {
                                 crate::wm::request_repaint();
                             }
                         }
-                        self.last_click_tick = self.tick;
+                        self.last_click_tick = uptime_ticks;
                         self.last_click_window = Some(win_idx);
                         self.last_click_x = lx;
                         self.last_click_y = ly;
@@ -1891,7 +1889,8 @@ impl WindowManager {
             let usb_active = usb_lines
                 .iter()
                 .any(|line| line.contains("active init ready"));
-            let pulse = ((current_tick as u32 / 6) % 28) as u32;
+            let pulse_step = (crate::interrupts::TIMER_HZ / 8).max(1) as u64;
+            let pulse = ((uptime_ticks / pulse_step) % 28) as u32;
             let usb_col = if usb_active {
                 blend_color(0x00_00_EE_FF, ACCENT_HOV, pulse * 4)
             } else if usb_present {
@@ -2008,7 +2007,7 @@ impl WindowManager {
 
             // Two-line clock: uptime HH:MM on top, brand below.
             {
-                let secs = current_tick / 60;
+                let secs = uptime_ticks / crate::interrupts::TIMER_HZ as u64;
                 let h = (secs / 3600) % 24;
                 let m = (secs / 60) % 60;
                 let buf = [
@@ -2255,7 +2254,10 @@ impl WindowManager {
                 }
                 3 => {
                     let row_bytes = sw * 3;
-                    let mut scratch = alloc::vec![0u8; row_bytes];
+                    if self.blit_scratch.len() < row_bytes {
+                        self.blit_scratch.resize(row_bytes, 0);
+                    }
+                    let scratch = &mut self.blit_scratch[..row_bytes];
                     for row in 0..sh {
                         let src = &self.shadow[row * sw..row * sw + sw];
                         let row_base = hw_base + (row * hw_stride * 3) as u64;
@@ -2565,20 +2567,36 @@ impl WindowManager {
         let content_y = w.y + TITLE_H;
         let content_h = (w.height - TITLE_H).max(0) as usize;
         let cw = w.width as usize;
+        let sh = s.len() / sw;
+        let dst_x0 = w.x.max(0) as usize;
+        let dst_x1 = (w.x + w.width).min(sw as i32).max(0) as usize;
+        let dst_y0 = content_y.max(0) as usize;
+        let dst_y1 = (content_y + content_h as i32).min(sh as i32).max(0) as usize;
 
-        for row in 0..content_h {
-            for col in 0..cw {
-                let px = w.x + col as i32;
-                let py = content_y + row as i32;
-                if px >= 0 && py >= 0 && (px as usize) < sw && (py as usize) < s.len() / sw {
-                    let pixel = w.buf[row * cw + col];
+        if dst_x0 < dst_x1 && dst_y0 < dst_y1 {
+            let src_x0 = (dst_x0 as i32 - w.x) as usize;
+            let src_y0 = (dst_y0 as i32 - content_y) as usize;
+            let visible_w = dst_x1 - dst_x0;
+
+            for dst_y in dst_y0..dst_y1 {
+                let src_row = src_y0 + (dst_y - dst_y0);
+                let row_start = src_row * cw + src_x0;
+                let src = &w.buf[row_start..row_start + visible_w];
+                let dst = &mut s[dst_y * sw + dst_x0..dst_y * sw + dst_x1];
+                let dim_scanline = src_row % 3 == 2;
+
+                if !src.contains(&WIN_TRANSPARENT) && !dim_scanline {
+                    dst.copy_from_slice(src);
+                    continue;
+                }
+
+                for (out, &pixel) in dst.iter_mut().zip(src.iter()) {
                     let base = if pixel == WIN_TRANSPARENT {
                         WIN_CONTENT
                     } else {
                         pixel
                     };
-                    // Subtle CRT scanline in content area — dims every 3rd row slightly
-                    let scanned = if row % 3 == 2 {
+                    *out = if dim_scanline {
                         let r = ((base >> 16) & 0xFF) * 220 / 255;
                         let g = ((base >> 8) & 0xFF) * 220 / 255;
                         let b = (base & 0xFF) * 220 / 255;
@@ -2586,7 +2604,6 @@ impl WindowManager {
                     } else {
                         base
                     };
-                    s[(py as usize) * sw + (px as usize)] = scanned;
                 }
             }
         }
