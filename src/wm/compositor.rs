@@ -1959,35 +1959,7 @@ impl WindowManager {
                 );
             }
 
-            // Clock hover tint (suppressed when hovering individual icons).
-            let clk_hot = !usb_hot
-                && !kbd_hot
-                && !mse_hot
-                && mx_i >= clk_x
-                && mx_i < clk_x + clk_w
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H;
             let clk_bg = 0x00_00_00_00;
-            if clk_hot {
-                s_fill(
-                    s,
-                    sw,
-                    clk_x,
-                    taskbar_y + 2,
-                    clk_w,
-                    TASKBAR_H - 2,
-                    0x00_00_14_30,
-                );
-                draw_rect_border(
-                    s,
-                    sw,
-                    clk_x,
-                    taskbar_y + 2,
-                    clk_w,
-                    TASKBAR_H - 2,
-                    0x00_00_44_88,
-                );
-            }
 
             // Small tray icons: controller, keyboard, mouse.
             draw_usb_tray_icon(s, sw, tray_x, tray_y, usb_col);
