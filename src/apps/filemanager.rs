@@ -39,14 +39,13 @@ const DIALOG_W: i32 = 320;
 const DIALOG_H: i32 = 140;
 const EDITOR_W: i32 = 468;
 const EDITOR_H: i32 = 286;
-const QUICK_ACCESS_FOLDERS: [&str; 7] = [
+const QUICK_ACCESS_FOLDERS: [&str; 6] = [
     "Documents",
     "Downloads",
     "Pictures",
     "Music",
     "Videos",
     "Desktop",
-    "Home",
 ];
 const START_MENU_FOLDERS: [&str; 9] = [
     "Documents",
@@ -1562,14 +1561,6 @@ impl FileManagerApp {
         let mut items = Vec::new();
         let root_names = Self::root_directory_names();
         items.push(SidebarItem {
-            label: String::from("QUICK ACCESS"),
-            path: None,
-            active: false,
-            kind: SidebarItemKind::Section,
-            indent: 0,
-            icon: SidebarIcon::Computer,
-        });
-        items.push(SidebarItem {
             label: String::from("This PC"),
             path: Some(String::from("/")),
             active: self.path == "/",
@@ -1585,27 +1576,6 @@ impl FileManagerApp {
                 path: Some(path),
                 kind: SidebarItemKind::Link,
                 indent: 0,
-                icon: SidebarIcon::Folder,
-            });
-        }
-
-        items.push(SidebarItem {
-            label: String::from("ROOT FOLDERS"),
-            path: None,
-            active: false,
-            kind: SidebarItemKind::Section,
-            indent: 0,
-            icon: SidebarIcon::Folder,
-        });
-        for name in root_names.iter().take(6) {
-            let mut path = String::from("/");
-            path.push_str(name);
-            items.push(SidebarItem {
-                label: name.clone(),
-                active: self.path_matches_or_contains(&path),
-                path: Some(path),
-                kind: SidebarItemKind::Link,
-                indent: 10,
                 icon: SidebarIcon::Folder,
             });
         }
