@@ -122,9 +122,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     userspace::spawn_user_process(2);
 
     // ── Desktop ───────────────────────────────────────────────────────────────
-    let term = apps::TerminalApp::new(20, 20);
-    wm::add_window(wm::AppWindow::Terminal(term));
-
     mouse::init_cursor();
     wm::init();
 

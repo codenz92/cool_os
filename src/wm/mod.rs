@@ -2,8 +2,6 @@
 pub mod compositor;
 pub mod window;
 
-pub use compositor::AppWindow;
-
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static REPAINT: AtomicBool = AtomicBool::new(false);
@@ -16,10 +14,6 @@ pub fn compose_if_needed() {
     if REPAINT.swap(false, Ordering::Relaxed) {
         compositor::WM.lock().compose();
     }
-}
-
-pub fn add_window(w: AppWindow) {
-    compositor::WM.lock().add_window(w);
 }
 
 pub fn init() {
