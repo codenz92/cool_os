@@ -630,10 +630,19 @@ impl WindowManager {
             "Display Settings" => {
                 self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::new(wx, wy)))
             }
-            "File Manager" => self.add_window(AppWindow::FileManager(FileManagerApp::new(wx, wy))),
+            "File Manager" => self.launch_file_manager_at("/", wx, wy),
             "Personalize" => self.add_window(AppWindow::Personalize(PersonalizeApp::new(wx, wy))),
             _ => {}
         }
+    }
+
+    fn launch_file_manager_at(&mut self, dir: &str, wx: i32, wy: i32) {
+        let app = if dir == "/" {
+            FileManagerApp::new(wx, wy)
+        } else {
+            FileManagerApp::new_at_path(wx, wy, dir)
+        };
+        self.add_window(AppWindow::FileManager(app));
     }
 
     fn desktop_icons(&self) -> Vec<DesktopIcon> {
@@ -1177,11 +1186,14 @@ impl WindowManager {
             let menu_w = 460i32;
             let menu_h = 320i32;
             let left_w = 240i32;
+            let right_w = menu_w - left_w;
             let bottom_h = 36i32;
             let left_hdr_h = 32i32;
             let menu_x = 2i32;
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
+            let rc_x = menu_x + left_w + 1;
+            let rc_w = right_w - 2;
             if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
                 left_press_consumed = true;
                 // Left column — app list rows
@@ -1197,6 +1209,26 @@ impl WindowManager {
                             self.launch_app(START_PINNED_APPS[item_idx], wx, wy);
                             self.start_menu_open = false;
                             crate::wm::request_repaint();
+                        }
+                    }
+                } else {
+                    let banner_y = menu_y + 10;
+                    let banner_h = 84i32;
+                    let link_h = 24i32;
+                    let links_y = banner_y + banner_h + 8;
+                    if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
+                        let link_idx = ((my_i - links_y) / link_h) as usize;
+                        if let Some(&label) = FileManagerApp::START_MENU_LINKS.get(link_idx) {
+                            let ly = links_y + link_idx as i32 * link_h;
+                            if ly + link_h <= bar_y - 8 {
+                                let off = self.windows.len() as i32 * 16;
+                                let wx = (10 + off).min(sw as i32 - 200);
+                                let wy = (10 + off).min(bar_y - 80);
+                                let path = FileManagerApp::shell_link_path(label);
+                                self.launch_file_manager_at(&path, wx, wy);
+                                self.start_menu_open = false;
+                                crate::wm::request_repaint();
+                            }
                         }
                     }
                 }
@@ -1940,20 +1972,9 @@ impl WindowManager {
                     chip3_x + chip_w - 4,
                 );
 
-                const SYS_LINKS: [&str; 9] = [
-                    "Documents",
-                    "Downloads",
-                    "Pictures",
-                    "Music",
-                    "Videos",
-                    "Desktop",
-                    "Home",
-                    "Shared",
-                    "Trash",
-                ];
                 let link_h = 24i32;
                 let links_y = banner_y + banner_h + 8;
-                for (i, &link_name) in SYS_LINKS.iter().enumerate() {
+                for (i, &link_name) in FileManagerApp::START_MENU_LINKS.iter().enumerate() {
                     let ly = links_y + i as i32 * link_h;
                     if ly + link_h > bar_y - 8 {
                         break;
