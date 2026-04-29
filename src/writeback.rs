@@ -34,6 +34,11 @@ pub fn enqueue(kind: &str, path: &str) {
     if !crate::allocator::heap_ready() {
         return;
     }
+    if crate::settings_state::loaded()
+        && !crate::settings_state::snapshot().storage_writeback_enabled
+    {
+        return;
+    }
     let mut state = STATE.lock();
     if state.pending.len() >= MAX_PENDING {
         state.pending.remove(0);
@@ -48,6 +53,11 @@ pub fn enqueue(kind: &str, path: &str) {
 }
 
 pub fn barrier() -> Result<(), &'static str> {
+    if crate::settings_state::loaded()
+        && !crate::settings_state::snapshot().storage_writeback_enabled
+    {
+        return Ok(());
+    }
     {
         let mut state = STATE.lock();
         state.barriers = state.barriers.saturating_add(1);
@@ -62,6 +72,11 @@ pub fn barrier() -> Result<(), &'static str> {
 }
 
 pub fn drain(max_items: usize) -> usize {
+    if crate::settings_state::loaded()
+        && !crate::settings_state::snapshot().storage_writeback_enabled
+    {
+        return 0;
+    }
     let mut drained = 0usize;
     for _ in 0..max_items {
         let item = {
@@ -90,7 +105,12 @@ pub fn drain(max_items: usize) -> usize {
 pub fn lines() -> Vec<String> {
     let state = STATE.lock();
     let mut lines = alloc::vec![format!(
-        "queued={} completed={} pending={} barriers={} failures={}",
+        "enabled={} queued={} completed={} pending={} barriers={} failures={}",
+        if crate::settings_state::snapshot().storage_writeback_enabled {
+            "yes"
+        } else {
+            "no"
+        },
         state.queued,
         state.completed,
         state.pending.len(),

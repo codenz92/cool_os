@@ -309,6 +309,10 @@ impl TerminalApp {
 
             Some("netproto") => self.cmd_lines("NETWORK PROTOCOLS", crate::net::protocol_lines()),
 
+            Some("netapi") => {
+                self.cmd_lines("NETWORK API SETTINGS", crate::settings_state::lines())
+            }
+
             Some("http") => {
                 let host = words.next();
                 let path = words.next().unwrap_or("/");
@@ -474,7 +478,7 @@ impl TerminalApp {
 
             Some("services") => self.cmd_services(words.next(), words.next()),
 
-            Some("crash") => self.cmd_lines("CRASH DUMP", crate::crashdump::lines()),
+            Some("crash") => self.cmd_lines("CRASH DUMP", crate::crashdump::detailed_lines()),
 
             Some("abi") => self.cmd_lines("ABI", crate::abi::lines()),
 
@@ -721,8 +725,9 @@ impl TerminalApp {
             ("drivers", "driver binding + /DEV nodes"),
             ("net", "network stack status"),
             ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
+            ("netapi", "network/settings API toggles"),
             ("dns <host>", "resolve host with staged DNS"),
-            ("http <host> [path]", "build basic HTTP request"),
+            ("http <host> [path]", "run userspace HTTP client API"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
@@ -765,7 +770,7 @@ impl TerminalApp {
             ("pgroup <pid> <grp>", "set process group"),
             ("events", "event bus tail"),
             ("jobs", "background job history"),
-            ("job <op> <id>", "cancel/resume background job"),
+            ("job <op> <id>", "cancel/pause/resume background job"),
             ("services <op>", "service supervisor"),
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
@@ -1055,12 +1060,21 @@ impl TerminalApp {
     }
 
     fn cmd_http(&mut self, host: &str, path: &str) {
-        match crate::net::http_get(host, path) {
-            Ok(request) => {
+        match crate::net::http_get_response(host, path) {
+            Ok(response) => {
                 self.set_fg(FG_ACCENT);
-                self.print_str("HTTP REQUEST\n");
+                self.print_str("HTTP CLIENT\n");
                 self.set_fg(FG_OUTPUT);
-                self.print_str(&request);
+                self.print_str(&response.status_line);
+                self.print_char('\n');
+                self.print_str("resolved ");
+                self.print_str(&response.host);
+                self.print_str(&response.path);
+                self.print_str(" -> ");
+                self.print_str(&crate::net::ipv4_string(response.resolved_addr));
+                self.print_char('\n');
+                self.print_str(&response.request);
+                self.print_str(&response.body);
                 self.print_char('\n');
             }
             Err(err) => {
@@ -1241,11 +1255,12 @@ impl TerminalApp {
     fn cmd_job(&mut self, op: Option<&str>, id: Option<&str>) {
         let Some(id) = id.and_then(parse_u64) else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: job <cancel|resume> <id>\n");
+            self.print_str("usage: job <cancel|pause|resume> <id>\n");
             return;
         };
         let ok = match op {
             Some("cancel") => crate::jobs::cancel(id),
+            Some("pause") => crate::jobs::pause(id),
             Some("resume") => crate::jobs::resume(id),
             _ => false,
         };
@@ -1740,7 +1755,8 @@ fn diagnostics_lines() -> Vec<String> {
     );
     push_terminal_section(&mut lines, "vfs", crate::vfs::mount_lines());
     push_terminal_section(&mut lines, "config", crate::config_store::lines());
-    push_terminal_section(&mut lines, "crash", crate::crashdump::lines());
+    push_terminal_section(&mut lines, "settings", crate::settings_state::lines());
+    push_terminal_section(&mut lines, "crash", crate::crashdump::detailed_lines());
     lines
 }
 

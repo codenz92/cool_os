@@ -37,6 +37,12 @@ pub fn lines() -> Vec<String> {
 }
 
 pub fn flush_to_disk() -> Result<(), crate::fat32::FsError> {
+    if crate::allocator::heap_ready()
+        && crate::settings_state::loaded()
+        && !crate::settings_state::snapshot().logs_persist_kernel
+    {
+        return Ok(());
+    }
     let _ = crate::fat32::create_dir(LOG_DIR);
     match crate::fat32::create_file(LOG_PATH) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}

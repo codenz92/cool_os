@@ -7,6 +7,10 @@ edition = "2021"
 name = "terminal"
 path = "src/bin/terminal.rs"
 
+[[bin]]
+name = "netdemo"
+path = "src/bin/netdemo.rs"
+
 [profile.dev]
 panic = "abort"
 

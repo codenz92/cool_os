@@ -296,6 +296,11 @@ impl FileManagerApp {
             return;
         }
 
+        if self.handle_file_operation_click(lx, ly) {
+            self.render();
+            return;
+        }
+
         if let Some(path) = self.hit_navigation(lx, ly) {
             self.context_menu = None;
             self.navigate_to(&path);
@@ -428,6 +433,10 @@ impl FileManagerApp {
     }
 
     pub fn update(&mut self) {
+        if self.process_active_file_operation() {
+            return;
+        }
+
         if self.window.width != self.last_width || self.window.height != self.last_height {
             self.last_width = self.window.width;
             self.last_height = self.window.height;
@@ -1198,6 +1207,11 @@ impl FileManagerApp {
     }
 
     pub(super) fn paste_clipboard_with_policy(&mut self, conflict_policy: Option<ConflictPolicy>) {
+        if self.active_file_op.is_some() {
+            self.status_note = Some(String::from("file operation already running"));
+            self.render();
+            return;
+        }
         let clipboard = if let Some(clipboard) = self.clipboard.clone() {
             clipboard
         } else if let Some((paths, cut)) = crate::clipboard::get_paths() {
@@ -1221,23 +1235,12 @@ impl FileManagerApp {
             return;
         }
 
-        let job = crate::jobs::start(
-            if clipboard.cut {
-                "Move files"
-            } else {
-                "Copy files"
-            },
-            &self.path,
-        );
-        let mut pasted = 0usize;
-        let mut last_err: Option<String> = None;
+        let mut steps = Vec::new();
+        let mut planned_targets = 0usize;
         let mut selected_name: Option<String> = None;
-        let total = clipboard.entries.len().max(1);
-        for (target_idx, target) in clipboard.entries.iter().enumerate() {
-            if crate::jobs::is_cancelled(job) {
-                last_err = Some(String::from("operation cancelled"));
-                break;
-            }
+        let mut last_err: Option<String> = None;
+
+        for target in clipboard.entries.iter() {
             if target.is_dir && Self::path_contains(&target.path, &self.path) {
                 last_err = Some(String::from("cannot paste folder into itself"));
                 continue;
@@ -1248,7 +1251,6 @@ impl FileManagerApp {
                     clipboard: clipboard.clone(),
                     name: target.name.clone(),
                 }));
-                crate::jobs::fail(job, "file conflict");
                 self.status_note = Some(String::from("file conflict needs a choice"));
                 self.render();
                 return;
@@ -1256,55 +1258,279 @@ impl FileManagerApp {
             if exists && conflict_policy == Some(ConflictPolicy::Skip) {
                 continue;
             }
-            let dest_name = if exists && conflict_policy == Some(ConflictPolicy::Rename) {
+            let mut dest_name = if exists && conflict_policy == Some(ConflictPolicy::Rename) {
                 self.unique_child_name(&self.path, &target.name)
             } else {
                 target.name.clone()
             };
-            let dest_path = Self::join_path(&self.path, &dest_name);
-            if exists && conflict_policy == Some(ConflictPolicy::Replace) {
+            let mut dest_path = Self::join_path(&self.path, &dest_name);
+            if dest_path.eq_ignore_ascii_case(&target.path) {
+                if clipboard.cut {
+                    continue;
+                }
+                dest_name = self.unique_copy_name(&self.path, &target.name);
+                dest_path = Self::join_path(&self.path, &dest_name);
+            }
+
+            let mut target_steps = Vec::new();
+            if exists
+                && conflict_policy == Some(ConflictPolicy::Replace)
+                && !dest_path.eq_ignore_ascii_case(&target.path)
+            {
                 let existing_is_dir =
                     crate::vfs::inspect_path(&dest_path).kind == crate::vfs::PathKind::Directory;
-                if let Err(err) = self.delete_path_recursive(&dest_path, existing_is_dir) {
+                if let Err(err) =
+                    self.collect_delete_plan(&dest_path, existing_is_dir, &mut target_steps)
+                {
                     last_err = Some(String::from(err.as_str()));
                     continue;
                 }
             }
-            match self.copy_path_recursive(&target.path, &dest_path, target.is_dir) {
-                Ok(()) => {
-                    if clipboard.cut {
-                        if let Err(err) = self.delete_path_recursive(&target.path, target.is_dir) {
-                            last_err = Some(String::from(err.as_str()));
-                            continue;
-                        }
-                    }
-                    pasted += 1;
-                    if selected_name.is_none() {
-                        selected_name = Some(dest_name);
-                    }
-                }
-                Err(err) => last_err = Some(String::from(err.as_str())),
+            if let Err(err) =
+                self.collect_copy_plan(&target.path, &dest_path, target.is_dir, &mut target_steps)
+            {
+                last_err = Some(String::from(err.as_str()));
+                continue;
             }
-            let progress = (((target_idx + 1) * 100) / total).min(99) as u8;
-            crate::jobs::progress(job, progress, &target.name);
+            if clipboard.cut {
+                if let Err(err) =
+                    self.collect_delete_plan(&target.path, target.is_dir, &mut target_steps)
+                {
+                    last_err = Some(String::from(err.as_str()));
+                    continue;
+                }
+            }
+            steps.extend(target_steps);
+            planned_targets += 1;
+            if selected_name.is_none() {
+                selected_name = Some(dest_name);
+            }
         }
 
-        if clipboard.cut && last_err.is_none() {
+        if steps.is_empty() {
+            self.status_note = Some(last_err.unwrap_or_else(|| String::from("nothing to paste")));
+            self.render();
+            return;
+        }
+
+        let job = crate::jobs::start(
+            if clipboard.cut {
+                "Move files"
+            } else {
+                "Copy files"
+            },
+            &self.path,
+        );
+        self.active_file_op = Some(FileOperationState {
+            job,
+            kind: if clipboard.cut {
+                FileOperationKind::Move
+            } else {
+                FileOperationKind::Copy
+            },
+            steps,
+            step_idx: 0,
+            target_count: planned_targets,
+            selected_name,
+        });
+        if clipboard.cut {
             self.clipboard = None;
         }
-        let current = self.path.clone();
-        self.load_dir_with_state(&current, selected_name.as_deref(), Some(self.offset));
         if let Some(err) = last_err {
-            crate::jobs::fail(job, &err);
-            self.status_note = Some(err);
-        } else {
-            let mut note = String::new();
-            fmt_push_u(&mut note, pasted as u64);
-            note.push_str(if clipboard.cut { " moved" } else { " pasted" });
-            crate::jobs::complete(job, &note);
+            let mut note = String::from("started with skipped items: ");
+            note.push_str(&err);
             self.status_note = Some(note);
         }
+        self.process_active_file_operation();
         self.render();
+    }
+
+    pub(super) fn process_active_file_operation(&mut self) -> bool {
+        let Some(mut op) = self.active_file_op.take() else {
+            return false;
+        };
+        if crate::jobs::is_cancelled(op.job) {
+            self.status_note = Some(String::from("file operation cancelled"));
+            self.render();
+            return true;
+        }
+        if crate::jobs::is_paused(op.job) {
+            self.active_file_op = Some(op);
+            return false;
+        }
+
+        let total = op.steps.len().max(1);
+        let mut processed = 0usize;
+        while processed < 2 && op.step_idx < op.steps.len() {
+            let step = op.steps[op.step_idx].clone();
+            if let Err(err) = Self::execute_file_operation_step(&step) {
+                crate::jobs::fail(op.job, err.as_str());
+                self.status_note = Some(String::from(err.as_str()));
+                self.active_file_op = None;
+                self.render();
+                return true;
+            }
+            op.step_idx += 1;
+            processed += 1;
+            let progress = ((op.step_idx * 100) / total).min(99) as u8;
+            crate::jobs::progress(op.job, progress, &Self::file_operation_step_label(&step));
+        }
+
+        if op.step_idx >= op.steps.len() {
+            let mut note = String::new();
+            fmt_push_u(&mut note, op.target_count as u64);
+            note.push(' ');
+            note.push_str(op.kind.past_tense());
+            crate::jobs::complete(op.job, &note);
+            let current = self.path.clone();
+            let selected_name = op.selected_name.clone();
+            self.load_dir_with_state(&current, selected_name.as_deref(), Some(self.offset));
+            self.status_note = Some(note);
+            self.render();
+            true
+        } else {
+            self.active_file_op = Some(op);
+            self.render();
+            true
+        }
+    }
+
+    pub(super) fn handle_file_operation_click(&mut self, lx: i32, ly: i32) -> bool {
+        let Some(op) = self.active_file_op.as_ref() else {
+            return false;
+        };
+        let job = op.job;
+        let layout = self.layout();
+        if self.file_op_toggle_rect(layout).hit(lx, ly) {
+            if crate::jobs::is_paused(job) {
+                crate::jobs::resume(job);
+                self.status_note = Some(String::from("file operation resumed"));
+            } else {
+                crate::jobs::pause(job);
+                self.status_note = Some(String::from("file operation paused"));
+            }
+            return true;
+        }
+        if self.file_op_cancel_rect(layout).hit(lx, ly) {
+            crate::jobs::cancel(job);
+            self.status_note = Some(String::from("file operation cancel requested"));
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn active_file_operation_line(&self) -> Option<String> {
+        let op = self.active_file_op.as_ref()?;
+        let mut line = String::from(if crate::jobs::is_paused(op.job) {
+            "paused job #"
+        } else {
+            "job #"
+        });
+        fmt_push_u(&mut line, op.job);
+        line.push_str("  ");
+        fmt_push_u(&mut line, op.step_idx as u64);
+        line.push('/');
+        fmt_push_u(&mut line, op.steps.len() as u64);
+        line.push(' ');
+        line.push_str(match op.kind {
+            FileOperationKind::Copy => "copy",
+            FileOperationKind::Move => "move",
+        });
+        Some(line)
+    }
+
+    pub(super) fn active_file_operation_paused(&self) -> bool {
+        self.active_file_op
+            .as_ref()
+            .map(|op| crate::jobs::is_paused(op.job))
+            .unwrap_or(false)
+    }
+
+    pub(super) fn active_file_operation_progress(&self) -> Option<u8> {
+        let op = self.active_file_op.as_ref()?;
+        let total = op.steps.len().max(1);
+        Some(((op.step_idx * 100) / total).min(100) as u8)
+    }
+
+    fn file_operation_step_label(step: &FileOperationStep) -> String {
+        match step {
+            FileOperationStep::CreateDir(path) => {
+                let mut label = String::from("mkdir ");
+                label.push_str(path);
+                label
+            }
+            FileOperationStep::CopyFile { dst, .. } => {
+                let mut label = String::from("copy ");
+                label.push_str(dst);
+                label
+            }
+            FileOperationStep::Delete { path } => {
+                let mut label = String::from("delete ");
+                label.push_str(path);
+                label
+            }
+        }
+    }
+
+    fn execute_file_operation_step(step: &FileOperationStep) -> Result<(), crate::fat32::FsError> {
+        match step {
+            FileOperationStep::CreateDir(path) => match crate::vfs::vfs_create_dir(path) {
+                Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => Ok(()),
+                Err(err) => Err(err),
+            },
+            FileOperationStep::CopyFile { src, dst } => crate::vfs::vfs_copy_file(src, dst),
+            FileOperationStep::Delete { path } => crate::vfs::vfs_delete(path),
+        }
+    }
+
+    fn collect_copy_plan(
+        &self,
+        src: &str,
+        dst: &str,
+        is_dir: bool,
+        steps: &mut Vec<FileOperationStep>,
+    ) -> Result<(), crate::fat32::FsError> {
+        if is_dir {
+            steps.push(FileOperationStep::CreateDir(String::from(dst)));
+            let children = crate::vfs::vfs_list_dir(src).ok_or(crate::fat32::FsError::NotFound)?;
+            for child in children {
+                let child_src = Self::join_path(src, &child.name);
+                let child_dst = Self::join_path(dst, &child.name);
+                self.collect_copy_plan(&child_src, &child_dst, child.is_dir, steps)?;
+            }
+            Ok(())
+        } else {
+            steps.push(FileOperationStep::CopyFile {
+                src: String::from(src),
+                dst: String::from(dst),
+            });
+            Ok(())
+        }
+    }
+
+    fn collect_delete_plan(
+        &self,
+        path: &str,
+        is_dir: bool,
+        steps: &mut Vec<FileOperationStep>,
+    ) -> Result<(), crate::fat32::FsError> {
+        if path == "/" || path.eq_ignore_ascii_case(TRASH_PATH) {
+            return Err(crate::fat32::FsError::InvalidPath);
+        }
+        if crate::security::is_protected_path(path) {
+            return Err(crate::fat32::FsError::PermissionDenied);
+        }
+        if is_dir {
+            let children = crate::vfs::vfs_list_dir(path).ok_or(crate::fat32::FsError::NotFound)?;
+            for child in children {
+                let child_path = Self::join_path(path, &child.name);
+                self.collect_delete_plan(&child_path, child.is_dir, steps)?;
+            }
+        }
+        steps.push(FileOperationStep::Delete {
+            path: String::from(path),
+        });
+        Ok(())
     }
 
     pub(super) fn target_for_idx(&self, idx: usize) -> Option<FileTarget> {

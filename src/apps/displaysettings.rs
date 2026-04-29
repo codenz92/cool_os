@@ -5,6 +5,7 @@ use font8x8::UnicodeFonts;
 
 use crate::desktop_settings::{self, DesktopSettings, DesktopSortMode};
 use crate::framebuffer::WHITE;
+use crate::settings_state::SystemSettings;
 use crate::wm::window::{Window, TITLE_H};
 
 pub const DISPLAY_SETTINGS_W: i32 = 440;
@@ -50,6 +51,7 @@ pub struct DisplaySettingsApp {
     last_width: i32,
     last_height: i32,
     last_settings: DesktopSettings,
+    last_system_settings: SystemSettings,
     page: SettingsPage,
     last_page: SettingsPage,
 }
@@ -72,6 +74,7 @@ impl DisplaySettingsApp {
             last_width: DISPLAY_SETTINGS_W,
             last_height: DISPLAY_SETTINGS_H,
             last_settings: desktop_settings::snapshot(),
+            last_system_settings: crate::settings_state::snapshot(),
             page,
             last_page: page,
         };
@@ -109,6 +112,42 @@ impl DisplaySettingsApp {
         } else if self.page == SettingsPage::Accessibility && self.hit_toggle(lx, ly, 200) {
             let access = crate::accessibility::snapshot();
             crate::accessibility::set("reduced_motion", !access.reduced_motion);
+        } else if self.page == SettingsPage::Diagnostics && self.hit_toggle(lx, ly, 104) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set(
+                "diagnostics_task_snapshots",
+                !prefs.diagnostics_task_snapshots,
+            );
+        } else if self.page == SettingsPage::Diagnostics && self.hit_toggle(lx, ly, 136) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set(
+                "diagnostics_crash_details",
+                !prefs.diagnostics_crash_details,
+            );
+        } else if self.page == SettingsPage::Logs && self.hit_toggle(lx, ly, 104) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("logs_include_profiler", !prefs.logs_include_profiler);
+        } else if self.page == SettingsPage::Logs && self.hit_toggle(lx, ly, 136) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("logs_persist_kernel", !prefs.logs_persist_kernel);
+        } else if self.page == SettingsPage::Network && self.hit_toggle(lx, ly, 104) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("network_dns_enabled", !prefs.network_dns_enabled);
+        } else if self.page == SettingsPage::Network && self.hit_toggle(lx, ly, 136) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("network_http_enabled", !prefs.network_http_enabled);
+        } else if self.page == SettingsPage::Network && self.hit_toggle(lx, ly, 168) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("network_offline_api", !prefs.network_offline_api);
+        } else if self.page == SettingsPage::Storage && self.hit_toggle(lx, ly, 104) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set(
+                "storage_writeback_enabled",
+                !prefs.storage_writeback_enabled,
+            );
+        } else if self.page == SettingsPage::Storage && self.hit_toggle(lx, ly, 136) {
+            let prefs = crate::settings_state::snapshot();
+            crate::settings_state::set("storage_fsck_on_boot", !prefs.storage_fsck_on_boot);
         } else {
             return;
         }
@@ -119,9 +158,11 @@ impl DisplaySettingsApp {
 
     pub fn update(&mut self) {
         let settings = desktop_settings::snapshot();
+        let system_settings = crate::settings_state::snapshot();
         if self.window.width != self.last_width
             || self.window.height != self.last_height
             || settings != self.last_settings
+            || system_settings != self.last_system_settings
             || self.page != self.last_page
         {
             self.render();
@@ -131,9 +172,11 @@ impl DisplaySettingsApp {
     fn render(&mut self) {
         let settings = desktop_settings::snapshot();
         let access = crate::accessibility::snapshot();
+        let system_settings = crate::settings_state::snapshot();
         self.last_width = self.window.width;
         self.last_height = self.window.height;
         self.last_settings = settings;
+        self.last_system_settings = system_settings;
         self.last_page = self.page;
 
         let stride = self.window.width.max(0) as usize;
@@ -157,30 +200,10 @@ impl DisplaySettingsApp {
         match self.page {
             SettingsPage::Desktop => self.render_desktop_page(stride, content_h, settings),
             SettingsPage::Accessibility => self.render_accessibility_page(stride, access),
-            SettingsPage::Diagnostics => self.render_diagnostics_page(stride),
-            SettingsPage::Logs => self.render_lines_page(
-                stride,
-                "LOGS + PROFILER",
-                crate::klog::lines()
-                    .into_iter()
-                    .chain(crate::profiler::lines().into_iter())
-                    .take(12)
-                    .collect(),
-            ),
-            SettingsPage::Network => self.render_lines_page(
-                stride,
-                "NETWORK",
-                crate::net::status_lines()
-                    .into_iter()
-                    .chain(crate::net::protocol_lines().into_iter())
-                    .collect(),
-            ),
-            SettingsPage::Storage => {
-                let mut lines = crate::vfs::mount_lines();
-                lines.extend(crate::writeback::lines());
-                lines.extend(crate::fs_hardening::status_lines());
-                self.render_lines_page(stride, "STORAGE", lines);
-            }
+            SettingsPage::Diagnostics => self.render_diagnostics_page(stride, system_settings),
+            SettingsPage::Logs => self.render_logs_page(stride, system_settings),
+            SettingsPage::Network => self.render_network_page(stride, system_settings),
+            SettingsPage::Storage => self.render_storage_page(stride, system_settings),
         }
         self.window.mark_dirty_all();
     }
@@ -267,9 +290,30 @@ impl DisplaySettingsApp {
         );
     }
 
-    fn render_diagnostics_page(&mut self, stride: usize) {
+    fn render_diagnostics_page(&mut self, stride: usize, settings: SystemSettings) {
         let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
-        let card_w = panel_w.saturating_sub(12) / 2;
+        self.draw_panel(stride, 16, 82, panel_w, 86);
+        self.draw_panel(stride, 16, 178, panel_w, 82);
+        self.draw_panel(stride, 16, 270, panel_w, 90);
+
+        self.put_str(stride, 28, 96, "DIAGNOSTICS CONTROLS", LABEL);
+        self.draw_toggle_row(
+            stride,
+            28,
+            104,
+            panel_w.saturating_sub(24),
+            "Include persistent task snapshots",
+            settings.diagnostics_task_snapshots,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            136,
+            panel_w.saturating_sub(24),
+            "Show detailed crash register context",
+            settings.diagnostics_crash_details,
+        );
+
         let stats = crate::wm::compositor::compositor_stats();
         let service_count = crate::services::lines().len();
         let config_count = crate::config_store::lines().len().saturating_sub(1);
@@ -277,77 +321,159 @@ impl DisplaySettingsApp {
             .iter()
             .filter(|line| !line.contains("no crash"))
             .count();
-
-        self.draw_panel(stride, 16, 82, card_w, 76);
-        self.draw_panel(stride, 28 + card_w, 82, card_w, 76);
-        self.draw_panel(stride, 16, 168, card_w, 86);
-        self.draw_panel(stride, 28 + card_w, 168, card_w, 86);
-        self.draw_panel(stride, 16, 264, panel_w, 96);
-
-        self.put_str(stride, 28, 96, "HEALTH", LABEL);
-        self.put_str(stride, 28, 112, "selftests active at boot", WHITE);
+        self.put_str(stride, 28, 192, "HEALTH", LABEL);
+        self.put_str(stride, 28, 208, "selftests active at boot", WHITE);
         let mut crash_line = String::from("crash reports ");
         push_number(&mut crash_line, crash_count);
         self.put_str(
             stride,
             28,
-            128,
+            224,
             &crash_line,
             if crash_count == 0 { GOOD } else { WHITE },
         );
         let mut service_line = String::from("services tracked ");
         push_number(&mut service_line, service_count);
-        self.put_str(stride, 28, 142, &service_line, MUTED);
+        self.put_str(stride, 28, 240, &service_line, MUTED);
 
-        let right_x = 40 + card_w;
-        self.put_str(stride, right_x, 96, "COMPOSITOR", LABEL);
+        let right_x = 236usize;
+        self.put_str(stride, right_x, 192, "COMPOSITOR", LABEL);
         let mut fps_line = String::from("fps ");
         push_number(&mut fps_line, stats.fps as usize);
         fps_line.push_str("  frames ");
         push_number(&mut fps_line, stats.frames as usize);
-        self.put_str(stride, right_x, 112, &fps_line, WHITE);
+        self.put_str(stride, right_x, 208, &fps_line, WHITE);
         let mut damage_line = String::from("damage rows ");
         push_number(&mut damage_line, stats.damage_rows as usize);
-        self.put_str(stride, right_x, 128, &damage_line, MUTED);
+        self.put_str(stride, right_x, 224, &damage_line, MUTED);
         let mut pixels_line = String::from("pixels ");
         push_number(&mut pixels_line, stats.damage_pixels as usize);
-        self.put_str(stride, right_x, 142, &pixels_line, MUTED);
+        self.put_str(stride, right_x, 240, &pixels_line, MUTED);
 
-        self.put_str(stride, 28, 182, "CONFIG", LABEL);
-        self.put_str(stride, 28, 198, "/CONFIG validation", WHITE);
-        let mut config_line = String::from("known files ");
+        self.put_str(stride, 28, 284, "CONFIG + PACKAGES", LABEL);
+        let mut config_line = String::from("config files ");
         push_number(&mut config_line, config_count);
-        self.put_str(stride, 28, 214, &config_line, MUTED);
-        self.put_str(stride, 28, 230, "recovery uses temp-write", GOOD);
-
-        self.put_str(stride, right_x, 182, "PACKAGES", LABEL);
+        config_line.push_str("   manifests ");
         let manifests = crate::app_metadata::installed_app_manifests();
-        let mut manifest_line = String::from("app manifests ");
-        push_number(&mut manifest_line, manifests.len());
-        self.put_str(stride, right_x, 198, &manifest_line, WHITE);
+        push_number(&mut config_line, manifests.len());
+        self.put_str(stride, 28, 300, &config_line, WHITE);
         let validation = if crate::app_metadata::validate_installed_manifests().is_ok() {
             "manifest validation ok"
         } else {
             "manifest validation failed"
         };
-        self.put_str(stride, right_x, 214, validation, GOOD);
-        self.put_str(stride, right_x, 230, "/APPS/*/APP.CFG", MUTED);
-
-        self.put_str(stride, 28, 278, "RECENT EVENTS", LABEL);
-        let mut y = 294usize;
-        for line in crate::event_bus::lines(4).iter() {
-            self.put_str(stride, 28, y, line, WHITE);
-            y += 14;
-        }
+        self.put_str(stride, 28, 316, validation, GOOD);
+        self.put_str(
+            stride,
+            28,
+            332,
+            "events/settings/logs feed Diagnostics app",
+            MUTED,
+        );
     }
 
-    fn render_lines_page(&mut self, stride: usize, title: &str, lines: alloc::vec::Vec<String>) {
+    fn render_logs_page(&mut self, stride: usize, settings: SystemSettings) {
         let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
-        self.draw_panel(stride, 16, 82, panel_w, 276);
-        self.put_str(stride, 28, 96, title, LABEL);
-        let mut y = 116usize;
-        for line in lines.iter().take(15) {
-            self.put_str(stride, 28, y, line, WHITE);
+        self.draw_panel(stride, 16, 82, panel_w, 86);
+        self.draw_panel(stride, 16, 178, panel_w, 180);
+        self.put_str(stride, 28, 96, "LOG CONTROLS", LABEL);
+        self.draw_toggle_row(
+            stride,
+            28,
+            104,
+            panel_w.saturating_sub(24),
+            "Include profiler events in log summaries",
+            settings.logs_include_profiler,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            136,
+            panel_w.saturating_sub(24),
+            "Persist kernel log to /LOGS/KERNEL.TXT",
+            settings.logs_persist_kernel,
+        );
+        self.put_str(stride, 28, 192, "RECENT LOGS", LABEL);
+        let mut lines = crate::klog::lines();
+        if settings.logs_include_profiler {
+            lines.extend(crate::profiler::lines());
+        }
+        self.put_lines(stride, 28, 212, &lines, 10);
+    }
+
+    fn render_network_page(&mut self, stride: usize, settings: SystemSettings) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 82, panel_w, 118);
+        self.draw_panel(stride, 16, 210, panel_w, 148);
+        self.put_str(stride, 28, 96, "NETWORK CONTROLS", LABEL);
+        self.draw_toggle_row(
+            stride,
+            28,
+            104,
+            panel_w.saturating_sub(24),
+            "Enable DNS resolver syscall/API",
+            settings.network_dns_enabled,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            136,
+            panel_w.saturating_sub(24),
+            "Enable HTTP client syscall/API",
+            settings.network_http_enabled,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            168,
+            panel_w.saturating_sub(24),
+            "Allow offline synthetic API without NIC",
+            settings.network_offline_api,
+        );
+        self.put_str(stride, 28, 224, "NETWORK STATUS", LABEL);
+        let mut lines = crate::net::status_lines();
+        lines.extend(crate::net::protocol_lines());
+        self.put_lines(stride, 28, 244, &lines, 8);
+    }
+
+    fn render_storage_page(&mut self, stride: usize, settings: SystemSettings) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 82, panel_w, 86);
+        self.draw_panel(stride, 16, 178, panel_w, 180);
+        self.put_str(stride, 28, 96, "STORAGE CONTROLS", LABEL);
+        self.draw_toggle_row(
+            stride,
+            28,
+            104,
+            panel_w.saturating_sub(24),
+            "Enable deferred writeback queue",
+            settings.storage_writeback_enabled,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            136,
+            panel_w.saturating_sub(24),
+            "Run fsck repair pass during boot",
+            settings.storage_fsck_on_boot,
+        );
+        self.put_str(stride, 28, 192, "FILESYSTEM STATUS", LABEL);
+        let mut lines = crate::vfs::mount_lines();
+        lines.extend(crate::writeback::lines());
+        lines.extend(crate::fs_hardening::status_lines());
+        self.put_lines(stride, 28, 212, &lines, 10);
+    }
+
+    fn put_lines(
+        &mut self,
+        stride: usize,
+        x: usize,
+        mut y: usize,
+        lines: &[String],
+        max_lines: usize,
+    ) {
+        for line in lines.iter().take(max_lines) {
+            self.put_str(stride, x, y, line, WHITE);
             y += 14;
         }
     }

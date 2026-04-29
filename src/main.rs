@@ -47,6 +47,7 @@ mod search_index;
 mod security;
 mod selftest;
 mod services;
+mod settings_state;
 mod shortcuts;
 mod slab;
 mod syscall;
@@ -157,6 +158,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     fs_hardening::init();
     event_bus::emit("boot", "heap", "kernel heap online");
     security::init();
+    settings_state::init();
+    if settings_state::snapshot().storage_fsck_on_boot {
+        for line in fs_hardening::repair() {
+            klog::log_owned(alloc::format!("fsck-on-boot: {}", line));
+        }
+    }
     app_lifecycle::init();
     packages::init();
     accessibility::load_from_disk();

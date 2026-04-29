@@ -57,6 +57,7 @@ pub fn lines() -> Vec<String> {
         "/CONFIG/ACCESS.CFG",
         "/CONFIG/SHORTCUT.CFG",
         "/CONFIG/SESSION.CFG",
+        "/CONFIG/SYSTEM.CFG",
     ] {
         let status = if crate::fat32::read_file(path).is_some() {
             "present"

@@ -36,6 +36,16 @@ struct NetState {
 }
 
 #[derive(Clone)]
+pub struct HttpResponse {
+    pub host: String,
+    pub path: String,
+    pub resolved_addr: u32,
+    pub request: String,
+    pub status_line: String,
+    pub body: String,
+}
+
+#[derive(Clone)]
 struct ArpEntry {
     ip: u32,
     mac: [u8; 6],
@@ -82,9 +92,27 @@ pub fn init() {
 pub fn status_lines() -> Vec<String> {
     let adapters = ADAPTERS.lock();
     if adapters.is_empty() {
+        let settings = crate::settings_state::snapshot();
         return alloc::vec![
             String::from("network: no PCI adapter detected"),
-            String::from("stack: driver probe foundation only; TCP/IP offline"),
+            format!(
+                "stack: offline_api={} dns={} http={}",
+                if settings.network_offline_api {
+                    "on"
+                } else {
+                    "off"
+                },
+                if settings.network_dns_enabled {
+                    "on"
+                } else {
+                    "off"
+                },
+                if settings.network_http_enabled {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
         ];
     }
     let mut lines = Vec::new();
@@ -124,6 +152,7 @@ pub fn status_lines() -> Vec<String> {
 
 pub fn protocol_lines() -> Vec<String> {
     let state = NET_STATE.lock();
+    let settings = crate::settings_state::snapshot();
     alloc::vec![
         format!("ARP: {} cached entrie(s)", state.arp_entries.len()),
         format!(
@@ -135,8 +164,30 @@ pub fn protocol_lines() -> Vec<String> {
             "UDP: tx_packets={} rx_packets={}",
             state.tx_packets, state.rx_packets
         ),
-        String::from("DNS: synthetic resolver syscall available"),
-        String::from("HTTP: GET request builder available to terminal/userspace"),
+        format!(
+            "DNS: resolver syscall {}",
+            if settings.network_dns_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+        format!(
+            "HTTP: userspace client API {}",
+            if settings.network_http_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+        format!(
+            "Offline API: {}",
+            if settings.network_offline_api {
+                "synthetic DNS/HTTP allowed without NIC"
+            } else {
+                "requires detected adapter"
+            }
+        ),
     ]
 }
 
@@ -152,6 +203,7 @@ pub fn queue_tx_packet(kind: &str, bytes: usize) {
     if ADAPTERS.lock().is_empty() {
         let mut state = NET_STATE.lock();
         state.dropped = state.dropped.saturating_add(1);
+        crate::profiler::record("net-drop", kind, &format!("{} bytes", bytes));
         return;
     }
     let mut state = NET_STATE.lock();
@@ -162,7 +214,7 @@ pub fn queue_tx_packet(kind: &str, bytes: usize) {
 
 #[allow(dead_code)]
 pub fn udp_send(_dst: u32, _port: u16, payload: &[u8]) -> Result<usize, &'static str> {
-    if ADAPTERS.lock().is_empty() {
+    if !network_available_for_api() {
         return Err("no network adapter");
     }
     queue_tx_packet("udp", payload.len());
@@ -170,8 +222,16 @@ pub fn udp_send(_dst: u32, _port: u16, payload: &[u8]) -> Result<usize, &'static
 }
 
 pub fn dns_resolve(host: &str) -> Result<u32, &'static str> {
-    if ADAPTERS.lock().is_empty() {
+    let settings = crate::settings_state::snapshot();
+    if !settings.network_dns_enabled {
+        return Err("DNS API disabled in Settings");
+    }
+    if !network_available_for_api() {
         return Err("no network adapter");
+    }
+    let host = host.trim();
+    if host.is_empty() || host.len() > 253 || host.contains('/') || host.contains(' ') {
+        return Err("invalid host");
     }
     let mut hash = 0u32;
     for byte in host.bytes() {
@@ -182,16 +242,40 @@ pub fn dns_resolve(host: &str) -> Result<u32, &'static str> {
 }
 
 pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
-    if ADAPTERS.lock().is_empty() {
+    http_get_response(host, path).map(|response| response.request)
+}
+
+pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'static str> {
+    let settings = crate::settings_state::snapshot();
+    if !settings.network_http_enabled {
+        return Err("HTTP API disabled in Settings");
+    }
+    if !network_available_for_api() {
         return Err("no network adapter");
     }
+    let host = host.trim();
+    if host.is_empty() || host.len() > 253 || host.contains('/') || host.contains(' ') {
+        return Err("invalid host");
+    }
+    let resolved_addr = dns_resolve(host)?;
     let mut request = String::from("GET ");
     request.push_str(if path.is_empty() { "/" } else { path });
     request.push_str(" HTTP/1.0\\r\\nHost: ");
     request.push_str(host);
     request.push_str("\\r\\n\\r\\n");
     queue_tx_packet("http", request.len());
-    Ok(request)
+    let mut body = String::from("coolOS synthetic HTTP response from ");
+    body.push_str(host);
+    body.push_str(" at ");
+    body.push_str(&ipv4_string(resolved_addr));
+    Ok(HttpResponse {
+        host: String::from(host),
+        path: String::from(if path.is_empty() { "/" } else { path }),
+        resolved_addr,
+        request,
+        status_line: String::from("HTTP/1.0 200 OK (synthetic)"),
+        body,
+    })
 }
 
 pub fn ipv4_string(addr: u32) -> String {
@@ -217,6 +301,10 @@ fn mac_string(mac: [u8; 6]) -> String {
         push_hex_byte(&mut out, *byte);
     }
     out
+}
+
+fn network_available_for_api() -> bool {
+    !ADAPTERS.lock().is_empty() || crate::settings_state::snapshot().network_offline_api
 }
 
 fn push_hex_byte(out: &mut String, value: u8) {

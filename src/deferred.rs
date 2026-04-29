@@ -90,7 +90,11 @@ fn run(work: DeferredWork) {
             crate::writeback::drain(4);
         }
         DeferredWork::PersistTaskSnapshot => {
-            let _ = crate::task_snapshot::persist();
+            if !crate::settings_state::loaded()
+                || crate::settings_state::snapshot().diagnostics_task_snapshots
+            {
+                let _ = crate::task_snapshot::persist();
+            }
         }
         DeferredWork::RefreshSearchIndex => crate::search_index::refresh(),
         DeferredWork::UpdateSearchIndex => crate::search_index::drain_changes(),

@@ -56,6 +56,13 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "net-api",
+        crate::net::dns_resolve("example.com").is_ok()
+            && crate::net::http_get("example.com", "/").is_ok(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }

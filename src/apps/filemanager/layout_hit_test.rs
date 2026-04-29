@@ -93,6 +93,24 @@ impl FileManagerApp {
         }
     }
 
+    pub(super) fn file_op_toggle_rect(&self, layout: Layout) -> Rect {
+        Rect {
+            x: (layout.width - 166).max(0),
+            y: layout.status_y + 3,
+            w: 76,
+            h: 14,
+        }
+    }
+
+    pub(super) fn file_op_cancel_rect(&self, layout: Layout) -> Rect {
+        Rect {
+            x: (layout.width - 84).max(0),
+            y: layout.status_y + 3,
+            w: 74,
+            h: 14,
+        }
+    }
+
     pub(super) fn title_y(&self) -> i32 {
         COMMAND_H + PATHBAR_H + 14
     }

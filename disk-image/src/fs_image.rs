@@ -1,7 +1,7 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
 /// /bin/hello.txt (and any other files needed by Phase 11+).
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
 
 use std::io::Write;
@@ -19,6 +19,7 @@ fn main() {
     let pipewr_elf = args.next();
     let keyecho_elf = args.next();
     let terminal_elf = args.next();
+    let netdemo_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let file = std::fs::OpenOptions::new()
@@ -142,6 +143,16 @@ fn main() {
         terminal_bin
             .write_all(&terminal_bytes)
             .expect("failed to write terminal");
+    }
+
+    if let Some(netdemo_path) = netdemo_elf {
+        let netdemo_bytes = std::fs::read(&netdemo_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", netdemo_path, e));
+        let mut netdemo_bin = bin.create_file("netdemo").expect("failed to create netdemo");
+        netdemo_bin.truncate().unwrap();
+        netdemo_bin
+            .write_all(&netdemo_bytes)
+            .expect("failed to write netdemo");
     }
 
     println!("{}", out_path);

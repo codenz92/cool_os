@@ -9,7 +9,6 @@ const MAX_JOBS: usize = 32;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
     Running,
-    #[allow(dead_code)]
     Paused,
     Cancelled,
     Complete,
@@ -72,6 +71,10 @@ pub fn cancel(id: u64) -> bool {
     set_state(id, JobState::Cancelled, "cancel requested")
 }
 
+pub fn pause(id: u64) -> bool {
+    set_state(id, JobState::Paused, "paused")
+}
+
 pub fn resume(id: u64) -> bool {
     set_state(id, JobState::Running, "resume requested")
 }
@@ -81,6 +84,14 @@ pub fn is_cancelled(id: u64) -> bool {
         .iter()
         .find(|job| job.id == id)
         .map(|job| job.state == JobState::Cancelled)
+        .unwrap_or(false)
+}
+
+pub fn is_paused(id: u64) -> bool {
+    JOBS.lock()
+        .iter()
+        .find(|job| job.id == id)
+        .map(|job| job.state == JobState::Paused)
         .unwrap_or(false)
 }
 

@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-start-menu smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -16,8 +16,9 @@ USER_PIPERD_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/relea
 USER_PIPEWR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipewr
 USER_KEYECHO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/keyecho
 USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/terminal
+USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/netdemo
 SMOKE_SECONDS ?= 12
-SMOKE_FRAMEBUFFER_SECONDS ?= 12
+SMOKE_FRAMEBUFFER_SECONDS ?= 18
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
@@ -190,6 +191,26 @@ smoke-ui-goldens: build
 		--expect-framebuffer-dialog \
 		--expect "[boot] desktop ready"
 
+smoke-ui-settings: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-5" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-settings.ppm" \
+		--expect-framebuffer-window \
+		--expect "[boot] desktop ready"
+
+smoke-ui-visual-assertions:
+	python3 $(CURDIR)/scripts/ppm_visual_assert.py \
+		start-menu="$(SMOKE_ARTIFACT_DIR)/start-menu-smoke.ppm" \
+		settings="$(SMOKE_ARTIFACT_DIR)/ui-golden-settings.ppm" \
+		diagnostics="$(SMOKE_ARTIFACT_DIR)/ui-golden-diagnostics.ppm" \
+		crash-dialog="$(SMOKE_ARTIFACT_DIR)/ui-golden-crash-dialog.ppm"
+
 smoke-start-menu: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
@@ -201,6 +222,21 @@ smoke-start-menu: build
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/start-menu-smoke.ppm" \
 		--expect-framebuffer-start-menu \
+		--expect "[boot] desktop ready"
+
+smoke-net-api: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_SECONDS) \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> exec /bin/netdemo\n" \
+		--post-hmp-delay 2.0 \
+		--expect "netdemo: dns example.com =" \
+		--expect "GET / HTTP/1.0" \
+		--expect "netdemo: http bytes" \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init
@@ -230,7 +266,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=8 fail=0" \
+		--expect "[selftest] kernel unit checks ok=9 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build
@@ -283,7 +319,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)")
 
 build-usb-init:
 	COOLOS_XHCI_ACTIVE_INIT=1 cargo build --release --target $(TARGET) \
@@ -297,7 +333,7 @@ build-usb-init:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && COOLOS_XHCI_ACTIVE_INIT=1 cargo run --bin disk-image -- "$(USB_INIT_KERNEL)")
-	(cd disk-image && COOLOS_XHCI_ACTIVE_INIT=1 cargo run --bin fs-image -- "$(USB_INIT_FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)")
+	(cd disk-image && COOLOS_XHCI_ACTIVE_INIT=1 cargo run --bin fs-image -- "$(USB_INIT_FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)")
 
 clean:
 	cargo clean

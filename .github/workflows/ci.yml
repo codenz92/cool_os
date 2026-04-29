@@ -40,6 +40,9 @@ jobs:
       - name: Kernel unit-style smoke
         run: make smoke-kernel-units
 
+      - name: Userspace network API smoke
+        run: make smoke-net-api
+
       - name: Boot budget smoke
         run: make smoke-boot-budget
 
@@ -86,6 +89,12 @@ jobs:
 
       - name: Start menu screenshot smoke
         run: make smoke-start-menu
+
+      - name: Settings screenshot smoke
+        run: make smoke-ui-settings
+
+      - name: Visual screenshot comparisons
+        run: make smoke-ui-visual-assertions
 
       - name: Convert UI screenshots to PNG
         if: failure()

@@ -157,7 +157,9 @@ extern "x86-interrupt" fn page_fault_handler(
     }
 
     if is_user {
-        stop_faulting_user_task("user page fault", 139);
+        let mut extra = alloc::format!("fault_addr={:#x} err={:?}", fault_addr.as_u64(), err);
+        extra.push_str(" lazy_alloc_failed");
+        stop_faulting_user_task("user page fault", 139, &sf, &extra);
     }
 
     panic!(
@@ -170,14 +172,15 @@ extern "x86-interrupt" fn page_fault_handler(
 
 extern "x86-interrupt" fn general_protection_fault_handler(sf: InterruptStackFrame, err: u64) {
     if is_user_frame(&sf) {
-        stop_faulting_user_task("user general protection fault", 139);
+        let extra = alloc::format!("err={:#x}", err);
+        stop_faulting_user_task("user general protection fault", 139, &sf, &extra);
     }
     panic!("GENERAL PROTECTION FAULT err={:#x}\n{:#?}", err, sf);
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(sf: InterruptStackFrame) {
     if is_user_frame(&sf) {
-        stop_faulting_user_task("user invalid opcode", 132);
+        stop_faulting_user_task("user invalid opcode", 132, &sf, "invalid opcode");
     }
     panic!("INVALID OPCODE\n{:#?}", sf);
 }
@@ -186,8 +189,28 @@ fn is_user_frame(sf: &InterruptStackFrame) -> bool {
     sf.code_segment & 0b11 == 0b11
 }
 
-fn stop_faulting_user_task(reason: &'static str, code: u64) -> ! {
+fn stop_faulting_user_task(
+    reason: &'static str,
+    code: u64,
+    sf: &InterruptStackFrame,
+    extra: &str,
+) -> ! {
     let task_id = crate::scheduler::fault_current(code, reason);
+    crate::crashdump::update_task_report_context(
+        task_id,
+        alloc::format!(
+            "rip={:#x} rsp={:#x} cs={:#x} {}",
+            sf.instruction_pointer.as_u64(),
+            sf.stack_pointer.as_u64(),
+            sf.code_segment,
+            extra
+        ),
+        alloc::format!(
+            "fault frame: ss={:?} rflags={:?}",
+            sf.stack_segment,
+            sf.cpu_flags
+        ),
+    );
     crate::notifications::push_transient("App crashed", reason);
     crate::klog::log_owned(alloc::format!(
         "faulted user task pid={} {}",

@@ -232,6 +232,37 @@ enum ConflictPolicy {
     Rename,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileOperationKind {
+    Copy,
+    Move,
+}
+
+impl FileOperationKind {
+    fn past_tense(self) -> &'static str {
+        match self {
+            FileOperationKind::Copy => "pasted",
+            FileOperationKind::Move => "moved",
+        }
+    }
+}
+
+#[derive(Clone)]
+enum FileOperationStep {
+    CreateDir(String),
+    CopyFile { src: String, dst: String },
+    Delete { path: String },
+}
+
+struct FileOperationState {
+    job: u64,
+    kind: FileOperationKind,
+    steps: Vec<FileOperationStep>,
+    step_idx: usize,
+    target_count: usize,
+    selected_name: Option<String>,
+}
+
 #[derive(Clone)]
 struct ConflictDialogState {
     clipboard: ClipboardState,
@@ -309,6 +340,7 @@ pub struct FileManagerApp {
     search_filter: String,
     search_active: bool,
     clipboard: Option<ClipboardState>,
+    active_file_op: Option<FileOperationState>,
 }
 
 impl FileManagerApp {
@@ -349,6 +381,7 @@ impl FileManagerApp {
             search_filter: String::new(),
             search_active: false,
             clipboard: None,
+            active_file_op: None,
         };
         app.load_dir(dir);
         app

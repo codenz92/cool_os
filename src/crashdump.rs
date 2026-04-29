@@ -12,6 +12,7 @@ struct TaskCrashReport {
     pid: usize,
     app: String,
     reason: String,
+    timestamp: String,
     tick: u64,
     registers: String,
     stack: String,
@@ -49,6 +50,7 @@ pub fn record_task_report(pid: usize, reason: &str) {
         pid,
         app: String::from(app),
         reason: String::from(reason),
+        timestamp: timestamp_string(),
         tick: crate::interrupts::ticks(),
         registers: String::from("rip/rsp unavailable; user fault frame capture pending"),
         stack: String::from("stack trace unavailable; frame-pointer unwinder pending"),
@@ -56,6 +58,14 @@ pub fn record_task_report(pid: usize, reason: &str) {
     });
     if reports.len() > MAX_TASK_REPORTS {
         reports.remove(0);
+    }
+}
+
+pub fn update_task_report_context(pid: usize, registers: String, stack: String) {
+    let mut reports = TASK_REPORTS.lock();
+    if let Some(report) = reports.iter_mut().rev().find(|report| report.pid == pid) {
+        report.registers = registers;
+        report.stack = stack;
     }
 }
 
@@ -71,6 +81,60 @@ pub fn record_restart(app: &str) {
 }
 
 pub fn lines() -> Vec<String> {
+    compact_lines()
+}
+
+pub fn detailed_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(bytes) = crate::fat32::read_file(CRASH_PATH) {
+        if let Ok(text) = core::str::from_utf8(&bytes) {
+            lines.push(String::from("== panic dump =="));
+            for line in text.lines().take(12) {
+                lines.push(String::from(line));
+            }
+        }
+    }
+
+    let reports = TASK_REPORTS.lock();
+    if reports.is_empty() {
+        if lines.is_empty() {
+            lines.push(String::from("no crash dump recorded"));
+        }
+        return lines;
+    }
+
+    let mut grouped_apps: Vec<String> = Vec::new();
+    lines.push(String::from("== app crash reports =="));
+    for report in reports.iter().rev() {
+        if grouped_apps
+            .iter()
+            .any(|app| app.eq_ignore_ascii_case(&report.app))
+        {
+            continue;
+        }
+        grouped_apps.push(report.app.clone());
+        let count = reports
+            .iter()
+            .filter(|item| item.app.eq_ignore_ascii_case(&report.app))
+            .count();
+        lines.push(format!(
+            "app={} reports={} latest_pid={} restarts={}",
+            report.app, count, report.pid, report.restarts
+        ));
+        lines.push(format!(
+            "  timestamp={} tick={} reason={}",
+            report.timestamp, report.tick, report.reason
+        ));
+        if crate::settings_state::snapshot().diagnostics_crash_details {
+            lines.push(format!("  registers: {}", report.registers));
+            lines.push(format!("  stack: {}", report.stack));
+        }
+    }
+
+    lines
+}
+
+fn compact_lines() -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(bytes) = crate::fat32::read_file(CRASH_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
@@ -83,8 +147,8 @@ pub fn lines() -> Vec<String> {
     let reports = TASK_REPORTS.lock();
     for report in reports.iter().rev().take(10) {
         lines.push(format!(
-            "app={} pid={} tick={} restarts={} reason={}",
-            report.app, report.pid, report.tick, report.restarts, report.reason
+            "app={} pid={} time={} tick={} restarts={} reason={}",
+            report.app, report.pid, report.timestamp, report.tick, report.restarts, report.reason
         ));
         lines.push(format!("  registers: {}", report.registers));
         lines.push(format!("  stack: {}", report.stack));
@@ -94,4 +158,14 @@ pub fn lines() -> Vec<String> {
     }
     lines.push(String::from("no crash dump recorded"));
     lines
+}
+
+fn timestamp_string() -> String {
+    if let Some(dt) = crate::rtc::read_datetime() {
+        return format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            dt.year, dt.month, dt.day, dt.hour, dt.minute
+        );
+    }
+    format!("tick {}", crate::interrupts::ticks())
 }

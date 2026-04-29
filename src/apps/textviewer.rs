@@ -107,7 +107,7 @@ impl TextViewerApp {
 
     pub fn crash_viewer(x: i32, y: i32) -> Self {
         let mut app = Self::new(x, y);
-        let lines = crate::crashdump::lines();
+        let lines = crate::crashdump::detailed_lines();
         app.lines = if lines.is_empty() {
             alloc::vec![String::from("no crash dumps recorded")]
         } else {
@@ -172,7 +172,11 @@ impl TextViewerApp {
             crate::vfs::path_lines(&["/", "/CONFIG", "/LOGS", "/APPS", "/DEV", "/bin/hello.txt"]),
         );
         push_section(&mut lines, "config store", crate::config_store::lines());
-        push_section(&mut lines, "crash dumps", crate::crashdump::lines());
+        push_section(
+            &mut lines,
+            "crash dumps",
+            crate::crashdump::detailed_lines(),
+        );
         push_section(&mut lines, "events", crate::event_bus::lines(12));
         push_section(&mut lines, "jobs", crate::jobs::lines());
         let mut app = Self::from_lines(

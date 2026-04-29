@@ -864,6 +864,48 @@ impl FileManagerApp {
         left.push_str(" files");
         self.put_str(10, (layout.status_y + 6) as usize, &left, FM_TEXT_MUTED);
 
+        if let Some(line) = self.active_file_operation_line() {
+            let progress = self.active_file_operation_progress().unwrap_or(0);
+            let line_chars = ((layout.width - 330).max(80) as usize) / CW;
+            self.put_str(
+                134,
+                (layout.status_y + 6) as usize,
+                &Self::clip_text(&line, line_chars),
+                FM_TEXT,
+            );
+
+            let bar_x = (layout.width / 2).max(260);
+            let bar_w = (layout.width - bar_x - 190).clamp(80, 220);
+            self.fill_rect(bar_x, layout.status_y + 7, bar_w, 6, FM_PANEL);
+            self.draw_rect_border(bar_x, layout.status_y + 7, bar_w, 6, FM_BORDER_SOFT);
+            let fill_w = ((bar_w - 2).max(0) as usize * progress as usize / 100) as i32;
+            self.fill_rect(bar_x + 1, layout.status_y + 8, fill_w, 4, FM_ACCENT);
+
+            let toggle = self.file_op_toggle_rect(layout);
+            let cancel = self.file_op_cancel_rect(layout);
+            self.fill_rect(toggle.x, toggle.y, toggle.w, toggle.h, FM_PANEL_ALT);
+            self.draw_rect_border(toggle.x, toggle.y, toggle.w, toggle.h, FM_BORDER);
+            self.put_str(
+                (toggle.x + 8) as usize,
+                (toggle.y + 3) as usize,
+                if self.active_file_operation_paused() {
+                    "Resume"
+                } else {
+                    "Pause"
+                },
+                FM_TEXT,
+            );
+            self.fill_rect(cancel.x, cancel.y, cancel.w, cancel.h, FM_PANEL_ALT);
+            self.draw_rect_border(cancel.x, cancel.y, cancel.w, cancel.h, FM_BORDER);
+            self.put_str(
+                (cancel.x + 8) as usize,
+                (cancel.y + 3) as usize,
+                "Cancel",
+                FM_TEXT,
+            );
+            return;
+        }
+
         let hint = self.status_note.clone().unwrap_or_else(|| {
             if self.search_active {
                 let mut s = String::from("search: ");
