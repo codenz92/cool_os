@@ -25,5 +25,8 @@ jobs:
       - name: Headless boot smoke
         run: make smoke
 
+      - name: Framebuffer UI smoke
+        run: make smoke-ui
+
       - name: USB init smoke
         run: make smoke-usb-init

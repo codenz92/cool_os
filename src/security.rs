@@ -34,6 +34,10 @@ pub fn can_write_path(path: &str) -> bool {
     !is_protected_path(path)
 }
 
+pub fn can_read_path(_path: &str) -> bool {
+    true
+}
+
 pub fn app_permission_lines() -> Vec<String> {
     crate::app_metadata::APPS
         .iter()

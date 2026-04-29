@@ -17,10 +17,12 @@ pub struct SearchEntry {
 static INDEX: Mutex<Vec<SearchEntry>> = Mutex::new(Vec::new());
 
 pub fn refresh() {
+    let job = crate::jobs::start("Search index", "scanning FAT32 filenames and text snippets");
     let mut entries = Vec::new();
     scan_dir("/", 0, &mut entries);
     let count = entries.len();
     *INDEX.lock() = entries;
+    crate::jobs::complete(job, "index ready");
     crate::event_bus::emit("search", "refresh", "desktop search index rebuilt");
     crate::klog::log_owned(format!("search index: {} item(s)", count));
 }

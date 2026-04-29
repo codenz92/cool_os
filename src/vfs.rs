@@ -4,7 +4,7 @@
 /// points at shared open objects, so inherited or duplicated descriptors refer
 /// to the same underlying file/pipe state instead of a single global fd slot.
 extern crate alloc;
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::arch::asm;
 use spin::Mutex;
 use x86_64::structures::paging::PhysFrame;
@@ -237,6 +237,37 @@ impl VfsState {
 
 static VFS: Mutex<VfsState> = Mutex::new(VfsState::new());
 
+pub fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return String::from("/");
+    }
+    let mut out = String::new();
+    for part in parts {
+        out.push('/');
+        out.push_str(part);
+    }
+    out
+}
+
+pub fn mount_lines() -> Vec<String> {
+    alloc::vec![
+        String::from("/ type=fat32 flags=rw,relatime,normalized-paths"),
+        String::from("/DEV type=devfs flags=ro,generated"),
+        String::from("/APPS type=appfs flags=rw,manifest-validated"),
+        format!("fd tables={} max_fd={}", VFS.lock().task_fds.len(), MAX_FDS),
+    ]
+}
+
 pub fn init_task(task_id: usize) {
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
@@ -302,7 +333,11 @@ pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, us
 }
 
 pub fn vfs_open(path: &str) -> usize {
-    let data = match crate::fat32::read_file(path) {
+    let path = normalize_path(path);
+    if !crate::security::can_read_path(&path) {
+        return usize::MAX;
+    }
+    let data = match crate::fat32::read_file(&path) {
         Some(data) => data,
         None => return usize::MAX,
     };

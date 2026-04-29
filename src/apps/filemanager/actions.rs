@@ -14,6 +14,10 @@ impl FileManagerApp {
     ) {
         self.path.clear();
         self.path.push_str(dir);
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.clear();
+            tab.push_str(dir);
+        }
         self.search_filter.clear();
         self.search_active = false;
         let (mut new_entries, mut entry_kinds, mut entry_paths) = self.load_entries_for_path(dir);
@@ -227,6 +231,23 @@ impl FileManagerApp {
             'r' | 'R' => {
                 self.refresh_current_dir();
                 false
+            }
+            't' | 'T' => {
+                self.open_new_tab();
+                false
+            }
+            'w' | 'W' => {
+                self.close_active_tab();
+                false
+            }
+            's' | 'S' => {
+                self.split_view = !self.split_view;
+                self.status_note = Some(if self.split_view {
+                    String::from("split view enabled")
+                } else {
+                    String::from("split view disabled")
+                });
+                true
             }
             '\u{007F}' => {
                 let targets = self.selected.clone();
@@ -662,6 +683,27 @@ impl FileManagerApp {
         }
         let parent = Self::parent_path(&self.path);
         self.navigate_to(&parent);
+    }
+
+    pub(super) fn open_new_tab(&mut self) {
+        if self.tabs.len() < 6 {
+            self.tabs.push(self.path.clone());
+            self.active_tab = self.tabs.len() - 1;
+            self.status_note = Some(String::from("new tab opened"));
+            self.render();
+        }
+    }
+
+    pub(super) fn close_active_tab(&mut self) {
+        if self.tabs.len() <= 1 {
+            self.status_note = Some(String::from("last tab kept open"));
+            self.render();
+            return;
+        }
+        self.tabs.remove(self.active_tab);
+        self.active_tab = self.active_tab.saturating_sub(1).min(self.tabs.len() - 1);
+        let path = self.tabs[self.active_tab].clone();
+        self.load_dir(&path);
     }
 
     pub(super) fn sort_entries(
@@ -1150,6 +1192,14 @@ impl FileManagerApp {
             return;
         }
 
+        let job = crate::jobs::start(
+            if clipboard.cut {
+                "Move files"
+            } else {
+                "Copy files"
+            },
+            &self.path,
+        );
         let mut pasted = 0usize;
         let mut last_err: Option<String> = None;
         let mut selected_name: Option<String> = None;
@@ -1183,11 +1233,13 @@ impl FileManagerApp {
         let current = self.path.clone();
         self.load_dir_with_state(&current, selected_name.as_deref(), Some(self.offset));
         if let Some(err) = last_err {
+            crate::jobs::fail(job, &err);
             self.status_note = Some(err);
         } else {
             let mut note = String::new();
             fmt_push_u(&mut note, pasted as u64);
             note.push_str(if clipboard.cut { " moved" } else { " pasted" });
+            crate::jobs::complete(job, &note);
             self.status_note = Some(note);
         }
         self.render();

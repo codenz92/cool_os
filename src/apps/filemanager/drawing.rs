@@ -41,6 +41,15 @@ impl FileManagerApp {
 
         self.draw_back_button(back);
         self.draw_forward_button(fwd);
+        let mut tabs = String::from("tab ");
+        fmt_push_u(&mut tabs, (self.active_tab + 1) as u64);
+        tabs.push('/');
+        fmt_push_u(&mut tabs, self.tabs.len() as u64);
+        tabs.push_str("  T new  W close");
+        if self.split_view {
+            tabs.push_str("  split");
+        }
+        self.put_str(74, (COMMAND_H + 3) as usize, &tabs, FM_TEXT_MUTED);
         self.fill_rect(crumb.x, crumb.y, crumb.w, crumb.h, FM_PANEL);
         self.draw_rect_border(crumb.x, crumb.y, crumb.w, crumb.h, FM_BORDER);
         self.draw_breadcrumbs(crumb);
@@ -865,6 +874,8 @@ impl FileManagerApp {
                 fmt_push_u(&mut s, self.selected.len() as u64);
                 s.push_str(" selected  Space toggle  C/X/V clipboard");
                 s
+            } else if self.split_view {
+                String::from("split view active  S toggles  recursive search in path box")
             } else if let Some(clipboard) = self.clipboard.as_ref() {
                 let mut s = String::new();
                 fmt_push_u(&mut s, clipboard.entries.len() as u64);

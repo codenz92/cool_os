@@ -9,6 +9,8 @@ pub struct DriverBinding {
     pub driver: &'static str,
     pub node: String,
     pub status: &'static str,
+    pub msi: bool,
+    pub msix: bool,
 }
 
 static BINDINGS: Mutex<Vec<DriverBinding>> = Mutex::new(Vec::new());
@@ -32,11 +34,14 @@ pub fn refresh() {
             return;
         };
         let node = node_for(driver, bindings.len());
+        let caps = crate::pci::interrupt_caps(loc);
         bindings.push(DriverBinding {
             location: format!("{:02x}:{:02x}.{}", loc.bus, loc.device, loc.function),
             driver,
             node,
             status: "bound",
+            msi: caps.msi,
+            msix: caps.msix,
         });
     });
     let current = bindings.len();
@@ -57,7 +62,16 @@ pub fn lines() -> Vec<String> {
         .map(|binding| {
             format!(
                 "{} {} node={} {}",
-                binding.location, binding.driver, binding.node, binding.status
+                binding.location,
+                binding.driver,
+                binding.node,
+                if binding.msix {
+                    "msix"
+                } else if binding.msi {
+                    "msi"
+                } else {
+                    "legacy-irq"
+                }
             )
         })
         .collect()
@@ -68,8 +82,8 @@ pub fn create_device_nodes() -> Result<(), crate::fat32::FsError> {
     for binding in BINDINGS.lock().iter() {
         let _ = crate::fat32::create_file(&binding.node);
         let data = format!(
-            "driver={}\nlocation={}\nstatus={}\n",
-            binding.driver, binding.location, binding.status
+            "driver={}\nlocation={}\nstatus={}\nmsi={}\nmsix={}\n",
+            binding.driver, binding.location, binding.status, binding.msi, binding.msix
         );
         let _ = crate::fat32::write_file(&binding.node, data.as_bytes());
     }

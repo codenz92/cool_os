@@ -1,17 +1,20 @@
 extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 const JOURNAL_PATH: &str = "/LOGS/FSJOURNAL.TXT";
 const MAX_JOURNAL: usize = 80;
 
 static JOURNAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
     for dir in ["/CONFIG", "/LOGS", "/APPS", "/DEV", "/TMP"] {
         let _ = crate::fat32::create_dir(dir);
     }
+    replay_journal();
     journal_operation("mount", "fat32 rw,safe-write,journal-lite");
 }
 
@@ -20,6 +23,7 @@ pub fn journal_operation(op: &str, path: &str) {
         return;
     }
     let line = format!("{}  {}  {}", crate::interrupts::ticks(), op, path);
+    DIRTY.store(true, Ordering::Relaxed);
     {
         let mut journal = JOURNAL.lock();
         journal.push(line);
@@ -42,13 +46,24 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
         out.push_str(line);
         out.push('\n');
     }
-    crate::fat32::write_file(JOURNAL_PATH, out.as_bytes())
+    let result = crate::fat32::write_file(JOURNAL_PATH, out.as_bytes());
+    if result.is_ok() {
+        DIRTY.store(false, Ordering::Relaxed);
+    }
+    result
 }
 
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
-        String::from("mount / type=fat32 flags=rw,safe-write,journal-lite,write-through"),
-        String::from("write cache: metadata write-through, data cache disabled"),
+        String::from("mount / type=fat32 flags=rw,safe-write,journal-lite,write-cache"),
+        format!(
+            "write cache: metadata journal dirty={}",
+            if DIRTY.load(Ordering::Relaxed) {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
         String::from("fsck repair: standard directory repair available"),
     ];
     if let Some(stats) = crate::fat32::stats() {
@@ -83,4 +98,31 @@ pub fn repair() -> Vec<String> {
 
 pub fn journal_lines() -> Vec<String> {
     JOURNAL.lock().clone()
+}
+
+pub fn replay_journal() {
+    let Some(bytes) = crate::fat32::read_file(JOURNAL_PATH) else {
+        return;
+    };
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return;
+    };
+    let mut journal = JOURNAL.lock();
+    journal.clear();
+    for line in text
+        .lines()
+        .rev()
+        .take(MAX_JOURNAL)
+        .collect::<Vec<&str>>()
+        .into_iter()
+        .rev()
+    {
+        journal.push(String::from(line));
+    }
+    crate::event_bus::emit("fs", "journal-replay", "metadata journal loaded");
+}
+
+pub fn flush() -> Result<(), crate::fat32::FsError> {
+    journal_operation("flush", "/");
+    flush_journal()
 }

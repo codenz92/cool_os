@@ -74,6 +74,7 @@ pub struct Task {
     pub parent: Option<usize>,
     pub process_group: usize,
     pub pending_signal: Option<crate::process_model::Signal>,
+    pub wake_tick: Option<u64>,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -112,6 +113,7 @@ impl Scheduler {
             parent: None,
             process_group: 0,
             pending_signal: None,
+            wake_tick: None,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -179,6 +181,7 @@ impl Scheduler {
             parent,
             process_group,
             pending_signal: None,
+            wake_tick: None,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -260,6 +263,16 @@ impl Scheduler {
         self.tasks[cur].stack_ptr = current_rsp;
         if self.tasks[cur].status == TaskStatus::Running {
             self.tasks[cur].status = TaskStatus::Ready;
+        }
+
+        let now = crate::interrupts::ticks();
+        for task in self.tasks.iter_mut() {
+            if task.status == TaskStatus::Blocked
+                && task.wake_tick.map(|wake| now >= wake).unwrap_or(false)
+            {
+                task.wake_tick = None;
+                task.status = TaskStatus::Ready;
+            }
         }
 
         // ── Find the next Ready task (round-robin) ───────────────────────────
@@ -382,10 +395,20 @@ pub fn block_current() {
     }
 }
 
+pub fn block_current_until(wake_tick: u64) {
+    let mut sched = SCHEDULER.lock();
+    let cur = sched.current;
+    if let Some(task) = sched.tasks.get_mut(cur) {
+        task.status = TaskStatus::Blocked;
+        task.wake_tick = Some(wake_tick);
+    }
+}
+
 pub fn unblock(task_id: usize) {
     let mut sched = SCHEDULER.lock();
     if let Some(task) = sched.tasks.get_mut(task_id) {
         if task.status == TaskStatus::Blocked {
+            task.wake_tick = None;
             task.status = TaskStatus::Ready;
         }
     }

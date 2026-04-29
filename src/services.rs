@@ -26,6 +26,7 @@ pub struct Service {
     pub order: u8,
     pub restart: &'static str,
     pub state: ServiceState,
+    pub restarts: u32,
 }
 
 static SERVICES: Mutex<Vec<Service>> = Mutex::new(Vec::new());
@@ -57,17 +58,31 @@ pub fn fail(name: &str) -> bool {
     set_state(name, ServiceState::Failed)
 }
 
+pub fn supervise() {
+    let mut services = SERVICES.lock();
+    for service in services.iter_mut() {
+        if service.state == ServiceState::Failed
+            && (service.restart == "always" || service.restart == "on-failure")
+        {
+            service.state = ServiceState::Running;
+            service.restarts = service.restarts.saturating_add(1);
+            crate::event_bus::emit("services", "restart", service.name);
+        }
+    }
+}
+
 pub fn lines() -> Vec<String> {
     SERVICES
         .lock()
         .iter()
         .map(|service| {
             format!(
-                "{:02} {} state={} restart={}",
+                "{:02} {} state={} restart={} restarts={}",
                 service.order,
                 service.name,
                 service.state.label(),
-                service.restart
+                service.restart,
+                service.restarts
             )
         })
         .collect()
@@ -92,5 +107,6 @@ fn service(name: &'static str, order: u8, restart: &'static str) -> Service {
         order,
         restart,
         state: ServiceState::Running,
+        restarts: 0,
     }
 }

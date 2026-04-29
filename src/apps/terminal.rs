@@ -321,6 +321,29 @@ impl TerminalApp {
                 }
             }
 
+            Some("dns") => match words.next() {
+                Some(host) => match crate::net::dns_resolve(host) {
+                    Ok(addr) => self.cmd_lines(
+                        "DNS",
+                        alloc::vec![alloc::format!(
+                            "{} -> {}",
+                            host,
+                            crate::net::ipv4_string(addr)
+                        )],
+                    ),
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("dns: ");
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                },
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: dns <host>\n");
+                }
+            },
+
             Some("power") => self.cmd_power(words.next()),
 
             Some("log") => self.cmd_log(),
@@ -331,7 +354,14 @@ impl TerminalApp {
 
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
 
+            Some("vfs") => self.cmd_lines("VFS", crate::vfs::mount_lines()),
+
             Some("journal") => self.cmd_lines("FS JOURNAL", crate::fs_hardening::journal_lines()),
+
+            Some("flush") => self.print_result(
+                "flush",
+                crate::fs_hardening::flush().map_err(|_| "flush failed"),
+            ),
 
             Some("df") => self.cmd_df(),
 
@@ -384,9 +414,13 @@ impl TerminalApp {
 
             Some("events") => self.cmd_lines("EVENTS", crate::event_bus::lines(12)),
 
+            Some("jobs") => self.cmd_lines("JOBS", crate::jobs::lines()),
+
             Some("services") => self.cmd_services(words.next(), words.next()),
 
             Some("crash") => self.cmd_lines("CRASH DUMP", crate::crashdump::lines()),
+
+            Some("abi") => self.cmd_lines("ABI", crate::abi::lines()),
 
             Some("notify") => self.cmd_notify(words.next(), words.next()),
 
@@ -403,6 +437,9 @@ impl TerminalApp {
                     self.print_str("clipboard: ");
                     self.set_fg(FG_OUTPUT);
                     self.print_str(&crate::clipboard::summary());
+                    self.print_str(" [");
+                    self.print_str(crate::clipboard::mime_type());
+                    self.print_str("]");
                     self.print_char('\n');
                 } else {
                     crate::clipboard::set_text(&text);
@@ -428,11 +465,13 @@ impl TerminalApp {
                     let args: Vec<&str> = words.collect();
                     let abs = resolve_path(&self.cwd, path);
                     match crate::elf::spawn_elf_process_with_args(&abs, &args) {
-                        Ok(()) => {
+                        Ok(pid) => {
                             self.set_fg(FG_ACCENT);
                             self.print_str("spawned ");
                             self.set_fg(FG_OUTPUT);
                             self.print_str(&abs);
+                            self.print_str(" pid=");
+                            self.print_u64(pid as u64);
                             self.print_char('\n');
                         }
                         Err(err) => {
@@ -462,7 +501,7 @@ impl TerminalApp {
                     crate::vfs::vfs_close(read_fd);
                     crate::vfs::vfs_close(write_fd);
                     match (r, w) {
-                        (Ok(()), Ok(())) => {
+                        (Ok(_), Ok(_)) => {
                             self.set_fg(FG_ACCENT);
                             self.print_str("pipe demo spawned\n");
                         }
@@ -485,7 +524,7 @@ impl TerminalApp {
                         &[],
                         &[(read_fd, 3)],
                     ) {
-                        Ok(()) => {
+                        Ok(_) => {
                             crate::vfs::vfs_close(read_fd);
                             self.pending_key_sink_fd = Some(write_fd);
                             self.set_fg(FG_ACCENT);
@@ -586,13 +625,16 @@ impl TerminalApp {
             ("drivers", "driver binding + /DEV nodes"),
             ("net", "network stack status"),
             ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
+            ("dns <host>", "resolve host with staged DNS"),
             ("http <host> [path]", "build basic HTTP request"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("fsck", "filesystem check summary"),
             ("fsrepair", "repair standard FS dirs"),
             ("mounts", "mount/cache/journal status"),
+            ("vfs", "mount table and fd tables"),
             ("journal", "filesystem journal tail"),
+            ("flush", "flush filesystem journal"),
             ("df", "filesystem free space"),
             ("shortcuts", "configured shortcut keys"),
             ("access [key on/off]", "accessibility settings"),
@@ -609,8 +651,10 @@ impl TerminalApp {
             ("signal <pid> <sig>", "queue signal to task"),
             ("pgroup <pid> <grp>", "set process group"),
             ("events", "event bus tail"),
+            ("jobs", "background job history"),
             ("services <op>", "service supervisor"),
             ("crash", "crash dump summary"),
+            ("abi", "kernel/user ABI version"),
             ("notify <op>", "notification history/actions"),
             ("clip [text]", "shared clipboard"),
             ("paste", "paste shared clipboard text"),
@@ -1350,17 +1394,18 @@ impl TerminalApp {
         let px0 = TERM_PAD_X + col * CHAR_W;
         let py0 = TERM_PAD_Y + row * LINE_H + GLYPH_Y_INSET;
         let stride = self.window.width as usize;
+        let large_text = crate::accessibility::snapshot().large_text;
         for (gy, &byte) in glyph.iter().take(CHAR_H).enumerate() {
             for bit in 0..8usize {
                 let px = px0 + bit;
                 let py = py0 + gy;
                 let idx = py * stride + px;
                 if idx < self.window.buf.len() {
-                    self.window.buf[idx] = if byte & (1 << bit) != 0 {
-                        self.fg
-                    } else {
-                        Self::bg_at(py)
-                    };
+                    let ink = byte & (1 << bit) != 0;
+                    self.window.buf[idx] = if ink { self.fg } else { Self::bg_at(py) };
+                    if large_text && ink && idx + 1 < self.window.buf.len() {
+                        self.window.buf[idx + 1] = self.fg;
+                    }
                 }
             }
         }

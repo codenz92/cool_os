@@ -83,10 +83,10 @@ pub struct LoadedImage {
 
 #[allow(dead_code)]
 pub fn spawn_elf_process(path: &str) -> Result<(), ExecError> {
-    spawn_elf_process_with_args(path, &[])
+    spawn_elf_process_with_args(path, &[]).map(|_| ())
 }
 
-pub fn spawn_elf_process_with_args(path: &str, args: &[&str]) -> Result<(), ExecError> {
+pub fn spawn_elf_process_with_args(path: &str, args: &[&str]) -> Result<usize, ExecError> {
     spawn_elf_process_with_fds(path, args, &[])
 }
 
@@ -94,24 +94,26 @@ pub fn spawn_elf_process_with_fds(
     path: &str,
     args: &[&str],
     inherited_fds: &[(usize, usize)],
-) -> Result<(), ExecError> {
+) -> Result<usize, ExecError> {
     let image = load_elf_image_with_args(path, args)?;
 
-    let ok = x86_64::instructions::interrupts::without_interrupts(|| {
-        crate::scheduler::SCHEDULER.lock().spawn_user_with_fds(
+    let task_id = x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = crate::scheduler::SCHEDULER.lock();
+        let before = sched.tasks.len();
+        if sched.spawn_user_with_fds(
             "user-elf",
             image.entry,
             image.user_rsp,
             image.pml4,
             inherited_fds,
-        )
+        ) {
+            Some(before)
+        } else {
+            None
+        }
     });
 
-    if ok {
-        Ok(())
-    } else {
-        Err(ExecError::FdInstallFailed)
-    }
+    task_id.ok_or(ExecError::FdInstallFailed)
 }
 
 pub fn spawn_elf_process_with_stdin(
@@ -119,7 +121,7 @@ pub fn spawn_elf_process_with_stdin(
     args: &[&str],
     stdin_fd: usize,
 ) -> Result<(), ExecError> {
-    spawn_elf_process_with_fds(path, args, &[(stdin_fd, 3)])
+    spawn_elf_process_with_fds(path, args, &[(stdin_fd, 3)]).map(|_| ())
 }
 
 pub fn load_elf_image(path: &str) -> Result<LoadedImage, ExecError> {

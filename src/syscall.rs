@@ -21,6 +21,11 @@
 ///   11 shmem_create(len) → id on success, u64::MAX on failure
 ///   12 shmem_map(id) → virtual address on success, u64::MAX on failure
 ///   13 waitpid(pid, status_ptr) → pid on success, u64::MAX on failure
+///   14 spawn(path_ptr, path_len) → pid on success, u64::MAX on failure
+///   15 sleep_ms(ms) → 0
+///   16 abi_version() → kernel/user ABI version
+///   17 dns_resolve(host_ptr, host_len) → IPv4 u32 on success, u64::MAX on failure
+///   18 http_get(host_ptr, host_len) → request bytes written to stdout
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -204,6 +209,14 @@ extern "C" fn syscall_dispatch(
         11 => sys_shmem_create(a1),
         12 => sys_shmem_map(a1),
         13 => sys_waitpid(a1, a2 as *mut u64),
+        14 => sys_spawn(a1 as *const u8, a2),
+        15 => {
+            sys_sleep_ms(a1);
+            0
+        }
+        16 => crate::abi::version(),
+        17 => sys_dns_resolve(a1 as *const u8, a2),
+        18 => sys_http_get(a1 as *const u8, a2),
         _ => u64::MAX,
     }
 }
@@ -324,6 +337,58 @@ fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
         },
         Err(_) => u64::MAX,
     }
+}
+
+fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let path = match core::str::from_utf8(bytes) {
+        Ok(path) => path,
+        Err(_) => return u64::MAX,
+    };
+    match crate::elf::spawn_elf_process_with_args(path, &[]) {
+        Ok(pid) => pid as u64,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_sleep_ms(ms: u64) {
+    let ticks = crate::interrupts::ticks_for_millis(ms.max(1));
+    let wake_tick = crate::interrupts::ticks().wrapping_add(ticks);
+    crate::scheduler::block_current_until(wake_tick);
+    while crate::scheduler::current_task_blocked() {
+        unsafe {
+            core::arch::asm!("sti; hlt", options(nomem, nostack));
+        }
+    }
+    x86_64::instructions::interrupts::disable();
+}
+
+fn sys_dns_resolve(host_ptr: *const u8, host_len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(host_ptr, host_len as usize) };
+    let host = match core::str::from_utf8(bytes) {
+        Ok(host) => host,
+        Err(_) => return u64::MAX,
+    };
+    crate::net::dns_resolve(host)
+        .map(|addr| addr as u64)
+        .unwrap_or(u64::MAX)
+}
+
+fn sys_http_get(host_ptr: *const u8, host_len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(host_ptr, host_len as usize) };
+    let host = match core::str::from_utf8(bytes) {
+        Ok(host) => host,
+        Err(_) => return u64::MAX,
+    };
+    let request = match crate::net::http_get(host, "/") {
+        Ok(request) => request,
+        Err(_) => return u64::MAX,
+    };
+    for byte in request.bytes() {
+        push_output_byte(byte);
+        unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte) };
+    }
+    request.len() as u64
 }
 
 fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64 {

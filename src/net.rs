@@ -70,12 +70,23 @@ pub fn status_lines() -> Vec<String> {
 
 pub fn protocol_lines() -> Vec<String> {
     alloc::vec![
-        String::from("ARP: cache table ready, no packet TX path yet"),
+        String::from("ARP: cache table ready, TX/RX queues staged"),
         String::from("IPv4: static address model ready"),
         String::from("UDP: datagram builder/parser staged"),
-        String::from("DNS: query encoder staged"),
-        String::from("HTTP: basic GET request builder staged"),
+        String::from("DNS: synthetic resolver syscall available"),
+        String::from("HTTP: GET request builder available to terminal/userspace"),
     ]
+}
+
+pub fn dns_resolve(host: &str) -> Result<u32, &'static str> {
+    if ADAPTERS.lock().is_empty() {
+        return Err("no network adapter");
+    }
+    let mut hash = 0u32;
+    for byte in host.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(byte as u32);
+    }
+    Ok(0x0a00_0001 | ((hash & 0x00ff_ffff).max(2)))
 }
 
 pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
@@ -88,6 +99,16 @@ pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
     request.push_str(host);
     request.push_str("\\r\\n\\r\\n");
     Ok(request)
+}
+
+pub fn ipv4_string(addr: u32) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        (addr >> 24) & 0xff,
+        (addr >> 16) & 0xff,
+        (addr >> 8) & 0xff,
+        addr & 0xff
+    )
 }
 
 fn synthetic_mac(bus: u8, device: u8, function: u8) -> [u8; 6] {

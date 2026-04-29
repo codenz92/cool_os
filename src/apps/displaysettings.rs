@@ -8,7 +8,7 @@ use crate::framebuffer::WHITE;
 use crate::wm::window::{Window, TITLE_H};
 
 pub const DISPLAY_SETTINGS_W: i32 = 440;
-pub const DISPLAY_SETTINGS_H: i32 = 348;
+pub const DISPLAY_SETTINGS_H: i32 = 388;
 
 const BG_A: u32 = 0x00_03_07_16;
 const BG_B: u32 = 0x00_01_03_0B;
@@ -55,6 +55,12 @@ impl DisplaySettingsApp {
             desktop_settings::set_compact_spacing(!settings.compact_spacing);
         } else if let Some(mode) = self.hit_sort_button(lx, ly) {
             desktop_settings::set_sort_mode(mode);
+        } else if self.hit_toggle(lx, ly, 292) {
+            let access = crate::accessibility::snapshot();
+            crate::accessibility::set("large_text", !access.large_text);
+        } else if self.hit_toggle(lx, ly, 318) {
+            let access = crate::accessibility::snapshot();
+            crate::accessibility::set("reduced_motion", !access.reduced_motion);
         } else {
             return;
         }
@@ -75,6 +81,7 @@ impl DisplaySettingsApp {
 
     fn render(&mut self) {
         let settings = desktop_settings::snapshot();
+        let access = crate::accessibility::snapshot();
         self.last_width = self.window.width;
         self.last_height = self.window.height;
         self.last_settings = settings;
@@ -123,19 +130,27 @@ impl DisplaySettingsApp {
         self.draw_sort_buttons(stride, 170, 208, settings.sort_mode);
 
         self.put_str(stride, 28, 278, "SYSTEM PANELS", LABEL);
-        self.put_str(
+        self.draw_toggle_row(
             stride,
             28,
             292,
-            "keyboard shortcuts  access  storage",
-            WHITE,
+            panel_w.saturating_sub(24),
+            "Large text across shell/apps",
+            access.large_text,
         );
-        self.put_str(stride, 28, 306, "network  power  packages  services", WHITE);
+        self.draw_toggle_row(
+            stride,
+            28,
+            318,
+            panel_w.saturating_sub(24),
+            "Reduced motion / calmer UI",
+            access.reduced_motion,
+        );
         self.put_str(
             stride,
             28,
-            322,
-            "Use Terminal: shortcuts, access, df, net, power",
+            344,
+            "Storage, network, power, packages: terminal + services",
             MUTED,
         );
     }

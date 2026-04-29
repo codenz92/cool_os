@@ -38,14 +38,22 @@ pub fn status_lines() -> Vec<String> {
         } else {
             parent.push('-');
         }
+        let mut wake = String::new();
+        if let Some(tick) = task.wake_tick {
+            wake.push('@');
+            push_usize(&mut wake, tick as usize);
+        } else {
+            wake.push('-');
+        }
         lines.push(format!(
-            "pid={} ppid={} pgid={} signal={} status={:?} name={}",
+            "pid={} ppid={} pgid={} signal={} wake={} status={:?} name={}",
             pid,
             parent,
             task.process_group,
             task.pending_signal
                 .map(|signal| signal.label())
                 .unwrap_or("-"),
+            wake,
             task.status,
             task.name
         ));

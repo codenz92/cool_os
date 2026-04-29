@@ -65,6 +65,9 @@ pub fn lines() -> Vec<String> {
 }
 
 pub fn install(id_or_command: &str) -> Result<(), &'static str> {
+    if id_or_command.to_ascii_uppercase().ends_with(".PKG") || id_or_command.starts_with('/') {
+        return install_archive(id_or_command);
+    }
     let app = find_app(id_or_command).ok_or("unknown package")?;
     let mut installed = INSTALLED.lock();
     if !installed.iter().any(|id| id == app.id) {
@@ -76,6 +79,43 @@ pub fn install(id_or_command: &str) -> Result<(), &'static str> {
     let _ = crate::fat32::create_file(&path);
     let _ = crate::fat32::write_file(&path, manifest_for(app).as_bytes());
     crate::event_bus::emit("packages", "install", app.id);
+    Ok(())
+}
+
+pub fn install_archive(path: &str) -> Result<(), &'static str> {
+    let bytes = crate::fat32::read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let id = manifest_value(text, "id").ok_or("package missing id")?;
+    let name = manifest_value(text, "name").unwrap_or(id);
+    let command = manifest_value(text, "command").ok_or("package missing command")?;
+    let icon = manifest_value(text, "icon").unwrap_or("PK");
+    let permission = manifest_value(text, "permission").unwrap_or("user");
+    if !id.starts_with("app.") || command.contains('/') || command.contains("..") {
+        return Err("invalid package manifest");
+    }
+    let dir = app_dir(command);
+    let _ = crate::fat32::create_dir(&dir);
+    let manifest_path = app_manifest_path(command);
+    let mut manifest = String::new();
+    manifest.push_str("id=");
+    manifest.push_str(id);
+    manifest.push_str("\nname=");
+    manifest.push_str(name);
+    manifest.push_str("\ncommand=");
+    manifest.push_str(command);
+    manifest.push_str("\nicon=");
+    manifest.push_str(icon);
+    manifest.push_str("\npermission=");
+    manifest.push_str(permission);
+    manifest.push('\n');
+    let _ = crate::fat32::create_file(&manifest_path);
+    crate::fat32::safe_write_file(&manifest_path, manifest.as_bytes())
+        .map_err(|_| "install write failed")?;
+    let mut installed = INSTALLED.lock();
+    if !installed.iter().any(|existing| existing == id) {
+        installed.push(String::from(id));
+    }
+    crate::event_bus::emit("packages", "install-pkg", id);
     Ok(())
 }
 
@@ -111,4 +151,19 @@ fn manifest_for(app: &crate::app_metadata::AppMetadata) -> String {
         "id={}\nname={}\ncommand={}\nicon={}\npermission={}\n",
         app.id, app.name, app.command, app.glyph, app.permission
     )
+}
+
+fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim().eq_ignore_ascii_case(key) {
+            let value = v.trim();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
 }

@@ -5,8 +5,15 @@ use spin::Mutex;
 
 #[derive(Clone)]
 pub enum ClipboardPayload {
-    Text(String),
-    Paths { paths: Vec<String>, cut: bool },
+    Text {
+        text: String,
+        mime: &'static str,
+    },
+    Paths {
+        paths: Vec<String>,
+        cut: bool,
+        mime: &'static str,
+    },
 }
 
 #[derive(Clone)]
@@ -21,7 +28,10 @@ static CLIPBOARD: Mutex<Option<ClipboardState>> = Mutex::new(None);
 pub fn set_text(text: &str) {
     *CLIPBOARD.lock() = Some(ClipboardState {
         tick: crate::interrupts::ticks(),
-        payload: ClipboardPayload::Text(String::from(text)),
+        payload: ClipboardPayload::Text {
+            text: String::from(text),
+            mime: "text/plain",
+        },
     });
     crate::notifications::push("Clipboard", "text copied to shared clipboard");
 }
@@ -29,7 +39,11 @@ pub fn set_text(text: &str) {
 pub fn set_paths(paths: Vec<String>, cut: bool) {
     *CLIPBOARD.lock() = Some(ClipboardState {
         tick: crate::interrupts::ticks(),
-        payload: ClipboardPayload::Paths { paths, cut },
+        payload: ClipboardPayload::Paths {
+            paths,
+            cut,
+            mime: "application/x-coolos-file-list",
+        },
     });
     crate::notifications::push(
         "Clipboard",
@@ -48,34 +62,44 @@ pub fn get() -> Option<ClipboardState> {
 
 pub fn get_text() -> Option<String> {
     match CLIPBOARD.lock().as_ref().map(|state| &state.payload) {
-        Some(ClipboardPayload::Text(text)) => Some(text.clone()),
+        Some(ClipboardPayload::Text { text, .. }) => Some(text.clone()),
         _ => None,
     }
 }
 
 pub fn get_paths() -> Option<(Vec<String>, bool)> {
     match CLIPBOARD.lock().as_ref().map(|state| &state.payload) {
-        Some(ClipboardPayload::Paths { paths, cut }) => Some((paths.clone(), *cut)),
+        Some(ClipboardPayload::Paths { paths, cut, .. }) => Some((paths.clone(), *cut)),
         _ => None,
+    }
+}
+
+pub fn mime_type() -> &'static str {
+    match CLIPBOARD.lock().as_ref().map(|state| &state.payload) {
+        Some(ClipboardPayload::Text { mime, .. }) => mime,
+        Some(ClipboardPayload::Paths { mime, .. }) => mime,
+        None => "empty",
     }
 }
 
 pub fn summary() -> String {
     match CLIPBOARD.lock().as_ref() {
         Some(ClipboardState {
-            payload: ClipboardPayload::Text(text),
+            payload: ClipboardPayload::Text { text, mime },
             ..
         }) => {
-            let mut s = String::from("text ");
+            let mut s = String::from(*mime);
+            s.push(' ');
             push_usize(&mut s, text.len());
             s.push_str(" bytes");
             s
         }
         Some(ClipboardState {
-            payload: ClipboardPayload::Paths { paths, cut },
+            payload: ClipboardPayload::Paths { paths, cut, mime },
             ..
         }) => {
-            let mut s = String::new();
+            let mut s = String::from(*mime);
+            s.push(' ');
             push_usize(&mut s, paths.len());
             s.push_str(if *cut {
                 " cut path(s)"

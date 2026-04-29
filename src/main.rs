@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod abi;
 mod accessibility;
 mod acpi;
 mod allocator;
@@ -25,6 +26,7 @@ mod framebuffer;
 mod fs_hardening;
 mod gdt;
 mod interrupts;
+mod jobs;
 mod keyboard;
 mod klog;
 mod memory;
@@ -222,6 +224,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // provides the only exclusion needed.  Holding interrupts off for
         // an entire frame (≈2.8 M MMIO writes at 1280×720×3 bpp) would
         // block mouse and keyboard for tens of milliseconds per frame.
+        services::supervise();
         usb::poll();
         wm::compose_if_needed();
         x86_64::instructions::hlt();

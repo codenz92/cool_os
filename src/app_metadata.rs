@@ -89,6 +89,14 @@ pub const APPS: &[AppMetadata] = &[
         permission: "settings",
         associations: &[],
     },
+    AppMetadata {
+        id: "app.crash",
+        name: "Crash Viewer",
+        glyph: "CV",
+        command: "crash",
+        permission: "diagnostics",
+        associations: &["DMP"],
+    },
 ];
 
 pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
@@ -126,6 +134,11 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         label: "Color Picker",
         detail: "open palette",
         kind: LauncherKind::App("Color Picker"),
+    },
+    LauncherEntry {
+        label: "Crash Viewer",
+        detail: "open crash reports",
+        kind: LauncherKind::App("Crash Viewer"),
     },
     LauncherEntry {
         label: "hello.txt",
@@ -190,11 +203,19 @@ pub fn association_for(path: &str, is_dir: bool) -> Association {
             return Association::AppShortcut(app.name);
         }
     }
-    match file_ext(name) {
-        ext if ext.eq_ignore_ascii_case("ELF") => Association::Executable,
-        ext if is_text_extension(ext) => Association::Text,
-        _ => Association::Unknown,
+    let ext = file_ext(name);
+    if ext.eq_ignore_ascii_case("ELF") {
+        return Association::Executable;
     }
+    if is_text_extension(ext) {
+        return Association::Text;
+    }
+    for app in APPS {
+        if matches_ignore_ascii(ext, app.associations) {
+            return Association::AppShortcut(app.name);
+        }
+    }
+    Association::Unknown
 }
 
 pub fn is_text_extension(ext: &str) -> bool {

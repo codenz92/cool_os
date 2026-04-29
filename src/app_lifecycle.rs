@@ -131,12 +131,13 @@ pub fn record_command(command: &str) {
 
 pub fn remember_geometry(app: &str, x: i32, y: i32, w: i32, h: i32) {
     ensure_loaded();
+    let app_key = geometry_key(app);
     {
         let mut state = STATE.lock();
         if let Some(existing) = state
             .geometries
             .iter_mut()
-            .find(|geometry| geometry.app.eq_ignore_ascii_case(app))
+            .find(|geometry| geometry.app.eq_ignore_ascii_case(&app_key))
         {
             existing.x = x;
             existing.y = y;
@@ -144,7 +145,7 @@ pub fn remember_geometry(app: &str, x: i32, y: i32, w: i32, h: i32) {
             existing.h = h;
         } else {
             state.geometries.push(AppGeometry {
-                app: String::from(app),
+                app: app_key,
                 x,
                 y,
                 w,
@@ -157,11 +158,14 @@ pub fn remember_geometry(app: &str, x: i32, y: i32, w: i32, h: i32) {
 
 pub fn geometry_for(app: &str) -> Option<AppGeometry> {
     ensure_loaded();
+    let app_key = geometry_key(app);
     STATE
         .lock()
         .geometries
         .iter()
-        .find(|geometry| geometry.app.eq_ignore_ascii_case(app))
+        .find(|geometry| {
+            geometry.app.eq_ignore_ascii_case(&app_key) || geometry.app.eq_ignore_ascii_case(app)
+        })
         .cloned()
 }
 
@@ -316,6 +320,15 @@ fn push_i32(out: &mut String, value: i32) {
     } else {
         push_u64(out, value as u64);
     }
+}
+
+fn geometry_key(app: &str) -> String {
+    let mut key = String::from(app);
+    key.push('@');
+    push_u64(&mut key, crate::framebuffer::width() as u64);
+    key.push('x');
+    push_u64(&mut key, crate::framebuffer::height() as u64);
+    key
 }
 
 fn push_u64(out: &mut String, mut value: u64) {

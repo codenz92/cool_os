@@ -106,6 +106,21 @@ impl TextViewerApp {
         Ok(app)
     }
 
+    pub fn crash_viewer(x: i32, y: i32) -> Self {
+        let mut app = Self::new(x, y);
+        let lines = crate::crashdump::lines();
+        app.lines = if lines.is_empty() {
+            alloc::vec![String::from("no crash dumps recorded")]
+        } else {
+            lines
+        };
+        app.heading = String::from("Crash dump viewer");
+        app.subheading = String::from("/LOGS/CRASH.TXT and per-task reports");
+        app.scroll = 0;
+        app.render();
+        app
+    }
+
     pub fn handle_key(&mut self, c: char) {
         match c {
             'j' | 'J' => {

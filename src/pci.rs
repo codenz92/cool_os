@@ -57,6 +57,12 @@ pub struct Header {
     pub prog_if: u8,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct InterruptCaps {
+    pub msi: bool,
+    pub msix: bool,
+}
+
 impl Header {
     pub fn read(loc: Location) -> Option<Self> {
         let id = read32(loc, 0x00);
@@ -124,6 +130,38 @@ pub fn enable_memory_space(loc: Location) {
     let cmd = read32(loc, 0x04);
     // Bit 1: memory space enable.
     write32(loc, 0x04, cmd | 0x0002);
+}
+
+pub fn interrupt_caps(loc: Location) -> InterruptCaps {
+    let status_command = read32(loc, 0x04);
+    if status_command & (1 << 20) == 0 {
+        return InterruptCaps {
+            msi: false,
+            msix: false,
+        };
+    }
+    let mut ptr = (read32(loc, 0x34) & 0xfc) as u8;
+    let mut caps = InterruptCaps {
+        msi: false,
+        msix: false,
+    };
+    let mut guard = 0usize;
+    while ptr >= 0x40 && guard < 32 {
+        let word = read32(loc, ptr);
+        let cap_id = (word & 0xff) as u8;
+        let next = ((word >> 8) & 0xfc) as u8;
+        match cap_id {
+            0x05 => caps.msi = true,
+            0x11 => caps.msix = true,
+            _ => {}
+        }
+        if next == 0 || next == ptr {
+            break;
+        }
+        ptr = next;
+        guard += 1;
+    }
+    caps
 }
 
 /// Iterate every function on every device on every bus once, invoking `f` with

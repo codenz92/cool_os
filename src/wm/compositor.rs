@@ -358,6 +358,7 @@ fn canonical_app_title(name: &str) -> &str {
         "Color Pick" | "Color Picker" => "Color Picker",
         "Display Settings" => "Display Settings",
         "Personalize" => "Personalize",
+        "Crash Viewer" => "Crash Viewer",
         "File Mgr" | "File Manager" => "File Manager",
         _ => name,
     }
@@ -371,6 +372,7 @@ fn window_accent(title: &str) -> u32 {
         "Color Picker" => ICON_COL_ACC,
         "Display Settings" => 0x00_66_CC_FF,
         "Personalize" => 0x00_CC_66_FF,
+        "Crash Viewer" => 0x00_FF_66_66,
         "File Manager" => 0x00_55_DD_FF,
         _ => ACCENT,
     }
@@ -384,6 +386,7 @@ fn window_glyph(title: &str) -> &'static str {
         "Color Picker" => "CP",
         "Display Settings" => "DS",
         "Personalize" => "P*",
+        "Crash Viewer" => "CV",
         "File Manager" => "FM",
         _ => "[]",
     }
@@ -539,6 +542,11 @@ struct TaskbarMenu {
     y: i32,
 }
 
+struct ShellDialog {
+    title: String,
+    body: String,
+}
+
 // ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
@@ -663,11 +671,13 @@ pub struct WindowManager {
     desktop_compact_spacing: bool,
     desktop_sort: DesktopSortMode,
     icon_selected: Option<usize>,
+    desktop_multi_selected: Vec<usize>,
     pressed_icon: Option<usize>,
     start_menu_open: bool,
     notification_center_open: bool,
     launcher: Option<LauncherState>,
     taskbar_menu: Option<TaskbarMenu>,
+    dialog: Option<ShellDialog>,
     session_ready: bool,
     session_dirty: bool,
     last_session_save_tick: u64,
@@ -676,6 +686,7 @@ pub struct WindowManager {
     last_click_x: i32,
     last_click_y: i32,
     task_switcher_until_tick: u64,
+    task_switcher_query: String,
     /// Shadow buffer — screen_width × screen_height u32 pixels.
     shadow: Vec<u32>,
     shadow_width: usize,
@@ -725,11 +736,13 @@ impl WindowManager {
             desktop_compact_spacing: settings.compact_spacing,
             desktop_sort: settings.sort_mode,
             icon_selected: None,
+            desktop_multi_selected: Vec::new(),
             pressed_icon: None,
             start_menu_open: false,
             notification_center_open: false,
             launcher: None,
             taskbar_menu: None,
+            dialog: None,
             session_ready: false,
             session_dirty: false,
             last_session_save_tick: 0,
@@ -738,6 +751,7 @@ impl WindowManager {
             last_click_x: 0,
             last_click_y: 0,
             task_switcher_until_tick: 0,
+            task_switcher_query: String::new(),
             shadow,
             shadow_width: w,
             shadow_height: h,
@@ -888,6 +902,7 @@ impl WindowManager {
         self.desktop_sort = settings.sort_mode;
         if !self.desktop_show_icons {
             self.icon_selected = None;
+            self.desktop_multi_selected.clear();
             self.pressed_icon = None;
         }
         if self.wallpaper_preset != settings.wallpaper {
@@ -904,6 +919,7 @@ impl WindowManager {
         self.wallpaper =
             build_wallpaper(self.shadow_width, taskbar_y, self.wallpaper_preset, false);
         self.icon_selected = None;
+        self.desktop_multi_selected.clear();
         self.pressed_icon = None;
         for window in self.windows.iter_mut() {
             if let AppWindow::FileManager(fm) = window {
@@ -924,6 +940,9 @@ impl WindowManager {
             }
             "File Manager" => self.launch_file_manager_at("/", wx, wy),
             "Personalize" => self.add_window(AppWindow::Personalize(PersonalizeApp::new(wx, wy))),
+            "Crash Viewer" => {
+                self.add_window(AppWindow::TextViewer(TextViewerApp::crash_viewer(wx, wy)))
+            }
             _ => {}
         }
         if self.windows.len() > before {
@@ -1119,9 +1138,11 @@ impl WindowManager {
         match crate::app_metadata::association_for(path, false) {
             crate::app_metadata::Association::Executable => {
                 if let Err(err) = crate::elf::spawn_elf_process(path) {
+                    let body = err.as_str();
                     self.print_to_terminal("exec failed: ");
-                    self.print_to_terminal(err.as_str());
+                    self.print_to_terminal(body);
                     self.print_to_terminal("\n");
+                    self.show_error_dialog("Exec failed", body);
                 }
             }
             crate::app_metadata::Association::AppShortcut(app) => self.launch_app(app, wx, wy),
@@ -1132,6 +1153,7 @@ impl WindowManager {
                         self.print_to_terminal("open failed: ");
                         self.print_to_terminal(err);
                         self.print_to_terminal("\n");
+                        self.show_error_dialog("Open failed", err);
                     }
                 }
             }
@@ -1148,6 +1170,17 @@ impl WindowManager {
         }) {
             term.print_str(msg);
         }
+    }
+
+    fn show_error_dialog(&mut self, title: &str, body: &str) {
+        self.dialog = Some(ShellDialog {
+            title: String::from(title),
+            body: String::from(body),
+        });
+        crate::notifications::push(title, body);
+        self.launcher = None;
+        self.context_menu = None;
+        self.taskbar_menu = None;
     }
 
     fn run_terminal_command(&mut self, command: &str) {
@@ -1209,20 +1242,23 @@ impl WindowManager {
                             term.print_str(err);
                             term.print_char('\n');
                         }
+                        self.show_error_dialog("Open failed", err);
                     }
                 }
             }
             FileManagerOpenRequest::Exec(path) => {
                 crate::app_lifecycle::record_file(&path);
                 if let Err(err) = crate::elf::spawn_elf_process(&path) {
+                    let body = err.as_str();
                     if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
                         AppWindow::Terminal(t) => Some(t),
                         _ => None,
                     }) {
                         term.print_str("exec failed: ");
-                        term.print_str(err.as_str());
+                        term.print_str(body);
                         term.print_char('\n');
                     }
+                    self.show_error_dialog("Exec failed", body);
                 }
             }
             FileManagerOpenRequest::App(app) => {
@@ -1563,6 +1599,7 @@ impl WindowManager {
     fn show_task_switcher(&mut self) {
         self.task_switcher_until_tick =
             crate::interrupts::ticks() + crate::interrupts::ticks_for_millis(TASK_SWITCHER_MS);
+        self.task_switcher_query.clear();
     }
 
     fn snap_focused_window(&mut self, target: SnapTarget) -> bool {
@@ -1689,12 +1726,65 @@ impl WindowManager {
             crate::wm::request_repaint();
             return;
         }
+        if self.task_switcher_until_tick > crate::interrupts::ticks()
+            && self.handle_task_switcher_input(input)
+        {
+            crate::wm::request_repaint();
+            return;
+        }
         if self.handle_global_shortcut(input) {
             crate::wm::request_repaint();
             return;
         }
         if let Some(c) = input.legacy_char() {
             self.handle_key(c);
+        }
+    }
+
+    fn handle_task_switcher_input(&mut self, input: KeyInput) -> bool {
+        match input.key {
+            Key::Escape => {
+                self.task_switcher_until_tick = 0;
+                self.task_switcher_query.clear();
+                true
+            }
+            Key::Enter => {
+                self.task_switcher_until_tick = 0;
+                true
+            }
+            Key::Backspace if !input.has_alt() && !input.has_ctrl() => {
+                self.task_switcher_query.pop();
+                self.focus_first_switcher_match();
+                true
+            }
+            Key::Character(c) if !input.has_alt() && !input.has_ctrl() => {
+                if c >= ' ' && c != '\u{7f}' {
+                    self.task_switcher_query.push(c);
+                    self.focus_first_switcher_match();
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn focus_first_switcher_match(&mut self) {
+        if self.task_switcher_query.is_empty() {
+            return;
+        }
+        let query = self.task_switcher_query.to_ascii_lowercase();
+        if let Some(idx) = self.z_order.iter().rev().copied().find(|&idx| {
+            idx < self.windows.len()
+                && self.is_window_on_current_workspace(idx)
+                && !self.windows[idx].is_minimized()
+                && self.windows[idx]
+                    .window()
+                    .title
+                    .to_ascii_lowercase()
+                    .contains(&query)
+        }) {
+            self.focus_window(idx);
         }
     }
 
@@ -1915,6 +2005,12 @@ impl WindowManager {
         let mut left_press_consumed = false;
 
         // ── Input ─────────────────────────────────────────────────────────────
+
+        if left_pressed && self.dialog.is_some() {
+            self.dialog = None;
+            left_press_consumed = true;
+            crate::wm::request_repaint();
+        }
 
         // Start button click — flush left, full height
         let taskbar_click = left_pressed && my_i >= taskbar_y && mx_i < START_BTN_W;
@@ -2247,7 +2343,19 @@ impl WindowManager {
                 && !self.start_menu_open;
             self.pressed_icon = if desktop_hit { icon_hit } else { None };
             if let Some(i) = self.pressed_icon {
-                self.icon_selected = Some(i);
+                if crate::keyboard::current_modifiers() & crate::keyboard::MOD_CTRL != 0 {
+                    if let Some(pos) = self.desktop_multi_selected.iter().position(|&idx| idx == i)
+                    {
+                        self.desktop_multi_selected.remove(pos);
+                    } else {
+                        self.desktop_multi_selected.push(i);
+                    }
+                    self.icon_selected = Some(i);
+                } else {
+                    self.desktop_multi_selected.clear();
+                    self.desktop_multi_selected.push(i);
+                    self.icon_selected = Some(i);
+                }
                 self.context_menu = None;
                 crate::wm::request_repaint();
             }
@@ -2260,6 +2368,7 @@ impl WindowManager {
                     && self.front_to_back_hit(mx_i, my_i).is_none()
                     && self.context_menu.is_none()
                     && !self.start_menu_open
+                    && self.desktop_multi_selected.len() <= 1
                 {
                     let icons = self.desktop_icons();
                     let icon = &icons[icon_idx];
@@ -2319,7 +2428,8 @@ impl WindowManager {
                 (ICON_COL_BG, ICON_COL_ACC),    // Colors (Color Picker)
             ];
             for (i, icon) in desktop_icons.iter().enumerate() {
-                let selected = self.icon_selected == Some(i);
+                let selected =
+                    self.icon_selected == Some(i) || self.desktop_multi_selected.contains(&i);
                 let hot = mx_i >= icon.x
                     && mx_i < icon.x + ICON_SIZE
                     && my_i >= icon.y
@@ -3357,7 +3467,12 @@ impl WindowManager {
                     &self.z_order,
                     self.focused,
                     self.current_workspace,
+                    &self.task_switcher_query,
                 );
+            }
+
+            if let Some(ref dialog) = self.dialog {
+                draw_shell_dialog(s, sw, taskbar_y, dialog);
             }
 
             if let Some(ref file_drag) = self.file_drag {
@@ -4456,7 +4571,9 @@ fn draw_task_switcher_overlay(
     z_order: &[usize],
     focused: Option<usize>,
     current_workspace: usize,
+    query: &str,
 ) {
+    let query_lower = query.to_ascii_lowercase();
     let visible_count = z_order
         .iter()
         .rev()
@@ -4469,6 +4586,12 @@ fn draw_task_switcher_overlay(
                     .min(WORKSPACE_COUNT - 1)
                     == current_workspace
                 && !windows[idx].window().minimized
+                && (query_lower.is_empty()
+                    || windows[idx]
+                        .window()
+                        .title
+                        .to_ascii_lowercase()
+                        .contains(&query_lower))
         })
         .count();
     if visible_count == 0 {
@@ -4525,6 +4648,20 @@ fn draw_task_switcher_overlay(
         0x00_00_07_18,
         panel_x + panel_w - 16,
     );
+    if !query.is_empty() {
+        let mut search = String::from("Search: ");
+        search.push_str(query);
+        s_draw_str_small(
+            s,
+            sw,
+            panel_x + 170,
+            panel_y + 26,
+            &search,
+            ACCENT_HOV,
+            0x00_00_07_18,
+            panel_x + panel_w - 16,
+        );
+    }
 
     let mut drawn = 0usize;
     for &win_idx in z_order.iter().rev() {
@@ -4539,6 +4676,12 @@ fn draw_task_switcher_overlay(
                 .min(WORKSPACE_COUNT - 1)
                 != current_workspace
             || windows[win_idx].window().minimized
+            || (!query_lower.is_empty()
+                && !windows[win_idx]
+                    .window()
+                    .title
+                    .to_ascii_lowercase()
+                    .contains(&query_lower))
         {
             continue;
         }
@@ -4558,27 +4701,28 @@ fn draw_task_switcher_overlay(
         s_fill(s, sw, x, y, item_w, item_h, bg);
         s_fill(s, sw, x, y, item_w, 3, accent);
         draw_rect_border(s, sw, x, y, item_w, item_h, border);
+        draw_live_window_thumbnail(s, sw, x + 8, y + 10, 38, 28, win);
 
         let icon_bg = blend_color(bg, accent, 90);
-        s_fill(s, sw, x + 10, y + 14, 30, 30, icon_bg);
+        s_fill(s, sw, x + 12, y + 42, 22, 14, icon_bg);
         draw_rect_border(
             s,
             sw,
-            x + 10,
-            y + 14,
-            30,
-            30,
+            x + 12,
+            y + 42,
+            22,
+            14,
             blend_color(accent, WHITE, 90),
         );
         s_draw_str_small(
             s,
             sw,
-            x + 17,
-            y + 25,
+            x + 15,
+            y + 45,
             window_glyph(win.title),
             accent,
             icon_bg,
-            x + 38,
+            x + 32,
         );
 
         let title = if win.title.len() > 11 {
@@ -4629,6 +4773,68 @@ fn draw_file_drag_badge(s: &mut [u32], sw: usize, x: i32, y: i32, count: usize) 
         format!("{} items", count)
     };
     s_draw_str_small(s, sw, x + 12, y + 19, &text, 0x00_66_AA_DD, bg, x + w - 8);
+}
+
+fn draw_live_window_thumbnail(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    win: &Window,
+) {
+    s_fill(s, sw, x, y, w, h, 0x00_00_04_10);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_00_44_88);
+    let src_w = win.width.max(1) as usize;
+    let src_h = (win.height - TITLE_H).max(1) as usize;
+    if win.buf.is_empty() {
+        return;
+    }
+    for ty in 1..h.saturating_sub(1) {
+        let sy = (ty as usize * src_h / h.max(1) as usize).min(src_h - 1);
+        for tx in 1..w.saturating_sub(1) {
+            let sx = (tx as usize * src_w / w.max(1) as usize).min(src_w - 1);
+            let src = sy * src_w + sx;
+            if src < win.buf.len() {
+                s_put(s, sw, usize::MAX, x + tx, y + ty, win.buf[src]);
+            }
+        }
+    }
+}
+
+fn draw_shell_dialog(s: &mut [u32], sw: usize, taskbar_y: i32, dialog: &ShellDialog) {
+    let w = 420i32;
+    let h = 132i32;
+    let x = ((sw as i32 - w) / 2).max(8);
+    let y = ((taskbar_y - h) / 2).max(8);
+    let bg = 0x00_07_0D_1C;
+    s_fill_alpha(s, sw, 0, 0, sw as i32, taskbar_y, 0x44_00_00_00);
+    s_fill_alpha(s, sw, x + 6, y + 6, w, h, 0x55_00_00_00);
+    s_fill(s, sw, x, y, w, h, bg);
+    s_fill(s, sw, x, y, w, 4, 0x00_FF_66_66);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_FF_88_88);
+    s_draw_str_small(s, sw, x + 18, y + 18, &dialog.title, WHITE, bg, x + w - 18);
+    s_draw_str_small(
+        s,
+        sw,
+        x + 18,
+        y + 44,
+        &dialog.body,
+        0x00_CC_EE_FF,
+        bg,
+        x + w - 18,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        x + 18,
+        y + h - 26,
+        "click anywhere to dismiss",
+        0x00_66_99_BB,
+        bg,
+        x + w - 18,
+    );
 }
 
 fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32, app: &AppWindow) {
@@ -5220,15 +5426,20 @@ fn s_draw_char_small(s: &mut [u32], sw: usize, x: i32, y: i32, c: char, fg: u32,
         .get(c)
         .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
     let sh = if sw > 0 { s.len() / sw } else { 0 };
+    let large_text = crate::accessibility::snapshot().large_text;
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
-            let color = if byte & (1 << bit) != 0 { fg } else { bg };
+            let ink = byte & (1 << bit) != 0;
+            let color = if ink { fg } else { bg };
             let px = x + bit as i32;
             let py = y + gy as i32;
             if px >= 0 && py >= 0 {
                 let (px, py) = (px as usize, py as usize);
                 if px < sw && py < sh {
                     s[py * sw + px] = color;
+                    if large_text && ink && px + 1 < sw {
+                        s[py * sw + px + 1] = fg;
+                    }
                 }
             }
         }
