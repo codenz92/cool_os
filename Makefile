@@ -19,6 +19,7 @@ USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/rel
 USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/netdemo
 SMOKE_SECONDS ?= 18
 SMOKE_FRAMEBUFFER_SECONDS ?= 30
+SMOKE_INTERACTIVE_SECONDS ?= $(SMOKE_FRAMEBUFFER_SECONDS)
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
@@ -127,7 +128,7 @@ smoke-ui-ready-state: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-esc" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-ready-state.ppm" \
@@ -141,7 +142,7 @@ smoke-framebuffer: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/framebuffer-smoke.ppm" \
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
@@ -152,7 +153,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-desktop" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-desktop.ppm" \
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
@@ -161,7 +162,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-file-manager" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-2" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-file-manager.ppm" \
@@ -172,7 +173,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-diagnostics" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-4" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-diagnostics.ppm" \
@@ -183,7 +184,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-crash-dialog" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-spc" \
 		--type-text "crash dialog\n" \
 		--post-hmp-delay 0.8 \
@@ -197,7 +198,7 @@ smoke-ui-settings: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-5" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-settings.ppm" \
@@ -217,7 +218,7 @@ smoke-start-menu: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-esc" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/start-menu-smoke.ppm" \

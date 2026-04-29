@@ -65,6 +65,7 @@ jobs:
     env:
       SMOKE_SECONDS: 30
       SMOKE_FRAMEBUFFER_SECONDS: 30
+      SMOKE_INTERACTIVE_SECONDS: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
