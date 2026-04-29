@@ -191,7 +191,7 @@ impl FileManagerApp {
     }
 
     pub(super) fn root_directory_names() -> Vec<String> {
-        let mut names: Vec<String> = crate::fat32::list_dir("/")
+        let mut names: Vec<String> = crate::vfs::vfs_list_dir("/")
             .unwrap_or_default()
             .into_iter()
             .filter(|entry| entry.is_dir)

@@ -4,7 +4,6 @@ use alloc::{string::String, vec::Vec};
 use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-const SETTINGS_DIR: &str = "/CONFIG";
 const SETTINGS_PATH: &str = "/CONFIG/DESK.CFG";
 const ICONS_PATH: &str = "/CONFIG/ICONS.CFG";
 
@@ -93,7 +92,7 @@ pub fn load_from_disk() {
         return;
     }
 
-    let Some(bytes) = crate::fat32::read_file(SETTINGS_PATH) else {
+    let Some(bytes) = crate::config_store::read(SETTINGS_PATH) else {
         let _ = save_to_disk();
         return;
     };
@@ -150,12 +149,6 @@ pub fn set_wallpaper(value: WallpaperPreset) {
 }
 
 pub fn save_to_disk() -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir(SETTINGS_DIR);
-    match crate::fat32::create_file(SETTINGS_PATH) {
-        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
-        Err(err) => return Err(err),
-    }
-
     let settings = snapshot();
     let mut data = String::new();
     data.push_str("show_icons=");
@@ -171,7 +164,7 @@ pub fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     data.push(char::from(b'0' + WALLPAPER.load(Ordering::Relaxed).min(2)));
     data.push('\n');
 
-    crate::fat32::write_file(SETTINGS_PATH, data.as_bytes())
+    crate::config_store::safe_write(SETTINGS_PATH, data.as_bytes())
 }
 
 #[derive(Clone)]
@@ -256,22 +249,20 @@ fn apply_setting(key: &str, value: &str) -> bool {
 }
 
 fn recover_corrupt(bytes: &[u8]) {
-    let _ = crate::fat32::create_dir(SETTINGS_DIR);
-    let _ = crate::fat32::safe_write_file("/CONFIG/DESK.BAD", bytes);
+    crate::config_store::recover_corrupt(SETTINGS_PATH, "/CONFIG/DESK.BAD", bytes);
     SHOW_ICONS.store(true, Ordering::Relaxed);
     COMPACT_SPACING.store(false, Ordering::Relaxed);
     SORT_MODE.store(DesktopSortMode::Default as u8, Ordering::Relaxed);
     WALLPAPER.store(WallpaperPreset::Phosphor as u8, Ordering::Relaxed);
     let _ = save_to_disk();
-    crate::klog::log("recovered corrupt /CONFIG/DESK.CFG");
 }
 
 fn load_icon_positions() -> Vec<IconPosition> {
-    let Some(bytes) = crate::fat32::read_file(ICONS_PATH) else {
+    let Some(bytes) = crate::config_store::read(ICONS_PATH) else {
         return Vec::new();
     };
     let Ok(text) = str::from_utf8(&bytes) else {
-        let _ = crate::fat32::safe_write_file("/CONFIG/ICONS.BAD", &bytes);
+        crate::config_store::recover_corrupt(ICONS_PATH, "/CONFIG/ICONS.BAD", &bytes);
         return Vec::new();
     };
     let mut entries = Vec::new();
@@ -298,7 +289,6 @@ fn load_icon_positions() -> Vec<IconPosition> {
 }
 
 fn save_icon_positions(entries: &[IconPosition]) -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir(SETTINGS_DIR);
     let mut data = String::new();
     for entry in entries {
         data.push_str(&entry.label);
@@ -308,7 +298,7 @@ fn save_icon_positions(entries: &[IconPosition]) -> Result<(), crate::fat32::FsE
         push_i32(&mut data, entry.y);
         data.push('\n');
     }
-    crate::fat32::safe_write_file(ICONS_PATH, data.as_bytes())
+    crate::config_store::safe_write(ICONS_PATH, data.as_bytes())
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

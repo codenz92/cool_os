@@ -19,6 +19,21 @@ pub struct MountInfo {
     pub flags: &'static str,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    File,
+    Directory,
+    Missing,
+    Denied,
+}
+
+pub struct PathInfo {
+    pub path: String,
+    pub mount: MountInfo,
+    pub kind: PathKind,
+    pub size: u64,
+}
+
 const MOUNTS: [MountInfo; 4] = [
     MountInfo {
         prefix: "/",
@@ -305,6 +320,66 @@ pub fn mount_lines() -> Vec<String> {
         MAX_FDS
     ));
     lines
+}
+
+pub fn inspect_path(path: &str) -> PathInfo {
+    let path = normalize_path(path);
+    let mount = resolve_mount(&path);
+    if !crate::security::can_read_path(&path) {
+        return PathInfo {
+            path,
+            mount,
+            kind: PathKind::Denied,
+            size: 0,
+        };
+    }
+    if crate::fat32::list_dir(&path).is_some() {
+        return PathInfo {
+            path,
+            mount,
+            kind: PathKind::Directory,
+            size: 0,
+        };
+    }
+    if let Some(bytes) = crate::fat32::read_file(&path) {
+        return PathInfo {
+            path,
+            mount,
+            kind: PathKind::File,
+            size: bytes.len() as u64,
+        };
+    }
+    PathInfo {
+        path,
+        mount,
+        kind: PathKind::Missing,
+        size: 0,
+    }
+}
+
+pub fn path_lines(paths: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| {
+            let info = inspect_path(path);
+            format!(
+                "{} kind={} mount={} size={}",
+                info.path,
+                path_kind_label(info.kind),
+                info.mount.fs_type,
+                info.size
+            )
+        })
+        .collect()
+}
+
+fn path_kind_label(kind: PathKind) -> &'static str {
+    match kind {
+        PathKind::File => "file",
+        PathKind::Directory => "dir",
+        PathKind::Missing => "missing",
+        PathKind::Denied => "denied",
+    }
 }
 
 #[allow(dead_code)]

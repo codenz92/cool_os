@@ -350,6 +350,10 @@ impl TerminalApp {
 
             Some("logs") => self.cmd_lines("LOG VIEW", crate::klog::lines()),
 
+            Some("diagnostics") | Some("diag") => {
+                self.cmd_lines("DIAGNOSTICS", diagnostics_lines())
+            }
+
             Some("profiler") => {
                 let mut lines = crate::profiler::lines();
                 lines.extend(crate::boot_watchdog::lines());
@@ -384,6 +388,17 @@ impl TerminalApp {
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
 
             Some("vfs") => self.cmd_lines("VFS", crate::vfs::mount_lines()),
+
+            Some("path") => match words.next() {
+                Some(path) => {
+                    let path = resolve_path(&self.cwd, path);
+                    self.cmd_lines("PATH", crate::vfs::path_lines(&[&path]));
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: path <file-or-dir>\n");
+                }
+            },
 
             Some("journal") => self.cmd_lines("FS JOURNAL", crate::fs_hardening::journal_lines()),
 
@@ -711,6 +726,7 @@ impl TerminalApp {
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
+            ("diagnostics", "combined logs/profiler/fs/memory status"),
             ("profiler", "boot/service/task timing"),
             ("compositor", "FPS, frame, and damage telemetry"),
             ("heap", "heap diagnostics"),
@@ -725,6 +741,7 @@ impl TerminalApp {
             ("fsrepair", "repair standard FS dirs"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
+            ("path <path>", "inspect normalized VFS path"),
             ("journal", "filesystem journal tail"),
             ("flush", "flush filesystem journal"),
             ("df", "filesystem free space"),
@@ -1702,6 +1719,41 @@ where
         out.push_str(word);
     }
     out
+}
+
+fn diagnostics_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    push_terminal_section(&mut lines, "kernel", crate::klog::lines());
+    push_terminal_section(&mut lines, "profiler", crate::profiler::lines());
+    push_terminal_section(&mut lines, "services", crate::services::lines());
+    push_terminal_section(
+        &mut lines,
+        "compositor",
+        crate::wm::compositor::compositor_lines(),
+    );
+    push_terminal_section(&mut lines, "heap", crate::allocator::heap_lines());
+    push_terminal_section(&mut lines, "slab", crate::slab::lines());
+    push_terminal_section(
+        &mut lines,
+        "filesystem",
+        crate::fs_hardening::status_lines(),
+    );
+    push_terminal_section(&mut lines, "vfs", crate::vfs::mount_lines());
+    push_terminal_section(&mut lines, "config", crate::config_store::lines());
+    push_terminal_section(&mut lines, "crash", crate::crashdump::lines());
+    lines
+}
+
+fn push_terminal_section(out: &mut Vec<String>, name: &str, lines: Vec<String>) {
+    let mut header = String::from("== ");
+    header.push_str(name);
+    header.push_str(" ==");
+    out.push(header);
+    if lines.is_empty() {
+        out.push(String::from("(none)"));
+    } else {
+        out.extend(lines);
+    }
 }
 
 fn normalize_path(path: &str) -> String {

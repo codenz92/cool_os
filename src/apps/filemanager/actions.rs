@@ -402,7 +402,7 @@ impl FileManagerApp {
             .map(|path| FileTarget {
                 path: path.clone(),
                 name: Self::path_name(path),
-                is_dir: crate::fat32::list_dir(path).is_some(),
+                is_dir: crate::vfs::inspect_path(path).kind == crate::vfs::PathKind::Directory,
             })
             .collect();
         self.clipboard = Some(ClipboardState { entries, cut });
@@ -835,7 +835,7 @@ impl FileManagerApp {
         &self,
         dir: &str,
     ) -> (Vec<DirEntryInfo>, Vec<EntryKind>, Vec<String>) {
-        let mut entries = crate::fat32::list_dir(dir).unwrap_or_default();
+        let mut entries = crate::vfs::vfs_list_dir(dir).unwrap_or_default();
         let mut entry_kinds = alloc::vec![EntryKind::Fs; entries.len()];
         let mut entry_paths: Vec<String> = entries
             .iter()
@@ -888,10 +888,10 @@ impl FileManagerApp {
     }
 
     pub(super) fn ensure_current_dir_exists(&self) -> Result<(), &'static str> {
-        if self.path == "/" || crate::fat32::list_dir(&self.path).is_some() {
+        if self.path == "/" || crate::vfs::vfs_list_dir(&self.path).is_some() {
             return Ok(());
         }
-        crate::fat32::create_dir(&self.path).map_err(|err| err.as_str())
+        crate::vfs::vfs_create_dir(&self.path).map_err(|err| err.as_str())
     }
 
     pub(super) fn context_menu_items(
@@ -1206,7 +1206,7 @@ impl FileManagerApp {
                 .map(|path| FileTarget {
                     path: path.clone(),
                     name: Self::path_name(path),
-                    is_dir: crate::fat32::list_dir(path).is_some(),
+                    is_dir: crate::vfs::inspect_path(path).kind == crate::vfs::PathKind::Directory,
                 })
                 .collect();
             ClipboardState { entries, cut }
@@ -1263,7 +1263,8 @@ impl FileManagerApp {
             };
             let dest_path = Self::join_path(&self.path, &dest_name);
             if exists && conflict_policy == Some(ConflictPolicy::Replace) {
-                let existing_is_dir = crate::fat32::list_dir(&dest_path).is_some();
+                let existing_is_dir =
+                    crate::vfs::inspect_path(&dest_path).kind == crate::vfs::PathKind::Directory;
                 if let Err(err) = self.delete_path_recursive(&dest_path, existing_is_dir) {
                     last_err = Some(String::from(err.as_str()));
                     continue;
@@ -1343,10 +1344,10 @@ impl FileManagerApp {
     }
 
     pub(super) fn ensure_trash_dir(&self) -> Result<(), crate::fat32::FsError> {
-        if crate::fat32::list_dir(TRASH_PATH).is_some() {
+        if crate::vfs::vfs_list_dir(TRASH_PATH).is_some() {
             return Ok(());
         }
-        crate::fat32::create_dir(TRASH_PATH)
+        crate::vfs::vfs_create_dir(TRASH_PATH)
     }
 
     pub(super) fn copy_path_recursive(
@@ -1443,7 +1444,7 @@ impl FileManagerApp {
     }
 
     pub(super) fn child_name_exists(&self, parent: &str, name: &str) -> bool {
-        crate::fat32::list_dir(parent)
+        crate::vfs::vfs_list_dir(parent)
             .unwrap_or_default()
             .iter()
             .any(|entry| entry.name.eq_ignore_ascii_case(name))
@@ -1512,7 +1513,7 @@ impl FileManagerApp {
     pub(super) fn recursive_stats(&self, path: &str, is_dir: bool) -> (u64, usize) {
         if !is_dir {
             return (
-                crate::fat32::read_file(path)
+                crate::vfs::vfs_read_file(path)
                     .map(|b| b.len() as u64)
                     .unwrap_or(0),
                 0,
@@ -1520,7 +1521,7 @@ impl FileManagerApp {
         }
         let mut total = 0u64;
         let mut count = 0usize;
-        if let Some(children) = crate::fat32::list_dir(path) {
+        if let Some(children) = crate::vfs::vfs_list_dir(path) {
             for child in children {
                 count += 1;
                 let child_path = Self::join_path(path, &child.name);
@@ -1584,7 +1585,7 @@ impl FileManagerApp {
                 if entry.is_dir {
                     self.entry_paths
                         .get(idx)
-                        .and_then(|path| crate::fat32::list_dir(path))
+                        .and_then(|path| crate::vfs::vfs_list_dir(path))
                         .map(|children| children.len())
                         .unwrap_or(0)
                 } else {
@@ -1602,7 +1603,7 @@ impl FileManagerApp {
         kinds: &mut Vec<EntryKind>,
         paths: &mut Vec<String>,
     ) {
-        let Some(children) = crate::fat32::list_dir(dir) else {
+        let Some(children) = crate::vfs::vfs_list_dir(dir) else {
             return;
         };
         for entry in children {

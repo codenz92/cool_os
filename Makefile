@@ -21,6 +21,7 @@ SMOKE_FRAMEBUFFER_SECONDS ?= 12
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
+SMOKE_ARTIFACT_DIR ?= $(CURDIR)/target/smoke-artifacts
 
 run: build
 	@echo "Booting coolOS in QEMU..."
@@ -96,6 +97,8 @@ run-headless-usb-init: build-usb-init
 
 smoke: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
@@ -106,6 +109,8 @@ smoke: build
 
 smoke-ui: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
@@ -117,35 +122,77 @@ smoke-ui: build
 
 smoke-framebuffer: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
-		--screendump "$(CURDIR)/target/framebuffer-smoke.ppm" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/framebuffer-smoke.ppm" \
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "ui-golden-desktop" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
-		--screendump "$(CURDIR)/target/ui-golden-desktop.ppm" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-desktop.ppm" \
 		--expect-framebuffer-desktop \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "ui-golden-file-manager" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-2" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-file-manager.ppm" \
+		--expect-framebuffer-window \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "ui-golden-diagnostics" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-4" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-diagnostics.ppm" \
+		--expect-framebuffer-window \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "ui-golden-crash-dialog" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "crash dialog\n" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-crash-dialog.ppm" \
+		--expect-framebuffer-dialog \
 		--expect "[boot] desktop ready"
 
 smoke-start-menu: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--hmp "sendkey ctrl-esc" \
 		--post-hmp-delay 0.8 \
-		--screendump "$(CURDIR)/target/start-menu-smoke.ppm" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/start-menu-smoke.ppm" \
 		--expect-framebuffer-start-menu \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(USB_INIT_BIOS)" \
 		--fsimg "$(USB_INIT_FSIMG)" \
 		--usb \
@@ -164,6 +211,8 @@ smoke-hotplug-usb-init: build-usb-init
 
 smoke-kernel-units: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
@@ -172,6 +221,8 @@ smoke-kernel-units: build
 
 smoke-boot-budget: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_BOOT_BUDGET_SECONDS) \
@@ -179,6 +230,8 @@ smoke-boot-budget: build
 
 smoke-lowmem: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--memory 256M \
@@ -187,6 +240,8 @@ smoke-lowmem: build
 
 smoke-smp2: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--smp 2 \
@@ -195,6 +250,8 @@ smoke-smp2: build
 
 smoke-vga-cirrus: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--vga cirrus \

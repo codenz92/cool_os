@@ -43,6 +43,14 @@ jobs:
       - name: Boot budget smoke
         run: make smoke-boot-budget
 
+      - name: Upload smoke failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-artifacts
+          path: target/smoke-artifacts/**
+          if-no-files-found: ignore
+
   ui-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -72,6 +80,14 @@ jobs:
       - name: Start menu screenshot smoke
         run: make smoke-start-menu
 
+      - name: Upload UI failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-artifacts
+          path: target/smoke-artifacts/**
+          if-no-files-found: ignore
+
   usb-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -89,6 +105,14 @@ jobs:
 
       - name: USB init smoke
         run: make smoke-usb-init
+
+      - name: Upload USB failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-smoke-artifacts
+          path: target/smoke-artifacts/**
+          if-no-files-found: ignore
 
   qemu-matrix:
     runs-on: ubuntu-latest
@@ -114,3 +138,11 @@ jobs:
 
       - name: QEMU matrix ${{ matrix.target }}
         run: make ${{ matrix.target }}
+
+      - name: Upload matrix failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-matrix-${{ matrix.target }}-artifacts
+          path: target/smoke-artifacts/**
+          if-no-files-found: ignore

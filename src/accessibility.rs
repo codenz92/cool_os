@@ -4,7 +4,6 @@ use alloc::{string::String, vec::Vec};
 use core::str;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-const CONFIG_DIR: &str = "/CONFIG";
 const CONFIG_PATH: &str = "/CONFIG/ACCESS.CFG";
 
 #[derive(Clone, Copy)]
@@ -25,7 +24,7 @@ pub fn load_from_disk() {
     if LOADED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let Some(bytes) = crate::fat32::read_file(CONFIG_PATH) else {
+    let Some(bytes) = crate::config_store::read(CONFIG_PATH) else {
         let _ = save_to_disk();
         return;
     };
@@ -110,7 +109,6 @@ fn ensure_loaded() {
 }
 
 fn save_to_disk() -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir(CONFIG_DIR);
     let s = AccessibilitySettings {
         keyboard_nav: KEYBOARD_NAV.load(Ordering::Relaxed),
         focus_rings: FOCUS_RINGS.load(Ordering::Relaxed),
@@ -122,18 +120,16 @@ fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     push_setting(&mut out, "focus_rings", s.focus_rings);
     push_setting(&mut out, "large_text", s.large_text);
     push_setting(&mut out, "reduced_motion", s.reduced_motion);
-    crate::fat32::safe_write_file(CONFIG_PATH, out.as_bytes())
+    crate::config_store::safe_write(CONFIG_PATH, out.as_bytes())
 }
 
 fn recover_corrupt(bytes: &[u8]) {
-    let _ = crate::fat32::create_dir(CONFIG_DIR);
-    let _ = crate::fat32::safe_write_file("/CONFIG/ACCESS.BAD", bytes);
+    crate::config_store::recover_corrupt(CONFIG_PATH, "/CONFIG/ACCESS.BAD", bytes);
     KEYBOARD_NAV.store(true, Ordering::Relaxed);
     FOCUS_RINGS.store(true, Ordering::Relaxed);
     LARGE_TEXT.store(false, Ordering::Relaxed);
     REDUCED_MOTION.store(false, Ordering::Relaxed);
     let _ = save_to_disk();
-    crate::klog::log("recovered corrupt /CONFIG/ACCESS.CFG");
 }
 
 fn push_setting(out: &mut String, key: &str, value: bool) {

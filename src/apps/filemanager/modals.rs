@@ -708,14 +708,15 @@ impl FileManagerApp {
 
         let result = match state.mode {
             NameDialogMode::NewFile => self.ensure_current_dir_exists().and_then(|_| {
-                crate::fat32::create_file(&self.join_child_path(trimmed))
+                crate::vfs::vfs_create_file(&self.join_child_path(trimmed))
                     .map_err(|err| err.as_str())
             }),
             NameDialogMode::NewFolder => self.ensure_current_dir_exists().and_then(|_| {
-                crate::fat32::create_dir(&self.join_child_path(trimmed)).map_err(|err| err.as_str())
+                crate::vfs::vfs_create_dir(&self.join_child_path(trimmed))
+                    .map_err(|err| err.as_str())
             }),
             NameDialogMode::Rename(idx) => {
-                crate::fat32::rename(&self.make_abs(idx), trimmed).map_err(|err| err.as_str())
+                crate::vfs::vfs_rename(&self.make_abs(idx), trimmed).map_err(|err| err.as_str())
             }
         };
 
@@ -735,7 +736,7 @@ impl FileManagerApp {
 
     pub(super) fn open_text_editor(&mut self, idx: usize) {
         let path = self.make_abs(idx);
-        match crate::fat32::read_file(&path) {
+        match crate::vfs::vfs_read_file(&path) {
             Some(bytes) => match core::str::from_utf8(&bytes) {
                 Ok(text) => {
                     self.modal = Some(ModalState::TextEditor(TextEditorState {
@@ -761,7 +762,7 @@ impl FileManagerApp {
         let Some(ModalState::TextEditor(mut state)) = self.modal.take() else {
             return;
         };
-        match crate::fat32::write_file(&state.path, state.text.as_bytes()) {
+        match crate::vfs::vfs_safe_write_file(&state.path, state.text.as_bytes()) {
             Ok(()) => {
                 let current = self.path.clone();
                 let selected_name = self

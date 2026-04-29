@@ -4,7 +4,6 @@ use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-const CONFIG_DIR: &str = "/CONFIG";
 const STATE_PATH: &str = "/CONFIG/APPS.CFG";
 const MAX_RECENT: usize = 12;
 const MAX_PINNED: usize = 10;
@@ -12,6 +11,7 @@ const DEFAULT_PINNED: &[&str] = &[
     "Terminal",
     "File Manager",
     "System Monitor",
+    "Diagnostics",
     "Display Settings",
     "Personalize",
 ];
@@ -68,7 +68,7 @@ static STATE: Mutex<LifecycleState> = Mutex::new(LifecycleState {
 
 pub fn init() {
     load_from_disk();
-    let _ = crate::fat32::create_dir(CONFIG_DIR);
+    crate::config_store::ensure_dir();
     let _ = save_to_disk();
 }
 
@@ -89,7 +89,7 @@ pub fn load_from_disk() {
         geometries: Vec::new(),
         start_menu: DEFAULT_START_MENU_PREFS,
     };
-    if let Some(bytes) = crate::fat32::read_file(STATE_PATH) {
+    if let Some(bytes) = crate::config_store::read(STATE_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
             for line in text.lines() {
                 let Some((key, value)) = line.split_once('=') else {
@@ -397,7 +397,6 @@ fn parse_geometry(value: &str) -> Option<AppGeometry> {
 }
 
 fn save_to_disk() -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir(CONFIG_DIR);
     let state = STATE.lock();
     let mut out = String::new();
     out.push_str("pinned=");
@@ -466,7 +465,7 @@ fn save_to_disk() -> Result<(), crate::fat32::FsError> {
         push_i32(&mut out, geometry.h);
         out.push('\n');
     }
-    crate::fat32::safe_write_file(STATE_PATH, out.as_bytes())
+    crate::config_store::safe_write(STATE_PATH, out.as_bytes())
 }
 
 fn join_label(label: &str, values: &[String]) -> String {

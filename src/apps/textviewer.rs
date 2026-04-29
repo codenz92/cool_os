@@ -90,7 +90,7 @@ impl TextViewerApp {
     }
 
     pub fn open_file(x: i32, y: i32, path: &str) -> Result<Self, &'static str> {
-        let bytes = crate::fat32::read_file(path).ok_or("file not found")?;
+        let bytes = crate::vfs::vfs_read_file(path).ok_or("file not found")?;
         let text = core::str::from_utf8(&bytes).map_err(|_| "file is not UTF-8 text")?;
         let mut app = Self::new(x, y);
         app.lines = if text.is_empty() {
@@ -142,6 +142,48 @@ impl TextViewerApp {
             "kernel, boot, services, filesystem, and app logs",
             lines,
         )
+    }
+
+    pub fn diagnostics_viewer(x: i32, y: i32) -> Self {
+        let mut lines = Vec::new();
+        push_section(&mut lines, "kernel log", crate::klog::lines());
+        push_section(
+            &mut lines,
+            "boot/session profiler",
+            crate::profiler::lines(),
+        );
+        push_section(&mut lines, "boot watchdog", crate::boot_watchdog::lines());
+        push_section(&mut lines, "services", crate::services::lines());
+        push_section(
+            &mut lines,
+            "compositor",
+            crate::wm::compositor::compositor_lines(),
+        );
+        push_section(&mut lines, "heap", crate::allocator::heap_lines());
+        push_section(&mut lines, "slab", crate::slab::lines());
+        push_section(
+            &mut lines,
+            "filesystem",
+            crate::fs_hardening::status_lines(),
+        );
+        push_section(
+            &mut lines,
+            "vfs paths",
+            crate::vfs::path_lines(&["/", "/CONFIG", "/LOGS", "/APPS", "/DEV", "/bin/hello.txt"]),
+        );
+        push_section(&mut lines, "config store", crate::config_store::lines());
+        push_section(&mut lines, "crash dumps", crate::crashdump::lines());
+        push_section(&mut lines, "events", crate::event_bus::lines(12));
+        push_section(&mut lines, "jobs", crate::jobs::lines());
+        let mut app = Self::from_lines(
+            x,
+            y,
+            "Diagnostics",
+            "logs, profiler, services, filesystem, memory, and shell telemetry",
+            lines,
+        );
+        app.window.title = "Diagnostics";
+        app
     }
 
     pub fn profiler_viewer(x: i32, y: i32) -> Self {

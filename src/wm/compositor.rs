@@ -399,6 +399,7 @@ fn canonical_app_title(name: &str) -> &str {
     match name {
         "Terminal" => "Terminal",
         "System Mon" | "System Monitor" => "System Monitor",
+        "Diag" | "Diagnostics" => "Diagnostics",
         "Text View" | "Text Viewer" => "Text Viewer",
         "Color Pick" | "Color Picker" => "Color Picker",
         "Display Settings" => "Display Settings",
@@ -416,6 +417,7 @@ fn window_accent(title: &str) -> u32 {
     match canonical_app_title(title) {
         "Terminal" => ICON_TERM_ACC,
         "System Monitor" => ICON_MON_ACC,
+        "Diagnostics" => 0x00_55_FF_CC,
         "Text Viewer" => ICON_TXT_ACC,
         "Color Picker" => ICON_COL_ACC,
         "Display Settings" => 0x00_66_CC_FF,
@@ -433,6 +435,7 @@ fn window_glyph(title: &str) -> &'static str {
     match canonical_app_title(title) {
         "Terminal" => "T>",
         "System Monitor" => "M#",
+        "Diagnostics" => "D!",
         "Text Viewer" => "Tx",
         "Color Picker" => "CP",
         "Display Settings" => "DS",
@@ -502,16 +505,11 @@ fn merge_spans(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
 }
 
 fn should_show_welcome() -> bool {
-    crate::fat32::read_file("/CONFIG/WELCOME.SEEN").is_none()
+    crate::config_store::read("/CONFIG/WELCOME.SEEN").is_none()
 }
 
 fn mark_welcome_seen() {
-    let _ = crate::fat32::create_dir("/CONFIG");
-    match crate::fat32::create_file("/CONFIG/WELCOME.SEEN") {
-        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
-        Err(_) => return,
-    }
-    let _ = crate::fat32::write_file("/CONFIG/WELCOME.SEEN", b"1\n");
+    let _ = crate::config_store::safe_write("/CONFIG/WELCOME.SEEN", b"1\n");
 }
 
 fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
@@ -974,7 +972,6 @@ impl WindowManager {
     }
 
     fn save_session(&self) {
-        let _ = crate::fat32::create_dir("/CONFIG");
         let mut data = String::new();
         for (idx, window) in self.windows.iter().enumerate().take(MAX_SESSION_WINDOWS) {
             let win = window.window();
@@ -996,11 +993,11 @@ impl WindowManager {
             push_decimal(&mut data, self.window_workspace(idx) as u64);
             data.push('\n');
         }
-        let _ = crate::fat32::safe_write_file(SESSION_PATH, data.as_bytes());
+        let _ = crate::config_store::safe_write(SESSION_PATH, data.as_bytes());
     }
 
     fn restore_session(&mut self) {
-        let Some(bytes) = crate::fat32::read_file(SESSION_PATH) else {
+        let Some(bytes) = crate::config_store::read(SESSION_PATH) else {
             return;
         };
         let Ok(text) = core::str::from_utf8(&bytes) else {
@@ -1045,7 +1042,7 @@ impl WindowManager {
                     let dir = if extra.is_empty() { "/" } else { extra };
                     self.launch_file_manager_at(dir, x, y);
                 }
-                "Terminal" | "System Monitor" | "Text Viewer" | "Color Picker"
+                "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Color Picker"
                 | "Display Settings" | "Personalize" => self.launch_app(title, x, y),
                 _ => {}
             }
@@ -1118,6 +1115,9 @@ impl WindowManager {
         match canonical_app_title(name) {
             "Terminal" => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
             "System Monitor" => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
+            "Diagnostics" => self.add_window(AppWindow::TextViewer(
+                TextViewerApp::diagnostics_viewer(wx, wy),
+            )),
             "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
             "Color Picker" => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
             "Display Settings" => {
@@ -1433,6 +1433,12 @@ impl WindowManager {
         } else if action == "restart-desktop" {
             self.refresh_desktop_state();
             crate::notifications::push("Desktop", "shell state refreshed");
+        } else if action == "test-crash-dialog" {
+            self.show_crash_dialog(
+                "App launch failed",
+                "diagnostic crash dialog preview",
+                Some("Diagnostics"),
+            );
         } else if action == "lock" {
             crate::notifications::push("Session", "lock screen placeholder active");
         } else if action == "logout" {
@@ -1492,7 +1498,8 @@ impl WindowManager {
     }
 
     fn open_associated_path(&mut self, path: &str, wx: i32, wy: i32) {
-        if crate::fat32::list_dir(path).is_some() {
+        let info = crate::vfs::inspect_path(path);
+        if info.kind == crate::vfs::PathKind::Directory {
             self.launch_file_manager_at(path, wx, wy);
             return;
         }
@@ -4951,7 +4958,7 @@ fn create_root_item(
     ext: Option<&str>,
     is_dir: bool,
 ) -> Result<String, crate::fat32::FsError> {
-    let entries = crate::fat32::list_dir("/").unwrap_or_default();
+    let entries = crate::vfs::vfs_list_dir("/").unwrap_or_default();
     for n in 1..10_000usize {
         let mut name = String::from(prefix);
         push_decimal(&mut name, n as u64);
@@ -4968,9 +4975,9 @@ fn create_root_item(
         let mut path = String::from("/");
         path.push_str(&name);
         if is_dir {
-            crate::fat32::create_dir(&path)?;
+            crate::vfs::vfs_create_dir(&path)?;
         } else {
-            crate::fat32::create_file(&path)?;
+            crate::vfs::vfs_create_file(&path)?;
         }
         return Ok(path);
     }
@@ -6366,6 +6373,20 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
             score: if search_query.is_empty() { 1 } else { 24 },
         });
     }
+    if launcher_score(
+        "Test crash dialog",
+        "diagnostics inline action",
+        search_query,
+    )
+    .is_some()
+    {
+        matches.push(LauncherMatch {
+            label: String::from("Test crash dialog"),
+            detail: String::from("diagnostics inline action"),
+            kind: LauncherMatchKind::Inline(String::from("test-crash-dialog")),
+            score: if search_query.is_empty() { 1 } else { 90 },
+        });
+    }
     matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
     matches.truncate(12);
     matches
@@ -6440,6 +6461,12 @@ fn command_palette_matches(query: &str) -> Vec<LauncherMatch> {
             "Restart desktop",
             "desktop action",
             "restart-desktop",
+            80,
+        )],
+        "crash dialog" | "test crash dialog" => alloc::vec![launcher_inline(
+            "Test crash dialog",
+            "diagnostics action",
+            "test-crash-dialog",
             80,
         )],
         _ => alloc::vec![launcher_command(command, "terminal command", command, 50)],

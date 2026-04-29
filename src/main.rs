@@ -16,6 +16,7 @@ mod boot_splash;
 mod boot_watchdog;
 mod branding;
 mod clipboard;
+mod config_store;
 mod crashdump;
 mod deferred;
 mod desktop_settings;

@@ -96,6 +96,16 @@ pub const APPS: &[AppMetadata] = &[
         associations: &[],
     },
     AppMetadata {
+        id: "app.diagnostics",
+        name: "Diagnostics",
+        glyph: "D!",
+        command: "diagnostics",
+        category: AppCategory::System,
+        permission: "diagnostics",
+        aliases: &["diag", "health", "logs", "profiler", "debug"],
+        associations: &[],
+    },
+    AppMetadata {
         id: "app.files",
         name: "File Manager",
         glyph: "FM",
@@ -221,6 +231,11 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         kind: LauncherKind::App("System Monitor"),
     },
     LauncherEntry {
+        label: "Diagnostics",
+        detail: "combined logs and system health",
+        kind: LauncherKind::App("Diagnostics"),
+    },
+    LauncherEntry {
         label: "Display Settings",
         detail: "desktop settings",
         kind: LauncherKind::App("Display Settings"),
@@ -326,7 +341,7 @@ pub fn app_by_id_or_command(value: &str) -> Option<&'static AppMetadata> {
 }
 
 pub fn installed_app_manifests() -> Vec<AppManifest> {
-    let Some(dirs) = crate::fat32::list_dir("/APPS") else {
+    let Some(dirs) = crate::vfs::vfs_list_dir("/APPS") else {
         return Vec::new();
     };
     let mut manifests = Vec::new();
@@ -334,7 +349,7 @@ pub fn installed_app_manifests() -> Vec<AppManifest> {
         let mut path = String::from("/APPS/");
         path.push_str(&dir.name);
         path.push_str("/APP.CFG");
-        let Some(bytes) = crate::fat32::read_file(&path) else {
+        let Some(bytes) = crate::vfs::vfs_read_file(&path) else {
             continue;
         };
         let Ok(text) = core::str::from_utf8(&bytes) else {

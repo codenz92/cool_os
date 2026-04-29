@@ -5,7 +5,6 @@ use spin::Mutex;
 
 use crate::keyboard::{Key, KeyInput};
 
-const CONFIG_DIR: &str = "/CONFIG";
 const CONFIG_PATH: &str = "/CONFIG/SHORTCUT.CFG";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,7 +41,7 @@ static SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 pub fn load_from_disk() {
     ensure_default_file();
     let mut shortcuts = default_shortcuts();
-    if let Some(bytes) = crate::fat32::read_file(CONFIG_PATH) {
+    if let Some(bytes) = crate::config_store::read(CONFIG_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
             for line in text.lines() {
                 let Some((name, combo)) = line.split_once('=') else {
@@ -89,17 +88,10 @@ fn ensure_loaded() {
 }
 
 fn ensure_default_file() {
-    let _ = crate::fat32::create_dir(CONFIG_DIR);
-    match crate::fat32::create_file(CONFIG_PATH) {
-        Ok(()) => {
-            let _ = crate::fat32::write_file(
-                CONFIG_PATH,
-                b"launcher=Ctrl+Space\nnotifications=Ctrl+Alt+M\n",
-            );
-        }
-        Err(crate::fat32::FsError::AlreadyExists) => {}
-        Err(_) => {}
-    }
+    let _ = crate::config_store::write_default(
+        CONFIG_PATH,
+        b"launcher=Ctrl+Space\nnotifications=Ctrl+Alt+M\n",
+    );
 }
 
 fn default_shortcuts() -> Vec<Shortcut> {
