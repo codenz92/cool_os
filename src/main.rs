@@ -203,12 +203,8 @@ fn fs_test_task() -> ! {
         None => println!("[fs] /bin/hello.txt: NOT FOUND"),
     }
 
-    // Block this task so it doesn't spin forever.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut sched = scheduler::SCHEDULER.lock();
-        let cur = sched.current;
-        sched.tasks[cur].status = scheduler::TaskStatus::Blocked;
-    });
+    // Mark this one-shot task complete so it leaves the run queue.
+    scheduler::exit_current(0);
     loop {
         x86_64::instructions::hlt();
     }

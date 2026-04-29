@@ -272,14 +272,11 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
 }
 
 fn sys_exit(_code: u64) {
-    crate::vfs::drop_task(crate::scheduler::current_task_id());
-    let mut sched = crate::scheduler::SCHEDULER.lock();
-    let cur = sched.current;
-    sched.tasks[cur].status = crate::scheduler::TaskStatus::Blocked;
+    crate::scheduler::exit_current(_code);
     // Interrupts are still disabled here (SFMASK cleared IF on SYSCALL entry).
     // The naked handler will sysretq back to ring 3; the task spins with
     // core::hint::spin_loop() until the timer fires and switches it out
-    // permanently (Blocked tasks are never picked by the round-robin scheduler).
+    // permanently (Exited tasks are never picked by the round-robin scheduler).
 }
 
 /// Open a file by path.  `path_ptr` is a user-space pointer to a UTF-8 string

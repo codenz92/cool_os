@@ -30,6 +30,8 @@ const RESIZE_HANDLE: i32 = crate::wm::window::RESIZE_HANDLE;
 const EVENT_PACKET_SIZE: usize = 8;
 const EVENT_KIND_KEY_CHAR: u8 = 1;
 const EVENT_KIND_MOUSE_DOWN: u8 = 2;
+const SNAP_EDGE_PX: i32 = 18;
+const TASK_SWITCHER_MS: u64 = 1200;
 
 // ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
@@ -493,6 +495,14 @@ struct ScrollDragState {
     track_h: i32,
 }
 
+#[derive(Clone, Copy)]
+enum SnapTarget {
+    Left,
+    Right,
+    Bottom,
+    Maximize,
+}
+
 // ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
@@ -608,6 +618,7 @@ pub struct WindowManager {
     last_click_window: Option<usize>,
     last_click_x: i32,
     last_click_y: i32,
+    task_switcher_until_tick: u64,
     /// Shadow buffer — screen_width × screen_height u32 pixels.
     shadow: Vec<u32>,
     shadow_width: usize,
@@ -660,6 +671,7 @@ impl WindowManager {
             last_click_window: None,
             last_click_x: 0,
             last_click_y: 0,
+            task_switcher_until_tick: 0,
             shadow,
             shadow_width: w,
             shadow_height: h,
@@ -1001,6 +1013,70 @@ impl WindowManager {
         }
     }
 
+    fn show_task_switcher(&mut self) {
+        self.task_switcher_until_tick =
+            crate::interrupts::ticks() + crate::interrupts::ticks_for_millis(TASK_SWITCHER_MS);
+    }
+
+    fn snap_focused_window(&mut self, target: SnapTarget) -> bool {
+        let Some(idx) = self.focused else {
+            return false;
+        };
+        self.snap_window(idx, target)
+    }
+
+    fn snap_window(&mut self, win_idx: usize, target: SnapTarget) -> bool {
+        if win_idx >= self.windows.len() {
+            return false;
+        }
+
+        let sw = self.shadow_width as i32;
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let half_w = (sw / 2).max(160);
+        let half_h = (taskbar_y / 2).max(TITLE_H + 80);
+        let (x, y, w, h) = match target {
+            SnapTarget::Left => (0, 0, half_w, taskbar_y),
+            SnapTarget::Right => (sw - half_w, 0, half_w, taskbar_y),
+            SnapTarget::Maximize => (0, 0, sw, taskbar_y),
+            SnapTarget::Bottom => (0, taskbar_y - half_h, sw, half_h),
+        };
+
+        self.windows[win_idx].window_mut().set_bounds(x, y, w, h);
+        if let Some(z_pos) = self.z_order.iter().position(|&i| i == win_idx) {
+            self.z_order.remove(z_pos);
+            self.z_order.push(win_idx);
+        }
+        self.focused = Some(win_idx);
+        self.context_menu = None;
+        self.start_menu_open = false;
+        true
+    }
+
+    fn snap_dragged_window_on_release(&mut self, win_idx: usize) -> bool {
+        if win_idx >= self.windows.len() {
+            return false;
+        }
+        let w = self.windows[win_idx].window();
+        let sw = self.shadow_width as i32;
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let target = if w.y <= SNAP_EDGE_PX {
+            Some(SnapTarget::Maximize)
+        } else if w.x <= SNAP_EDGE_PX {
+            Some(SnapTarget::Left)
+        } else if w.x + w.width >= sw - SNAP_EDGE_PX {
+            Some(SnapTarget::Right)
+        } else if w.y + w.height >= taskbar_y - SNAP_EDGE_PX {
+            Some(SnapTarget::Bottom)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            self.snap_window(win_idx, target)
+        } else {
+            false
+        }
+    }
+
     pub fn stop_key_sink(&mut self) {
         if let Some(fd) = self.key_sink_fd.take() {
             crate::vfs::vfs_close(fd);
@@ -1067,7 +1143,20 @@ impl WindowManager {
         match input.key {
             Key::Tab if input.has_alt() => {
                 self.focus_previous_window();
+                self.show_task_switcher();
                 true
+            }
+            Key::ArrowLeft if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::Left)
+            }
+            Key::ArrowRight if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::Right)
+            }
+            Key::ArrowUp if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::Maximize)
+            }
+            Key::ArrowDown if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::Bottom)
             }
             Key::F4 if input.has_alt() => {
                 if let Some(idx) = self.focused {
@@ -1386,6 +1475,12 @@ impl WindowManager {
         }
 
         if left_released {
+            let drag_window = self.drag.as_ref().map(|d| d.window);
+            if let Some(win_idx) = drag_window {
+                if self.snap_dragged_window_on_release(win_idx) {
+                    crate::wm::request_repaint();
+                }
+            }
             self.drag = None;
             self.resize = None;
             self.scroll_drag = None;
@@ -2529,6 +2624,17 @@ impl WindowManager {
                 );
             }
 
+            if self.task_switcher_until_tick > uptime_ticks {
+                draw_task_switcher_overlay(
+                    s,
+                    sw,
+                    taskbar_y,
+                    &self.windows,
+                    &self.z_order,
+                    self.focused,
+                );
+            }
+
             // ── Cursor — switches to resize cursor over resize handles ────────────
             let (cursor_outline, cursor_shape) = if resize_hover {
                 (&CURSOR_RESIZE_OUTLINE, &CURSOR_RESIZE_SHAPE)
@@ -3609,6 +3715,131 @@ fn draw_menu_check(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
     s_fill(s, sw, x + 2, y + 5, 2, 2, color);
     s_fill(s, sw, x + 4, y + 3, 2, 2, color);
     s_fill(s, sw, x + 6, y + 1, 2, 2, color);
+}
+
+fn draw_task_switcher_overlay(
+    s: &mut [u32],
+    sw: usize,
+    taskbar_y: i32,
+    windows: &[AppWindow],
+    z_order: &[usize],
+    focused: Option<usize>,
+) {
+    let visible_count = z_order
+        .iter()
+        .rev()
+        .filter(|&&idx| idx < windows.len() && !windows[idx].window().minimized)
+        .count();
+    if visible_count == 0 {
+        return;
+    }
+
+    let shown = visible_count.min(6);
+    let item_w = 126i32;
+    let item_h = 64i32;
+    let gap = 10i32;
+    let panel_w = 32 + shown as i32 * item_w + (shown.saturating_sub(1)) as i32 * gap;
+    let panel_h = 112i32;
+    let panel_x = ((sw as i32 - panel_w) / 2).max(0);
+    let panel_y = ((taskbar_y - panel_h) / 2).max(0);
+
+    s_fill_alpha(s, sw, panel_x - 6, panel_y - 6, panel_w + 12, panel_h + 12, 0x44_00_00_00);
+    s_fill(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_07_18);
+    s_fill(s, sw, panel_x, panel_y, panel_w, 3, ACCENT);
+    draw_rect_border(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_66_BB);
+    draw_rect_border(
+        s,
+        sw,
+        panel_x + 1,
+        panel_y + 1,
+        panel_w - 2,
+        panel_h - 2,
+        0x00_00_22_44,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        panel_x + 16,
+        panel_y + 12,
+        "TASK SWITCHER",
+        0x00_CC_EE_FF,
+        0x00_00_07_18,
+        panel_x + panel_w - 16,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        panel_x + 16,
+        panel_y + 26,
+        "Alt+Tab cycles windows",
+        0x00_55_88_AA,
+        0x00_00_07_18,
+        panel_x + panel_w - 16,
+    );
+
+    let mut drawn = 0usize;
+    for &win_idx in z_order.iter().rev() {
+        if drawn >= shown {
+            break;
+        }
+        if win_idx >= windows.len() || windows[win_idx].window().minimized {
+            continue;
+        }
+
+        let win = windows[win_idx].window();
+        let x = panel_x + 16 + drawn as i32 * (item_w + gap);
+        let y = panel_y + 42;
+        let selected = focused == Some(win_idx);
+        let accent = window_accent(win.title);
+        let bg = if selected { 0x00_00_1E_3C } else { 0x00_00_0B_20 };
+        let border = if selected { ACCENT_HOV } else { 0x00_00_33_66 };
+
+        s_fill(s, sw, x, y, item_w, item_h, bg);
+        s_fill(s, sw, x, y, item_w, 3, accent);
+        draw_rect_border(s, sw, x, y, item_w, item_h, border);
+
+        let icon_bg = blend_color(bg, accent, 90);
+        s_fill(s, sw, x + 10, y + 14, 30, 30, icon_bg);
+        draw_rect_border(s, sw, x + 10, y + 14, 30, 30, blend_color(accent, WHITE, 90));
+        s_draw_str_small(
+            s,
+            sw,
+            x + 17,
+            y + 25,
+            window_glyph(win.title),
+            accent,
+            icon_bg,
+            x + 38,
+        );
+
+        let title = if win.title.len() > 11 {
+            &win.title[..11]
+        } else {
+            win.title
+        };
+        s_draw_str_small(
+            s,
+            sw,
+            x + 48,
+            y + 18,
+            title,
+            if selected { WHITE } else { 0x00_88_CC_FF },
+            bg,
+            x + item_w - 8,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 48,
+            y + 34,
+            if selected { "active" } else { "window" },
+            if selected { ACCENT_HOV } else { 0x00_44_77_99 },
+            bg,
+            x + item_w - 8,
+        );
+
+        drawn += 1;
+    }
 }
 
 lazy_static! {

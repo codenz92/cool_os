@@ -280,6 +280,14 @@ impl TerminalApp {
 
             Some("ps") => self.cmd_ps(),
 
+            Some("kill") => match words.next().and_then(parse_usize) {
+                Some(pid) => self.cmd_kill(pid),
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: kill <pid>\n");
+                }
+            },
+
             Some("info") => self.cmd_info(),
 
             Some("uptime") => self.cmd_uptime(),
@@ -436,6 +444,7 @@ impl TerminalApp {
             ("mkdir <path>", "create folder"),
             ("cat <path>", "print file to terminal"),
             ("ps", "list running processes"),
+            ("kill <pid>", "terminate a task"),
             ("exec <path>", "run ELF binary"),
             ("info", "CPU, memory, and system info"),
             ("uptime", "time since boot"),
@@ -562,27 +571,34 @@ impl TerminalApp {
 
     fn cmd_ps(&mut self) {
         // Copy task info while holding the lock, then drop it before printing.
-        let tasks: Vec<(usize, &'static str, crate::scheduler::TaskStatus, bool)> = {
+        let tasks: Vec<(
+            usize,
+            &'static str,
+            crate::scheduler::TaskStatus,
+            bool,
+            bool,
+            Option<u64>,
+        )> = {
             let sched = crate::scheduler::SCHEDULER.lock();
             let cur = sched.current;
             sched
                 .tasks
                 .iter()
                 .enumerate()
-                .map(|(i, t)| (i, t.name, t.status, i == cur))
+                .map(|(i, t)| (i, t.name, t.status, i == cur, t.pml4.is_some(), t.exit_code))
                 .collect()
         };
 
         self.set_fg(FG_ACCENT);
-        self.print_str("PID  RING  STATUS   NAME\n");
+        self.print_str("PID  RING  STATUS   EXIT  NAME\n");
         self.set_fg(FG_DIM);
-        self.print_str("---  ----  -------  ----\n");
-        for (id, name, status, is_cur) in tasks {
+        self.print_str("---  ----  -------  ----  ----\n");
+        for (id, name, status, is_cur, is_user, exit_code) in tasks {
             self.set_fg(if is_cur { FG_PROMPT } else { FG_OUTPUT });
             self.print_u64(id as u64);
             self.print_str("    ");
             self.set_fg(FG_DIM);
-            let ring = if id == 0 { "k" } else { "u" };
+            let ring = if is_user { "u" } else { "k" };
             self.print_str(ring);
             self.print_str("     ");
             self.set_fg(FG_OUTPUT);
@@ -590,14 +606,45 @@ impl TerminalApp {
                 crate::scheduler::TaskStatus::Running => "running",
                 crate::scheduler::TaskStatus::Ready => "ready  ",
                 crate::scheduler::TaskStatus::Blocked => "blocked",
+                crate::scheduler::TaskStatus::Exited => "exited ",
             };
             self.print_str(status_str);
             self.print_str("  ");
+            self.set_fg(FG_DIM);
+            if let Some(code) = exit_code {
+                self.print_u64(code);
+            } else {
+                self.print_char('-');
+            }
+            self.print_str("     ");
             if is_cur {
                 self.set_fg(FG_PROMPT);
+            } else if status == crate::scheduler::TaskStatus::Exited {
+                self.set_fg(FG_DIM);
+            } else {
+                self.set_fg(FG_OUTPUT);
             }
             self.print_str(name);
             self.print_char('\n');
+        }
+    }
+
+    fn cmd_kill(&mut self, pid: usize) {
+        match crate::scheduler::kill_task(pid, 130) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("killed task ");
+                self.set_fg(FG_OUTPUT);
+                self.print_u64(pid as u64);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("kill: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
         }
     }
 
@@ -871,6 +918,20 @@ fn resolve_path(cwd: &str, input: &str) -> String {
         base.push_str(input);
         normalize_path(&base)
     }
+}
+
+fn parse_usize(input: &str) -> Option<usize> {
+    if input.is_empty() {
+        return None;
+    }
+    let mut out = 0usize;
+    for b in input.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        out = out.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+    }
+    Some(out)
 }
 
 fn normalize_path(path: &str) -> String {

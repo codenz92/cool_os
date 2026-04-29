@@ -50,6 +50,7 @@ pub enum TaskStatus {
     Ready,
     Running,
     Blocked,
+    Exited,
 }
 
 // ── Task ──────────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ pub struct Task {
     /// preemption.
     pub stack_ptr: usize,
     pub status: TaskStatus,
+    pub exit_code: Option<u64>,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -102,6 +104,7 @@ impl Scheduler {
             syscall_stack_top: 0,
             stack_ptr: 0,
             status: TaskStatus::Running,
+            exit_code: None,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -157,6 +160,7 @@ impl Scheduler {
             syscall_stack_top: stack_top,
             stack_ptr: stack_ptr_addr,
             status: TaskStatus::Ready,
+            exit_code: None,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -279,6 +283,25 @@ impl Scheduler {
 pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty());
 pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillError {
+    CannotKillIdle,
+    CannotKillCurrent,
+    InvalidTask,
+    AlreadyExited,
+}
+
+impl KillError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            KillError::CannotKillIdle => "cannot kill idle task",
+            KillError::CannotKillCurrent => "cannot kill current task",
+            KillError::InvalidTask => "no such task",
+            KillError::AlreadyExited => "task already exited",
+        }
+    }
+}
+
 // ── Blocking helpers ─────────────────────────────────────────────────────────
 
 pub fn current_task_id() -> usize {
@@ -309,6 +332,50 @@ pub fn unblock(task_id: usize) {
             task.status = TaskStatus::Ready;
         }
     }
+}
+
+pub fn exit_current(code: u64) {
+    let task_id = {
+        let sched = SCHEDULER.lock();
+        sched.current
+    };
+    crate::vfs::drop_task(task_id);
+    let mut sched = SCHEDULER.lock();
+    if let Some(task) = sched.tasks.get_mut(task_id) {
+        task.status = TaskStatus::Exited;
+        task.exit_code = Some(code);
+    }
+}
+
+pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
+    if task_id == 0 {
+        return Err(KillError::CannotKillIdle);
+    }
+
+    let current = {
+        let sched = SCHEDULER.lock();
+        sched.current
+    };
+    if task_id == current {
+        return Err(KillError::CannotKillCurrent);
+    }
+
+    {
+        let sched = SCHEDULER.lock();
+        let Some(task) = sched.tasks.get(task_id) else {
+            return Err(KillError::InvalidTask);
+        };
+        if task.status == TaskStatus::Exited {
+            return Err(KillError::AlreadyExited);
+        }
+    }
+
+    crate::vfs::drop_task(task_id);
+    let mut sched = SCHEDULER.lock();
+    let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
+    task.status = TaskStatus::Exited;
+    task.exit_code = Some(code);
+    Ok(())
 }
 
 // ── Timer ISR entry point (called from timer_naked in interrupts.rs) ──────────

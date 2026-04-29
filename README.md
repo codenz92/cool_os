@@ -12,13 +12,14 @@ layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.17
+# Current state — v1.18
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
-global keyboard shortcuts, and desktop settings that persist to the FAT32 disk.
+global keyboard shortcuts, a task switcher overlay, edge/keyboard window
+snapping, and desktop settings that persist to the FAT32 disk.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`:
@@ -49,12 +50,12 @@ FAT32-backed VFS.
 | :-------- | :------ |
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
-| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, minimise/maximise/restore, resize grip, close button, per-window pixel back-buffer. |
+| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, per-window pixel back-buffer. |
 | **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, global shortcuts, persistent settings, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>`; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Basic `block_current` / `unblock(id)` wakeup helpers back blocking pipe reads. |
+| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>`; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/exited states, records exit codes, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
@@ -72,7 +73,7 @@ FAT32-backed VFS.
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
 | **Terminal** | Boot / right-click | Interactive shell. Type commands, press Enter. |
-| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
+| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, and USB/input status. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
@@ -84,6 +85,8 @@ FAT32-backed VFS.
 | **Alt+Tab** | Cycle focus to the previous visible window. |
 | **Alt+F4** | Close the focused window. |
 | **F5** | Refresh desktop state and rebuild the wallpaper. |
+| **Ctrl+Alt+Left/Right** | Snap the focused window to the left or right half. |
+| **Ctrl+Alt+Up/Down** | Snap the focused window to full height or the bottom half. |
 | **Ctrl+Esc** | Toggle the start menu. |
 | **Ctrl+W** | Close the focused window. |
 | **Ctrl+F** | Open File Manager at `/`. |
@@ -101,6 +104,8 @@ selection survive reboot.
 | `help` | List available commands |
 | `echo <text>` | Print text |
 | `exec <path> [args...]` | Load a userspace ELF from disk and spawn it with argv |
+| `ps` | List scheduler tasks, ring, status, and exit codes |
+| `kill <pid>` | Terminate a non-idle task and mark it exited |
 | `ipc` | Create a shared pipe and launch the userspace reader/writer demo |
 | `keydemo` | Send fixed-size WM key and click event packets to `/bin/keyecho` over an inherited pipe until `~` closes it |
 | `term` | Launch a userspace terminal as a ring-3 process with pipe-based input (Ctrl+D to exit) |

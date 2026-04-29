@@ -181,6 +181,21 @@ impl Window {
         self.scroll.clamp((new_h - TITLE_H).max(0));
     }
 
+    /// Move and resize the window as one operation, preserving the previous
+    /// geometry as the restore target for later maximize/restore toggles.
+    pub fn set_bounds(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        if self.x != x || self.y != y || self.width != width || self.height != height {
+            self.saved_x = self.x;
+            self.saved_y = self.y;
+            self.saved_width = self.width;
+            self.saved_height = self.height;
+        }
+        self.minimized = false;
+        self.x = x;
+        self.y = y;
+        self.resize_to(width, height);
+    }
+
     // ── Minimize / maximize / restore ─────────────────────────────────────────
 
     pub fn minimize(&mut self) {

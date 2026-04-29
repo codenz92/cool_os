@@ -76,6 +76,21 @@ impl SysMonApp {
 
         let counter =
             crate::scheduler::BACKGROUND_COUNTER.load(core::sync::atomic::Ordering::Relaxed);
+        let (task_count, ready_count, blocked_count, exited_count, current_pid) = {
+            let sched = crate::scheduler::SCHEDULER.lock();
+            let mut ready = 0usize;
+            let mut blocked = 0usize;
+            let mut exited = 0usize;
+            for task in sched.tasks.iter() {
+                match task.status {
+                    crate::scheduler::TaskStatus::Ready => ready += 1,
+                    crate::scheduler::TaskStatus::Running => {}
+                    crate::scheduler::TaskStatus::Blocked => blocked += 1,
+                    crate::scheduler::TaskStatus::Exited => exited += 1,
+                }
+            }
+            (sched.tasks.len(), ready, blocked, exited, sched.current)
+        };
         let usb_lines = crate::usb::status_lines();
         let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
         let usb_present = !usb_lines.is_empty();
@@ -145,14 +160,25 @@ impl SysMonApp {
         self.put_str_px(stride, 116, 146, tick_line.as_str(), MUTED);
 
         self.put_str_px(stride, 280, 128, "SCHEDULER", LABEL);
-        let mut counter_line = NumberLine::new();
-        counter_line.push_u64(counter);
-        self.put_str_px(stride, 280, 146, counter_line.as_str(), LIGHT_CYAN);
+        let mut task_line = NumberLine::new();
+        task_line.push_str("pid ");
+        task_line.push_usize(current_pid);
+        task_line.push_str("  tasks ");
+        task_line.push_usize(task_count);
+        self.put_str_px(stride, 280, 144, task_line.as_str(), LIGHT_CYAN);
+        let mut state_line = NumberLine::new();
+        state_line.push_str("ready ");
+        state_line.push_usize(ready_count);
+        state_line.push_str(" blocked ");
+        state_line.push_usize(blocked_count);
+        state_line.push_str(" exited ");
+        state_line.push_usize(exited_count);
+        self.put_str_px(stride, 280, 154, state_line.as_str(), MUTED);
         let pulse = ((counter as usize / 64) % 100).max(8);
         self.draw_bar(
             stride,
             280,
-            160,
+            166,
             200,
             6,
             pulse,
