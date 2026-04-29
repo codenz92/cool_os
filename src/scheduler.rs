@@ -72,6 +72,8 @@ pub struct Task {
     pub status: TaskStatus,
     pub exit_code: Option<u64>,
     pub parent: Option<usize>,
+    pub process_group: usize,
+    pub pending_signal: Option<crate::process_model::Signal>,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -108,6 +110,8 @@ impl Scheduler {
             status: TaskStatus::Running,
             exit_code: None,
             parent: None,
+            process_group: 0,
+            pending_signal: None,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -157,6 +161,14 @@ impl Scheduler {
         frame[18] = rsp.unwrap_or((stack_top - 8) as u64);
         frame[19] = ss; // SS
 
+        let parent = if self.tasks.is_empty() {
+            None
+        } else {
+            Some(self.current)
+        };
+        let process_group = parent
+            .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.process_group))
+            .unwrap_or_else(|| self.tasks.len());
         self.tasks.push(Task {
             name,
             stack,
@@ -164,11 +176,9 @@ impl Scheduler {
             stack_ptr: stack_ptr_addr,
             status: TaskStatus::Ready,
             exit_code: None,
-            parent: if self.tasks.is_empty() {
-                None
-            } else {
-                Some(self.current)
-            },
+            parent,
+            process_group,
+            pending_signal: None,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -333,6 +343,22 @@ impl WaitError {
     }
 }
 
+pub enum SignalError {
+    InvalidTask,
+    CannotSignalIdle,
+    AlreadyReaped,
+}
+
+impl SignalError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SignalError::InvalidTask => "no such task",
+            SignalError::CannotSignalIdle => "cannot signal idle task",
+            SignalError::AlreadyReaped => "task already reaped",
+        }
+    }
+}
+
 // ── Blocking helpers ─────────────────────────────────────────────────────────
 
 pub fn current_task_id() -> usize {
@@ -375,6 +401,7 @@ pub fn exit_current(code: u64) {
     if let Some(task) = sched.tasks.get_mut(task_id) {
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
+        crate::crashdump::record_task_report(task_id, "task exited");
         crate::notifications::push("Task exited", &format!("pid {} exit {}", task_id, code));
     }
 }
@@ -410,7 +437,48 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
     let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
     task.status = TaskStatus::Exited;
     task.exit_code = Some(code);
+    crate::crashdump::record_task_report(task_id, "task killed");
     crate::notifications::push("Task killed", &format!("pid {} exit {}", task_id, code));
+    Ok(())
+}
+
+pub fn send_signal(
+    task_id: usize,
+    signal: crate::process_model::Signal,
+) -> Result<(), SignalError> {
+    if task_id == 0 {
+        return Err(SignalError::CannotSignalIdle);
+    }
+    if signal == crate::process_model::Signal::Term {
+        return kill_task(task_id, 143).map_err(|err| match err {
+            KillError::InvalidTask => SignalError::InvalidTask,
+            KillError::AlreadyReaped => SignalError::AlreadyReaped,
+            _ => SignalError::InvalidTask,
+        });
+    }
+    let mut sched = SCHEDULER.lock();
+    let task = sched
+        .tasks
+        .get_mut(task_id)
+        .ok_or(SignalError::InvalidTask)?;
+    if task.status == TaskStatus::Reaped {
+        return Err(SignalError::AlreadyReaped);
+    }
+    task.pending_signal = Some(signal);
+    crate::notifications::push(
+        "Signal queued",
+        &format!("pid {} {}", task_id, signal.label()),
+    );
+    Ok(())
+}
+
+pub fn set_process_group(task_id: usize, group: usize) -> Result<(), SignalError> {
+    let mut sched = SCHEDULER.lock();
+    let task = sched
+        .tasks
+        .get_mut(task_id)
+        .ok_or(SignalError::InvalidTask)?;
+    task.process_group = group;
     Ok(())
 }
 

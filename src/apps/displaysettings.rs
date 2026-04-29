@@ -8,7 +8,7 @@ use crate::framebuffer::WHITE;
 use crate::wm::window::{Window, TITLE_H};
 
 pub const DISPLAY_SETTINGS_W: i32 = 440;
-pub const DISPLAY_SETTINGS_H: i32 = 268;
+pub const DISPLAY_SETTINGS_H: i32 = 348;
 
 const BG_A: u32 = 0x00_03_07_16;
 const BG_B: u32 = 0x00_01_03_0B;
@@ -94,7 +94,8 @@ impl DisplaySettingsApp {
         let panel_w = window_w.saturating_sub(32);
         self.draw_panel(stride, 16, 46, panel_w, 54);
         self.draw_panel(stride, 16, 108, panel_w, 84);
-        self.draw_panel(stride, 16, 200, panel_w, content_h.saturating_sub(216));
+        self.draw_panel(stride, 16, 200, panel_w, 56);
+        self.draw_panel(stride, 16, 264, panel_w, content_h.saturating_sub(280));
 
         self.put_str(stride, 28, 60, "CURRENT MODE", LABEL);
         self.put_resolution_line(stride, 28, 76);
@@ -120,6 +121,23 @@ impl DisplaySettingsApp {
         self.put_str(stride, 28, 212, "SORT ORDER", LABEL);
         self.put_str(stride, 28, 226, "controls desktop icon layout", MUTED);
         self.draw_sort_buttons(stride, 170, 208, settings.sort_mode);
+
+        self.put_str(stride, 28, 278, "SYSTEM PANELS", LABEL);
+        self.put_str(
+            stride,
+            28,
+            292,
+            "keyboard shortcuts  access  storage",
+            WHITE,
+        );
+        self.put_str(stride, 28, 306, "network  power  packages  services", WHITE);
+        self.put_str(
+            stride,
+            28,
+            322,
+            "Use Terminal: shortcuts, access, df, net, power",
+            MUTED,
+        );
     }
 
     fn put_resolution_line(&mut self, stride: usize, x: usize, y: usize) {

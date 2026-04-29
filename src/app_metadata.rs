@@ -1,10 +1,12 @@
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub struct AppMetadata {
+    pub id: &'static str,
     pub name: &'static str,
     pub glyph: &'static str,
     pub command: &'static str,
     pub permission: &'static str,
+    pub associations: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
@@ -32,46 +34,60 @@ pub struct LauncherEntry {
 
 pub const APPS: &[AppMetadata] = &[
     AppMetadata {
+        id: "app.terminal",
         name: "Terminal",
         glyph: "T>",
         command: "terminal",
         permission: "shell",
+        associations: &["CMD"],
     },
     AppMetadata {
+        id: "app.sysmon",
         name: "System Monitor",
         glyph: "M#",
         command: "sysmon",
         permission: "diagnostics",
+        associations: &[],
     },
     AppMetadata {
+        id: "app.files",
         name: "File Manager",
         glyph: "FM",
         command: "files",
         permission: "filesystem",
+        associations: &["DIR"],
     },
     AppMetadata {
+        id: "app.viewer",
         name: "Text Viewer",
         glyph: "Tx",
         command: "viewer",
         permission: "read-files",
+        associations: &["TXT", "MD", "LOG", "CFG", "RS"],
     },
     AppMetadata {
+        id: "app.colors",
         name: "Color Picker",
         glyph: "CP",
         command: "colors",
         permission: "desktop",
+        associations: &[],
     },
     AppMetadata {
+        id: "app.display",
         name: "Display Settings",
         glyph: "DS",
         command: "display",
         permission: "settings",
+        associations: &[],
     },
     AppMetadata {
+        id: "app.personalize",
         name: "Personalize",
         glyph: "P*",
         command: "personalize",
         permission: "settings",
+        associations: &[],
     },
 ];
 

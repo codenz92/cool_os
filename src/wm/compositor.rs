@@ -35,6 +35,7 @@ const TASK_SWITCHER_MS: u64 = 1200;
 const SESSION_PATH: &str = "/CONFIG/SESSION.CFG";
 const SESSION_SAVE_MS: u64 = 1200;
 const MAX_SESSION_WINDOWS: usize = 8;
+const WORKSPACE_COUNT: usize = 4;
 const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
@@ -349,14 +350,6 @@ impl DesktopIcon {
     }
 }
 
-const START_PINNED_APPS: [&str; 5] = [
-    "Terminal",
-    "System Monitor",
-    "Text Viewer",
-    "Color Picker",
-    "File Manager",
-];
-
 fn canonical_app_title(name: &str) -> &str {
     match name {
         "Terminal" => "Terminal",
@@ -513,11 +506,31 @@ enum SnapTarget {
     Right,
     Bottom,
     Maximize,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 struct LauncherState {
     query: String,
     selected: usize,
+}
+
+#[derive(Clone)]
+enum LauncherMatchKind {
+    App(String),
+    Path(String),
+    Command(String),
+    Inline(String),
+}
+
+#[derive(Clone)]
+struct LauncherMatch {
+    label: String,
+    detail: String,
+    kind: LauncherMatchKind,
+    score: usize,
 }
 
 struct TaskbarMenu {
@@ -633,8 +646,10 @@ impl AppWindow {
 
 pub struct WindowManager {
     pub windows: Vec<AppWindow>,
+    window_workspaces: Vec<usize>,
     z_order: Vec<usize>,
     focused: Option<usize>,
+    current_workspace: usize,
     key_sink_fd: Option<usize>,
     key_sink_window: Option<usize>,
     drag: Option<DragState>,
@@ -693,8 +708,10 @@ impl WindowManager {
 
         let mut wm = WindowManager {
             windows: Vec::new(),
+            window_workspaces: Vec::new(),
             z_order: Vec::new(),
             focused: None,
+            current_workspace: 0,
             key_sink_fd: None,
             key_sink_window: None,
             drag: None,
@@ -730,6 +747,9 @@ impl WindowManager {
         };
         wm.restore_session();
         if wm.windows.is_empty() {
+            wm.launch_startup_apps();
+        }
+        if wm.windows.is_empty() {
             wm.add_window(AppWindow::Terminal(TerminalApp::new(24, 24)));
         }
         wm.session_ready = true;
@@ -739,6 +759,7 @@ impl WindowManager {
     pub fn add_window(&mut self, w: AppWindow) {
         let idx = self.windows.len();
         self.windows.push(w);
+        self.window_workspaces.push(self.current_workspace);
         self.z_order.push(idx);
         self.focused = Some(idx);
         self.notify_session_changed();
@@ -768,8 +789,9 @@ impl WindowManager {
     fn save_session(&self) {
         let _ = crate::fat32::create_dir("/CONFIG");
         let mut data = String::new();
-        for window in self.windows.iter().take(MAX_SESSION_WINDOWS) {
+        for (idx, window) in self.windows.iter().enumerate().take(MAX_SESSION_WINDOWS) {
             let win = window.window();
+            crate::app_lifecycle::remember_geometry(win.title, win.x, win.y, win.width, win.height);
             data.push_str(win.title);
             data.push('|');
             push_i32_decimal(&mut data, win.x);
@@ -783,6 +805,8 @@ impl WindowManager {
             if let AppWindow::FileManager(fm) = window {
                 data.push_str(fm.current_path());
             }
+            data.push('|');
+            push_decimal(&mut data, self.window_workspace(idx) as u64);
             data.push('\n');
         }
         let _ = crate::fat32::safe_write_file(SESSION_PATH, data.as_bytes());
@@ -816,6 +840,11 @@ impl WindowManager {
                 continue;
             };
             let extra = parts.next().unwrap_or("");
+            let workspace = parts
+                .next()
+                .and_then(parse_usize_field)
+                .unwrap_or(0)
+                .min(WORKSPACE_COUNT - 1);
             let before = self.windows.len();
             let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
             let screen_w = self.shadow_width as i32;
@@ -839,10 +868,15 @@ impl WindowManager {
                 self.windows[idx]
                     .window_mut()
                     .set_bounds(x, y, width, height);
+                if let Some(slot) = self.window_workspaces.get_mut(idx) {
+                    *slot = workspace;
+                }
                 restored += 1;
             }
         }
         if restored > 0 {
+            self.current_workspace = 0;
+            self.focused = self.top_visible_window();
             crate::klog::log_owned(format!("desktop restored {} window(s)", restored));
         }
     }
@@ -879,6 +913,7 @@ impl WindowManager {
     }
 
     fn launch_app(&mut self, name: &str, wx: i32, wy: i32) {
+        let before = self.windows.len();
         match canonical_app_title(name) {
             "Terminal" => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
             "System Monitor" => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
@@ -891,6 +926,70 @@ impl WindowManager {
             "Personalize" => self.add_window(AppWindow::Personalize(PersonalizeApp::new(wx, wy))),
             _ => {}
         }
+        if self.windows.len() > before {
+            self.apply_remembered_geometry(self.windows.len() - 1);
+        }
+    }
+
+    fn launch_startup_apps(&mut self) {
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        for app in crate::app_lifecycle::startup_apps().iter() {
+            let off = self.windows.len() as i32 * 16;
+            let wx = (24 + off).min(self.shadow_width as i32 - 220);
+            let wy = (24 + off).min(taskbar_y - 120);
+            self.launch_app(app, wx, wy);
+        }
+    }
+
+    fn apply_remembered_geometry(&mut self, win_idx: usize) {
+        if win_idx >= self.windows.len() {
+            return;
+        }
+        let title = self.windows[win_idx].window().title;
+        let Some(geometry) = crate::app_lifecycle::geometry_for(title) else {
+            return;
+        };
+        self.windows[win_idx]
+            .window_mut()
+            .set_bounds(geometry.x, geometry.y, geometry.w, geometry.h);
+    }
+
+    fn window_workspace(&self, win_idx: usize) -> usize {
+        self.window_workspaces
+            .get(win_idx)
+            .copied()
+            .unwrap_or(0)
+            .min(WORKSPACE_COUNT - 1)
+    }
+
+    fn is_window_on_current_workspace(&self, win_idx: usize) -> bool {
+        self.window_workspace(win_idx) == self.current_workspace
+    }
+
+    fn top_visible_window(&self) -> Option<usize> {
+        self.z_order.iter().rev().copied().find(|&idx| {
+            idx < self.windows.len()
+                && self.is_window_on_current_workspace(idx)
+                && !self.windows[idx].is_minimized()
+        })
+    }
+
+    fn switch_workspace(&mut self, workspace: usize) -> bool {
+        let workspace = workspace.min(WORKSPACE_COUNT - 1);
+        if self.current_workspace == workspace {
+            return false;
+        }
+        self.current_workspace = workspace;
+        self.focused = self.top_visible_window();
+        self.drag = None;
+        self.resize = None;
+        self.scroll_drag = None;
+        self.file_drag = None;
+        self.context_menu = None;
+        self.start_menu_open = false;
+        self.taskbar_menu = None;
+        self.notification_center_open = false;
+        true
     }
 
     fn launch_file_manager_at(&mut self, dir: &str, wx: i32, wy: i32) {
@@ -906,6 +1005,7 @@ impl WindowManager {
         if win_idx >= self.windows.len() {
             return;
         }
+        self.current_workspace = self.window_workspace(win_idx);
         if self.windows[win_idx].is_minimized() {
             self.windows[win_idx].window_mut().restore();
         }
@@ -986,7 +1086,7 @@ impl WindowManager {
         if matches.is_empty() {
             return;
         }
-        let entry = matches[state.selected.min(matches.len() - 1)];
+        let entry = matches[state.selected.min(matches.len() - 1)].clone();
         self.launcher = None;
         let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
         let off = self.windows.len() as i32 * 16;
@@ -994,12 +1094,18 @@ impl WindowManager {
         let wy = (16 + off).min(taskbar_y - 120);
 
         match entry.kind {
-            crate::app_metadata::LauncherKind::App(app) => self.launch_app(app, wx, wy),
-            crate::app_metadata::LauncherKind::Path(path) => {
-                self.open_associated_path(path, wx, wy);
+            LauncherMatchKind::App(app) => self.launch_app(&app, wx, wy),
+            LauncherMatchKind::Path(path) => {
+                self.open_associated_path(&path, wx, wy);
             }
-            crate::app_metadata::LauncherKind::Command(command) => {
-                self.run_terminal_command(command);
+            LauncherMatchKind::Command(command) => {
+                self.run_terminal_command(&command);
+            }
+            LauncherMatchKind::Inline(action) => {
+                if action == "refresh-index" {
+                    crate::search_index::refresh();
+                    crate::notifications::push("Search", "desktop index refreshed");
+                }
             }
         }
     }
@@ -1009,6 +1115,7 @@ impl WindowManager {
             self.launch_file_manager_at(path, wx, wy);
             return;
         }
+        crate::app_lifecycle::record_file(path);
         match crate::app_metadata::association_for(path, false) {
             crate::app_metadata::Association::Executable => {
                 if let Err(err) = crate::elf::spawn_elf_process(path) {
@@ -1087,6 +1194,7 @@ impl WindowManager {
 
         match request {
             FileManagerOpenRequest::File(path) => {
+                crate::app_lifecycle::record_file(&path);
                 let off = self.windows.len() as i32 * 16;
                 let wx = (20 + off).min(sw as i32 - 220);
                 let wy = (20 + off).min(taskbar_y - 120);
@@ -1105,6 +1213,7 @@ impl WindowManager {
                 }
             }
             FileManagerOpenRequest::Exec(path) => {
+                crate::app_lifecycle::record_file(&path);
                 if let Err(err) = crate::elf::spawn_elf_process(&path) {
                     if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
                         AppWindow::Terminal(t) => Some(t),
@@ -1181,13 +1290,22 @@ impl WindowManager {
         if py < taskbar_y + 2 || py >= taskbar_y + TASKBAR_H {
             return None;
         }
-        let idx = ((px - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
-        let bx = taskbar_btn_x0 + idx as i32 * (BUTTON_W + 6);
-        if idx < self.windows.len() && px < bx + BUTTON_W {
-            Some(idx)
-        } else {
-            None
+        let slot = ((px - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
+        let bx = taskbar_btn_x0 + slot as i32 * (BUTTON_W + 6);
+        if px >= bx + BUTTON_W {
+            return None;
         }
+        let mut current_slot = 0usize;
+        for win_idx in 0..self.windows.len() {
+            if !self.is_window_on_current_workspace(win_idx) {
+                continue;
+            }
+            if current_slot == slot {
+                return Some(win_idx);
+            }
+            current_slot += 1;
+        }
+        None
     }
 
     fn open_taskbar_menu(&mut self, win_idx: usize, mx: i32, taskbar_y: i32, sw: i32) {
@@ -1230,9 +1348,7 @@ impl WindowManager {
                 } else {
                     self.windows[menu.window].window_mut().minimize();
                     if self.focused == Some(menu.window) {
-                        self.focused = self.z_order.iter().rev().copied().find(|&idx| {
-                            idx < self.windows.len() && !self.windows[idx].is_minimized()
-                        });
+                        self.focused = self.top_visible_window();
                     }
                 }
             }
@@ -1406,17 +1522,41 @@ impl WindowManager {
     }
 
     fn toggle_show_desktop(&mut self) {
-        let any_visible = self.windows.iter().any(|w| !w.window().minimized);
+        let any_visible = self
+            .windows
+            .iter()
+            .enumerate()
+            .any(|(idx, w)| self.is_window_on_current_workspace(idx) && !w.window().minimized);
         if any_visible {
-            for w in self.windows.iter_mut() {
-                w.window_mut().minimize();
+            let current_workspace = self.current_workspace;
+            for (idx, w) in self.windows.iter_mut().enumerate() {
+                if self
+                    .window_workspaces
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(WORKSPACE_COUNT - 1)
+                    == current_workspace
+                {
+                    w.window_mut().minimize();
+                }
             }
             self.focused = None;
         } else {
-            for w in self.windows.iter_mut() {
-                w.window_mut().restore();
+            let current_workspace = self.current_workspace;
+            for (idx, w) in self.windows.iter_mut().enumerate() {
+                if self
+                    .window_workspaces
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(WORKSPACE_COUNT - 1)
+                    == current_workspace
+                {
+                    w.window_mut().restore();
+                }
             }
-            self.focused = self.z_order.last().copied();
+            self.focused = self.top_visible_window();
         }
     }
 
@@ -1446,6 +1586,10 @@ impl WindowManager {
             SnapTarget::Right => (sw - half_w, 0, half_w, taskbar_y),
             SnapTarget::Maximize => (0, 0, sw, taskbar_y),
             SnapTarget::Bottom => (0, taskbar_y - half_h, sw, half_h),
+            SnapTarget::TopLeft => (0, 0, half_w, half_h),
+            SnapTarget::TopRight => (sw - half_w, 0, half_w, half_h),
+            SnapTarget::BottomLeft => (0, taskbar_y - half_h, half_w, half_h),
+            SnapTarget::BottomRight => (sw - half_w, taskbar_y - half_h, half_w, half_h),
         };
 
         self.windows[win_idx].window_mut().set_bounds(x, y, w, h);
@@ -1569,6 +1713,19 @@ impl WindowManager {
                 self.show_task_switcher();
                 true
             }
+            Key::PageUp if input.has_ctrl() && input.has_alt() => {
+                let next = if self.current_workspace == 0 {
+                    WORKSPACE_COUNT - 1
+                } else {
+                    self.current_workspace - 1
+                };
+                self.switch_workspace(next);
+                true
+            }
+            Key::PageDown if input.has_ctrl() && input.has_alt() => {
+                self.switch_workspace((self.current_workspace + 1) % WORKSPACE_COUNT);
+                true
+            }
             Key::ArrowLeft if input.has_ctrl() && input.has_alt() => {
                 self.snap_focused_window(SnapTarget::Left)
             }
@@ -1580,6 +1737,18 @@ impl WindowManager {
             }
             Key::ArrowDown if input.has_ctrl() && input.has_alt() => {
                 self.snap_focused_window(SnapTarget::Bottom)
+            }
+            Key::Character('1') if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::TopLeft)
+            }
+            Key::Character('2') if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::TopRight)
+            }
+            Key::Character('3') if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::BottomLeft)
+            }
+            Key::Character('4') if input.has_ctrl() && input.has_alt() => {
+                self.snap_focused_window(SnapTarget::BottomRight)
             }
             Key::F4 if input.has_alt() => {
                 if let Some(idx) = self.focused {
@@ -1650,7 +1819,10 @@ impl WindowManager {
                 pos - 1
             };
             let candidate = self.z_order[pos];
-            if candidate < self.windows.len() && !self.windows[candidate].window().minimized {
+            if candidate < self.windows.len()
+                && self.is_window_on_current_workspace(candidate)
+                && !self.windows[candidate].window().minimized
+            {
                 self.z_order.remove(pos);
                 self.z_order.push(candidate);
                 self.focused = Some(candidate);
@@ -1659,6 +1831,7 @@ impl WindowManager {
                 return;
             }
         }
+        self.focused = None;
     }
 
     fn close_window(&mut self, win_idx: usize) {
@@ -1673,13 +1846,16 @@ impl WindowManager {
             }
         }
         self.windows.remove(win_idx);
+        if win_idx < self.window_workspaces.len() {
+            self.window_workspaces.remove(win_idx);
+        }
         self.z_order.retain(|&i| i != win_idx);
         for z in self.z_order.iter_mut() {
             if *z > win_idx {
                 *z -= 1;
             }
         }
-        self.focused = self.z_order.last().copied();
+        self.focused = self.top_visible_window();
         self.drag = None;
         self.resize = None;
         self.scroll_drag = None;
@@ -1909,22 +2085,11 @@ impl WindowManager {
                         self.toggle_show_desktop();
                         crate::wm::request_repaint();
                     } else {
-                        let taskbar_btn_x0 = START_BTN_W + 8;
-                        if mx_i >= taskbar_btn_x0 && mx_i < show_desktop_x - 6 {
-                            let btn_idx = ((mx_i - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
-                            let bx = taskbar_btn_x0 + btn_idx as i32 * (BUTTON_W + 6);
-                            if btn_idx < self.windows.len() && mx_i < bx + BUTTON_W {
-                                if self.windows[btn_idx].is_minimized() {
-                                    self.windows[btn_idx].window_mut().restore();
-                                }
-                                if let Some(z_pos) = self.z_order.iter().position(|&i| i == btn_idx)
-                                {
-                                    self.z_order.remove(z_pos);
-                                    self.z_order.push(btn_idx);
-                                    self.focused = Some(btn_idx);
-                                }
-                                crate::wm::request_repaint();
-                            }
+                        if let Some(btn_idx) =
+                            self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y)
+                        {
+                            self.focus_window(btn_idx);
+                            crate::wm::request_repaint();
                         }
                     }
                 }
@@ -2019,15 +2184,16 @@ impl WindowManager {
                 left_press_consumed = true;
                 // Left column — app list rows
                 if mx_i < menu_x + left_w {
+                    let pinned_apps = crate::app_lifecycle::pinned_apps();
                     let item_h = 40i32;
                     let items_y = menu_y + left_hdr_h + 8;
-                    if my_i >= items_y && my_i < items_y + item_h * START_PINNED_APPS.len() as i32 {
+                    if my_i >= items_y && my_i < items_y + item_h * pinned_apps.len() as i32 {
                         let item_idx = ((my_i - items_y) / item_h) as usize;
-                        if item_idx < START_PINNED_APPS.len() {
+                        if item_idx < pinned_apps.len() {
                             let off = self.windows.len() as i32 * 16;
                             let wx = (10 + off).min(sw as i32 - 200);
                             let wy = (10 + off).min(bar_y - 80);
-                            self.launch_app(START_PINNED_APPS[item_idx], wx, wy);
+                            self.launch_app(&pinned_apps[item_idx], wx, wy);
                             self.start_menu_open = false;
                             crate::wm::request_repaint();
                         }
@@ -2135,6 +2301,8 @@ impl WindowManager {
                 })
                 .unwrap_or(false);
         let desktop_icons = self.desktop_icons();
+        let hovered_taskbar_window = self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y);
+        let current_workspace = self.current_workspace;
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
@@ -2331,7 +2499,15 @@ impl WindowManager {
             // ── Windows — drawn AFTER icons so they appear in front ───────────────
             let z: Vec<usize> = self.z_order.clone();
             for &wi in &z {
-                if wi < self.windows.len() {
+                if wi < self.windows.len()
+                    && self
+                        .window_workspaces
+                        .get(wi)
+                        .copied()
+                        .unwrap_or(0)
+                        .min(WORKSPACE_COUNT - 1)
+                        == current_workspace
+                {
                     let win = self.windows[wi].window();
                     if !win.minimized {
                         let focused = self.focused == Some(wi);
@@ -2573,16 +2749,17 @@ impl WindowManager {
 
                 let item_h = 40i32;
                 let items_y = menu_y + left_hdr_h + 8;
+                let pinned_apps = crate::app_lifecycle::pinned_apps();
                 let mut left_hov: Option<usize> = None;
                 if mx_i > menu_x
                     && mx_i < menu_x + left_w
                     && my_i >= items_y
-                    && my_i < items_y + item_h * START_PINNED_APPS.len() as i32
+                    && my_i < items_y + item_h * pinned_apps.len() as i32
                 {
                     left_hov = Some(((my_i - items_y) / item_h) as usize);
                 }
 
-                for (i, &name) in START_PINNED_APPS.iter().enumerate() {
+                for (i, name) in pinned_apps.iter().enumerate() {
                     let iy = items_y + i as i32 * item_h;
                     let is_hov = left_hov == Some(i);
                     let row_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_07_18 };
@@ -2623,7 +2800,7 @@ impl WindowManager {
                         row_bg,
                         text_right,
                     );
-                    if i + 1 < START_PINNED_APPS.len() {
+                    if i + 1 < pinned_apps.len() {
                         s_fill(
                             s,
                             sw,
@@ -2795,31 +2972,27 @@ impl WindowManager {
             // ── Taskbar window tabs — icon-first strip ───────────────────────────
             let taskbar_btn_x0 = START_BTN_W + 8;
             let show_desktop_x = sw as i32 - TASKBAR_CLOCK_W - SHOW_DESKTOP_W - 8;
-            let hovered_btn = if mx_i >= taskbar_btn_x0
-                && mx_i < show_desktop_x - 6
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H
-            {
-                let idx = ((mx_i - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
-                let bx = taskbar_btn_x0 + idx as i32 * (BUTTON_W + 6);
-                if mx_i < bx + BUTTON_W {
-                    Some(idx)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
+            let mut taskbar_slot = 0usize;
             for i in 0..self.windows.len() {
-                let bx = taskbar_btn_x0 + i as i32 * (BUTTON_W + 6);
+                if self
+                    .window_workspaces
+                    .get(i)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(WORKSPACE_COUNT - 1)
+                    != current_workspace
+                {
+                    continue;
+                }
+                let bx = taskbar_btn_x0 + taskbar_slot as i32 * (BUTTON_W + 6);
                 if bx + BUTTON_W > show_desktop_x - 6 {
                     break;
                 }
+                taskbar_slot += 1;
 
                 let focused = self.focused == Some(i);
                 let minimized = self.windows[i].is_minimized();
-                let hovered = hovered_btn == Some(i);
+                let hovered = hovered_taskbar_window == Some(i);
                 let title = self.windows[i].window().title;
                 let accent = window_accent(title);
                 let glyph = window_glyph(title);
@@ -2926,9 +3099,23 @@ impl WindowManager {
                 );
             }
 
-            if let Some(idx) = hovered_btn {
+            if let Some(idx) = hovered_taskbar_window {
                 if idx < self.windows.len() {
-                    let bx = taskbar_btn_x0 + idx as i32 * (BUTTON_W + 6);
+                    let slot = self
+                        .windows
+                        .iter()
+                        .enumerate()
+                        .filter(|(win_idx, _)| {
+                            self.window_workspaces
+                                .get(*win_idx)
+                                .copied()
+                                .unwrap_or(0)
+                                .min(WORKSPACE_COUNT - 1)
+                                == current_workspace
+                        })
+                        .position(|(win_idx, _)| win_idx == idx)
+                        .unwrap_or(0);
+                    let bx = taskbar_btn_x0 + slot as i32 * (BUTTON_W + 6);
                     draw_taskbar_preview(s, sw, taskbar_y, bx, &self.windows[idx]);
                 }
             }
@@ -3084,8 +3271,19 @@ impl WindowManager {
                 }
             }
             {
+                let workspace = workspace_label(current_workspace);
+                s_draw_str_small(
+                    s,
+                    sw,
+                    clock_box_x + 8,
+                    taskbar_y + 22,
+                    workspace,
+                    ACCENT_HOV,
+                    clk_bg,
+                    clock_box_x + clock_box_w,
+                );
                 let brand_w = 6 * 8;
-                let brand_x = clock_box_x + (clock_box_w - brand_w) / 2;
+                let brand_x = clock_box_x + clock_box_w - brand_w - 8;
                 s_draw_str_small(
                     s,
                     sw,
@@ -3155,8 +3353,10 @@ impl WindowManager {
                     sw,
                     taskbar_y,
                     &self.windows,
+                    &self.window_workspaces,
                     &self.z_order,
                     self.focused,
+                    self.current_workspace,
                 );
             }
 
@@ -3274,6 +3474,7 @@ impl WindowManager {
         for z_pos in (0..self.z_order.len()).rev() {
             let wi = self.z_order[z_pos];
             if wi < self.windows.len()
+                && self.is_window_on_current_workspace(wi)
                 && !self.windows[wi].window().minimized
                 && self.windows[wi].window().hit(px, py)
             {
@@ -4251,13 +4452,24 @@ fn draw_task_switcher_overlay(
     sw: usize,
     taskbar_y: i32,
     windows: &[AppWindow],
+    window_workspaces: &[usize],
     z_order: &[usize],
     focused: Option<usize>,
+    current_workspace: usize,
 ) {
     let visible_count = z_order
         .iter()
         .rev()
-        .filter(|&&idx| idx < windows.len() && !windows[idx].window().minimized)
+        .filter(|&&idx| {
+            idx < windows.len()
+                && window_workspaces
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(WORKSPACE_COUNT - 1)
+                    == current_workspace
+                && !windows[idx].window().minimized
+        })
         .count();
     if visible_count == 0 {
         return;
@@ -4319,7 +4531,15 @@ fn draw_task_switcher_overlay(
         if drawn >= shown {
             break;
         }
-        if win_idx >= windows.len() || windows[win_idx].window().minimized {
+        if win_idx >= windows.len()
+            || window_workspaces
+                .get(win_idx)
+                .copied()
+                .unwrap_or(0)
+                .min(WORKSPACE_COUNT - 1)
+                != current_workspace
+            || windows[win_idx].window().minimized
+        {
             continue;
         }
 
@@ -4772,7 +4992,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
 
     let max_rows = 7usize.min(matches.len());
     for i in 0..max_rows {
-        let entry = matches[i];
+        let entry = &matches[i];
         let row_y = y + 82 + i as i32 * 28;
         let selected = i == state.selected.min(matches.len() - 1);
         let row_bg = if selected { 0x00_00_1A_38 } else { bg };
@@ -4780,7 +5000,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             s_fill(s, sw, x + 10, row_y, panel_w - 20, 24, row_bg);
             s_fill(s, sw, x + 10, row_y + 5, 3, 14, ACCENT);
         }
-        let glyph = launcher_kind_glyph(entry.kind);
+        let glyph = launcher_kind_glyph(&entry.kind);
         s_draw_str_small(
             s,
             sw,
@@ -4796,7 +5016,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             sw,
             x + 54,
             row_y + 4,
-            entry.label,
+            &entry.label,
             if selected { WHITE } else { 0x00_AA_DD_FF },
             row_bg,
             x + panel_w - 140,
@@ -4806,7 +5026,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             sw,
             x + 54,
             row_y + 15,
-            entry.detail,
+            &entry.detail,
             0x00_55_88_AA,
             row_bg,
             x + panel_w - 18,
@@ -4814,57 +5034,115 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
     }
 }
 
-fn launcher_kind_glyph(kind: crate::app_metadata::LauncherKind) -> &'static str {
+fn launcher_kind_glyph(kind: &LauncherMatchKind) -> &'static str {
     match kind {
-        crate::app_metadata::LauncherKind::App(app) => window_glyph(app),
-        crate::app_metadata::LauncherKind::Path(_) => "FS",
-        crate::app_metadata::LauncherKind::Command(_) => "$>",
+        LauncherMatchKind::App(app) => window_glyph(app),
+        LauncherMatchKind::Path(_) => "FS",
+        LauncherMatchKind::Command(_) => "$>",
+        LauncherMatchKind::Inline(_) => "!!",
     }
 }
 
-fn launcher_matches(query: &str) -> Vec<crate::app_metadata::LauncherEntry> {
+fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
     let mut matches = Vec::new();
     for &entry in crate::app_metadata::LAUNCHER_ENTRIES.iter() {
-        if query.is_empty()
-            || contains_ignore_ascii(entry.label, query)
-            || contains_ignore_ascii(entry.detail, query)
-        {
-            matches.push(entry);
+        if let Some(score) = launcher_score(entry.label, entry.detail, query) {
+            matches.push(LauncherMatch {
+                label: String::from(entry.label),
+                detail: String::from(entry.detail),
+                kind: match entry.kind {
+                    crate::app_metadata::LauncherKind::App(app) => {
+                        LauncherMatchKind::App(String::from(app))
+                    }
+                    crate::app_metadata::LauncherKind::Path(path) => {
+                        LauncherMatchKind::Path(String::from(path))
+                    }
+                    crate::app_metadata::LauncherKind::Command(command) => {
+                        LauncherMatchKind::Command(String::from(command))
+                    }
+                },
+                score,
+            });
         }
     }
+
+    for command in crate::app_lifecycle::recent_commands().iter() {
+        if let Some(score) = launcher_score(command, "recent command", query) {
+            matches.push(LauncherMatch {
+                label: command.clone(),
+                detail: String::from("recent command"),
+                kind: LauncherMatchKind::Command(command.clone()),
+                score: score + 4,
+            });
+        }
+    }
+    for file in crate::app_lifecycle::recent_files().iter() {
+        if let Some(score) = launcher_score(file, "recent file", query) {
+            matches.push(LauncherMatch {
+                label: file_name(file),
+                detail: String::from("recent file"),
+                kind: LauncherMatchKind::Path(file.clone()),
+                score: score + 3,
+            });
+        }
+    }
+    for entry in crate::search_index::search(query, 8).iter() {
+        matches.push(LauncherMatch {
+            label: entry.name.clone(),
+            detail: entry.path.clone(),
+            kind: LauncherMatchKind::Path(entry.path.clone()),
+            score: crate::search_index::fuzzy_score(&entry.name, query).unwrap_or(1) + 2,
+        });
+    }
+    if launcher_score("Refresh search index", "inline action", query).is_some() {
+        matches.push(LauncherMatch {
+            label: String::from("Refresh search index"),
+            detail: String::from("inline action"),
+            kind: LauncherMatchKind::Inline(String::from("refresh-index")),
+            score: if query.is_empty() { 1 } else { 24 },
+        });
+    }
+    matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
+    matches.truncate(12);
     matches
 }
 
-fn contains_ignore_ascii(haystack: &str, needle: &str) -> bool {
-    let hay = haystack.as_bytes();
-    let nee = needle.as_bytes();
-    if nee.is_empty() {
-        return true;
+fn launcher_score(label: &str, detail: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(1);
     }
-    if nee.len() > hay.len() {
-        return false;
+    let label_score = crate::search_index::fuzzy_score(label, query).unwrap_or(0);
+    let detail_score = crate::search_index::fuzzy_score(detail, query)
+        .unwrap_or(0)
+        .saturating_sub(3);
+    let score = label_score.max(detail_score);
+    if score == 0 {
+        None
+    } else {
+        Some(score)
     }
-    for start in 0..=hay.len() - nee.len() {
-        let mut ok = true;
-        for i in 0..nee.len() {
-            if !ascii_byte_eq(hay[start + i], nee[i]) {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return true;
-        }
-    }
-    false
 }
 
-fn ascii_byte_eq(a: u8, b: u8) -> bool {
-    a.to_ascii_lowercase() == b.to_ascii_lowercase()
+fn file_name(path: &str) -> String {
+    String::from(path.rsplit('/').next().unwrap_or(path))
 }
 
 fn parse_i32_field(value: &str) -> Option<i32> {
     value.parse::<i32>().ok()
+}
+
+fn parse_usize_field(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok()
+}
+
+fn workspace_label(workspace: usize) -> &'static str {
+    match workspace {
+        0 => "WS1",
+        1 => "WS2",
+        2 => "WS3",
+        3 => "WS4",
+        _ => "WS?",
+    }
 }
 
 fn push_i32_decimal(out: &mut String, n: i32) {

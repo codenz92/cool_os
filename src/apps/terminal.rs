@@ -105,6 +105,7 @@ impl TerminalApp {
                 self.print_char('\n');
                 let cmd = core::mem::take(&mut self.cmd_buf);
                 self.push_history(&cmd);
+                crate::app_lifecycle::record_command(&cmd);
                 self.run_command(&cmd);
             }
             '\u{0008}' => {
@@ -306,15 +307,88 @@ impl TerminalApp {
 
             Some("net") => self.cmd_lines("NETWORK", crate::net::status_lines()),
 
+            Some("netproto") => self.cmd_lines("NETWORK PROTOCOLS", crate::net::protocol_lines()),
+
+            Some("http") => {
+                let host = words.next();
+                let path = words.next().unwrap_or("/");
+                match host {
+                    Some(host) => self.cmd_http(host, path),
+                    None => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("usage: http <host> [path]\n");
+                    }
+                }
+            }
+
             Some("power") => self.cmd_power(words.next()),
 
             Some("log") => self.cmd_log(),
 
             Some("fsck") => self.cmd_fsck(),
 
+            Some("fsrepair") => self.cmd_lines("FS REPAIR", crate::fs_hardening::repair()),
+
+            Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
+
+            Some("journal") => self.cmd_lines("FS JOURNAL", crate::fs_hardening::journal_lines()),
+
             Some("df") => self.cmd_df(),
 
             Some("shortcuts") => self.cmd_lines("SHORTCUTS", crate::shortcuts::summary_lines()),
+
+            Some("access") => self.cmd_access(words.next(), words.next()),
+
+            Some("apps") => self.cmd_lines("APP LIFECYCLE", crate::app_lifecycle::lines()),
+
+            Some("pinned") => self.cmd_pinned(words.collect()),
+
+            Some("recent") => self.cmd_recent(),
+
+            Some("startup") => self.cmd_startup(words.collect()),
+
+            Some("search") => {
+                let query = collect_words(words);
+                if query.is_empty() {
+                    self.cmd_lines("SEARCH INDEX", crate::search_index::lines(None));
+                } else {
+                    self.cmd_lines("SEARCH", crate::search_index::lines(Some(&query)));
+                }
+            }
+
+            Some("index") => {
+                crate::search_index::refresh();
+                self.cmd_lines("SEARCH INDEX", crate::search_index::lines(None));
+            }
+
+            Some("drivers") => {
+                crate::drivers::refresh();
+                self.cmd_lines("DRIVERS", crate::drivers::lines());
+            }
+
+            Some("users") => self.cmd_lines("USERS", crate::security::lines()),
+
+            Some("security") => self.cmd_lines("SECURITY", crate::security::lines()),
+
+            Some("pkg") => self.cmd_pkg(words.next(), words.next()),
+
+            Some("proc") => self.cmd_lines("PROCESS MODEL", crate::process_model::status_lines()),
+
+            Some("zombies") => {
+                self.cmd_lines("ZOMBIE POLICY", crate::process_model::zombie_policy_lines())
+            }
+
+            Some("signal") => self.cmd_signal(words.next(), words.next()),
+
+            Some("pgroup") => self.cmd_pgroup(words.next(), words.next()),
+
+            Some("events") => self.cmd_lines("EVENTS", crate::event_bus::lines(12)),
+
+            Some("services") => self.cmd_services(words.next(), words.next()),
+
+            Some("crash") => self.cmd_lines("CRASH DUMP", crate::crashdump::lines()),
+
+            Some("notify") => self.cmd_notify(words.next(), words.next()),
 
             Some("clip") => {
                 let mut text = String::new();
@@ -509,12 +583,35 @@ impl TerminalApp {
             ("uptime", "time since boot"),
             ("usb", "USB controller status"),
             ("devices", "PCI/USB/device registry"),
+            ("drivers", "driver binding + /DEV nodes"),
             ("net", "network stack status"),
+            ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
+            ("http <host> [path]", "build basic HTTP request"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("fsck", "filesystem check summary"),
+            ("fsrepair", "repair standard FS dirs"),
+            ("mounts", "mount/cache/journal status"),
+            ("journal", "filesystem journal tail"),
             ("df", "filesystem free space"),
             ("shortcuts", "configured shortcut keys"),
+            ("access [key on/off]", "accessibility settings"),
+            ("apps", "app lifecycle metadata"),
+            ("pinned [apps...]", "view/set pinned apps"),
+            ("recent", "recent files and commands"),
+            ("startup [apps...]", "view/set startup apps"),
+            ("search <query>", "search indexed files"),
+            ("index", "rebuild desktop search index"),
+            ("users", "user/security status"),
+            ("pkg <op>", "package list/install/remove"),
+            ("proc", "process groups and signals"),
+            ("zombies", "zombie cleanup policy"),
+            ("signal <pid> <sig>", "queue signal to task"),
+            ("pgroup <pid> <grp>", "set process group"),
+            ("events", "event bus tail"),
+            ("services <op>", "service supervisor"),
+            ("crash", "crash dump summary"),
+            ("notify <op>", "notification history/actions"),
             ("clip [text]", "shared clipboard"),
             ("paste", "paste shared clipboard text"),
             ("echo <text>", "print text"),
@@ -600,6 +697,11 @@ impl TerminalApp {
     }
 
     fn cmd_touch(&mut self, path: &str) {
+        if !crate::security::can_write_path(path) {
+            self.set_fg(FG_ERROR);
+            self.print_str("touch: permission denied\n");
+            return;
+        }
         match crate::fat32::create_file(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
@@ -619,6 +721,11 @@ impl TerminalApp {
     }
 
     fn cmd_mkdir(&mut self, path: &str) {
+        if !crate::security::can_write_path(path) {
+            self.set_fg(FG_ERROR);
+            self.print_str("mkdir: permission denied\n");
+            return;
+        }
         match crate::fat32::create_dir(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
@@ -783,6 +890,215 @@ impl TerminalApp {
             self.set_fg(FG_OUTPUT);
             self.print_str(&line);
             self.print_char('\n');
+        }
+    }
+
+    fn cmd_http(&mut self, host: &str, path: &str) {
+        match crate::net::http_get(host, path) {
+            Ok(request) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("HTTP REQUEST\n");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&request);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("http: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err);
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_access(&mut self, key: Option<&str>, value: Option<&str>) {
+        match (key, value.and_then(parse_bool_word)) {
+            (Some(key), Some(value)) => {
+                if crate::accessibility::set(key, value) {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("updated accessibility setting\n");
+                } else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("access: unknown key\n");
+                }
+            }
+            (None, _) => self.cmd_lines("ACCESSIBILITY", crate::accessibility::lines()),
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str(
+                    "usage: access <keyboard_nav|focus_rings|large_text|reduced_motion> <on|off>\n",
+                );
+            }
+        }
+    }
+
+    fn cmd_recent(&mut self) {
+        let mut lines = Vec::new();
+        lines.push(String::from("files:"));
+        lines.extend(crate::app_lifecycle::recent_files());
+        lines.push(String::from("commands:"));
+        lines.extend(crate::app_lifecycle::recent_commands());
+        self.cmd_lines("RECENT", lines);
+    }
+
+    fn cmd_pinned(&mut self, apps: Vec<&str>) {
+        if apps.is_empty() {
+            self.cmd_lines("PINNED APPS", crate::app_lifecycle::pinned_apps());
+            return;
+        }
+        crate::app_lifecycle::set_pinned(apps.iter().map(|app| String::from(*app)).collect());
+        self.set_fg(FG_ACCENT);
+        self.print_str("pinned apps updated\n");
+    }
+
+    fn cmd_startup(&mut self, apps: Vec<&str>) {
+        if apps.is_empty() {
+            self.cmd_lines("STARTUP APPS", crate::app_lifecycle::startup_apps());
+            return;
+        }
+        crate::app_lifecycle::set_startup(apps.iter().map(|app| String::from(*app)).collect());
+        self.set_fg(FG_ACCENT);
+        self.print_str("startup apps updated\n");
+    }
+
+    fn cmd_pkg(&mut self, op: Option<&str>, arg: Option<&str>) {
+        match (op, arg) {
+            (None, _) | (Some("list"), _) => self.cmd_lines("PACKAGES", crate::packages::lines()),
+            (Some("install"), Some(id)) => self.print_result("pkg", crate::packages::install(id)),
+            (Some("remove"), Some(id)) | (Some("uninstall"), Some(id)) => {
+                self.print_result("pkg", crate::packages::uninstall(id))
+            }
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: pkg [list|install <id>|remove <id>]\n");
+            }
+        }
+    }
+
+    fn cmd_signal(&mut self, pid: Option<&str>, signal: Option<&str>) {
+        let Some(pid) = pid.and_then(parse_usize) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: signal <pid> <term|int|usr1>\n");
+            return;
+        };
+        let Some(signal) = signal.and_then(crate::process_model::Signal::parse) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: signal <pid> <term|int|usr1>\n");
+            return;
+        };
+        match crate::scheduler::send_signal(pid, signal) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("signal queued\n");
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("signal: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_pgroup(&mut self, pid: Option<&str>, group: Option<&str>) {
+        let Some(pid) = pid.and_then(parse_usize) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: pgroup <pid> <group>\n");
+            return;
+        };
+        let Some(group) = group.and_then(parse_usize) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: pgroup <pid> <group>\n");
+            return;
+        };
+        match crate::scheduler::set_process_group(pid, group) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("process group updated\n");
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("pgroup: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_services(&mut self, op: Option<&str>, name: Option<&str>) {
+        match (op, name) {
+            (None, _) | (Some("list"), _) => self.cmd_lines("SERVICES", crate::services::lines()),
+            (Some("start"), Some(name)) => self.print_bool("service", crate::services::start(name)),
+            (Some("stop"), Some(name)) => self.print_bool("service", crate::services::stop(name)),
+            (Some("fail"), Some(name)) => self.print_bool("service", crate::services::fail(name)),
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: services [list|start <name>|stop <name>|fail <name>]\n");
+            }
+        }
+    }
+
+    fn cmd_notify(&mut self, op: Option<&str>, arg: Option<&str>) {
+        match (op, arg) {
+            (None, _) | (Some("history"), _) => self.cmd_lines(
+                "NOTIFICATION HISTORY",
+                crate::notifications::history_lines(),
+            ),
+            (Some("dismiss"), Some(id)) => {
+                let ok = parse_u64(id)
+                    .map(crate::notifications::dismiss)
+                    .unwrap_or(false);
+                self.print_bool("notify", ok);
+            }
+            (Some("group"), Some(title)) => {
+                let count = crate::notifications::dismiss_group(title);
+                self.set_fg(FG_ACCENT);
+                self.print_str("dismissed ");
+                self.print_u64(count as u64);
+                self.print_str(" notification(s)\n");
+            }
+            (Some("clear"), _) => {
+                crate::notifications::clear();
+                self.set_fg(FG_ACCENT);
+                self.print_str("notifications cleared\n");
+            }
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: notify [history|dismiss <id>|group <title>|clear]\n");
+            }
+        }
+    }
+
+    fn print_result(&mut self, prefix: &str, result: Result<(), &'static str>) {
+        match result {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str(prefix);
+                self.print_str(": ok\n");
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str(prefix);
+                self.print_str(": ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err);
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn print_bool(&mut self, prefix: &str, ok: bool) {
+        if ok {
+            self.set_fg(FG_ACCENT);
+            self.print_str(prefix);
+            self.print_str(": ok\n");
+        } else {
+            self.set_fg(FG_ERROR);
+            self.print_str(prefix);
+            self.print_str(": not found\n");
         }
     }
 
@@ -1149,6 +1465,42 @@ fn parse_usize(input: &str) -> Option<usize> {
         out = out.checked_mul(10)?.checked_add((b - b'0') as usize)?;
     }
     Some(out)
+}
+
+fn parse_u64(input: &str) -> Option<u64> {
+    if input.is_empty() {
+        return None;
+    }
+    let mut out = 0u64;
+    for b in input.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        out = out.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+    }
+    Some(out)
+}
+
+fn parse_bool_word(input: &str) -> Option<bool> {
+    match input {
+        "on" | "1" | "true" | "yes" => Some(true),
+        "off" | "0" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+fn collect_words<'a, I>(words: I) -> String
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut out = String::new();
+    for word in words {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 fn normalize_path(path: &str) -> String {

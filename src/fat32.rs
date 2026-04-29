@@ -26,6 +26,7 @@ pub enum FsError {
     NotDirectory,
     NotEmpty,
     NotFound,
+    PermissionDenied,
     UnsupportedName,
 }
 
@@ -39,6 +40,7 @@ impl FsError {
             FsError::NotDirectory => "not a directory",
             FsError::NotEmpty => "directory not empty",
             FsError::NotFound => "not found",
+            FsError::PermissionDenied => "permission denied",
             FsError::UnsupportedName => "invalid name",
         }
     }
@@ -797,6 +799,7 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
 }
 
 pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    crate::fs_hardening::journal_operation("safe-write", path);
     let (parent, name) = split_parent_and_name(path)?;
     let mut tmp = parent.clone();
     if !tmp.ends_with('/') {

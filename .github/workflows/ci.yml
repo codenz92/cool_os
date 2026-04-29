@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Rust toolchain
+        run: rustup show
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Headless boot smoke
+        run: make smoke
+
+      - name: USB init smoke
+        run: make smoke-usb-init

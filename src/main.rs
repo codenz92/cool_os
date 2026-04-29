@@ -4,19 +4,25 @@
 
 extern crate alloc;
 
+mod accessibility;
 mod acpi;
 mod allocator;
+mod app_lifecycle;
 mod app_metadata;
 mod apps;
 mod ata;
 mod boot_splash;
 mod branding;
 mod clipboard;
+mod crashdump;
 mod desktop_settings;
 mod device_registry;
+mod drivers;
 mod elf;
+mod event_bus;
 mod fat32;
 mod framebuffer;
+mod fs_hardening;
 mod gdt;
 mod interrupts;
 mod keyboard;
@@ -25,9 +31,14 @@ mod memory;
 mod mouse;
 mod net;
 mod notifications;
+mod packages;
 mod pci;
+mod process_model;
 mod rtc;
 mod scheduler;
+mod search_index;
+mod security;
+mod services;
 mod shortcuts;
 mod syscall;
 mod usb;
@@ -130,9 +141,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     allocator::init_heap(&mut mapper, &mut heap_frame_allocator).expect("heap init failed");
     boot_splash::show("allocating heap", 7, boot_splash::BOOT_PROGRESS_TOTAL);
     klog::init();
+    fs_hardening::init();
+    event_bus::emit("boot", "heap", "kernel heap online");
+    security::init();
+    app_lifecycle::init();
+    packages::init();
+    accessibility::load_from_disk();
     device_registry::refresh_pci();
-    acpi::init();
+    drivers::init();
+    acpi::init(
+        boot_info.rsdp_addr.as_ref().copied(),
+        phys_mem_offset.as_u64(),
+    );
     net::init();
+    services::init();
+    search_index::refresh();
 
     // Build a fresh allocator starting after the frames consumed by the heap
     // (the heap allocator's `next` counter tells us how many frames it used).
@@ -154,6 +177,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // with USER_ACCESSIBLE in their private PML4.
     unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
     boot_splash::show("enabling user pages", 10, boot_splash::BOOT_PROGRESS_TOTAL);
+
+    // USB probing needs heap/VMM/interrupts, but it should not be gated on the
+    // scheduler or first desktop frame. Running it here keeps headless device
+    // smoke tests deterministic even as later shell setup grows more complex.
+    usb::init();
+    let _ = klog::flush_to_disk();
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
     boot_splash::show("starting scheduler", 11, boot_splash::BOOT_PROGRESS_TOTAL);
@@ -187,11 +216,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     wm::init();
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
     wm::compose_if_needed();
-
-    // xHCI probe runs after the first desktop frame so the splash doesn't linger
-    // on a near-complete stage while the compositor draws the initial shell.
-    usb::init();
-    let _ = klog::flush_to_disk();
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()
@@ -227,6 +251,7 @@ fn fs_test_task() -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     klog::log("kernel panic");
+    crashdump::record_panic(info);
     klog::dump_to_console();
     crate::vga_buffer::reset_cursor();
     crate::vga_buffer::set_framebuffer_output(true);

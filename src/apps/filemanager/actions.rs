@@ -427,12 +427,14 @@ impl FileManagerApp {
         } else {
             match crate::app_metadata::association_for(&abs, false) {
                 crate::app_metadata::Association::Executable => {
+                    crate::app_lifecycle::record_file(&abs);
                     self.pending_open = Some(FileManagerOpenRequest::Exec(abs));
                 }
                 crate::app_metadata::Association::AppShortcut(app) => {
                     self.pending_open = Some(FileManagerOpenRequest::App(app));
                 }
                 _ => {
+                    crate::app_lifecycle::record_file(&abs);
                     self.pending_open = Some(FileManagerOpenRequest::File(abs));
                 }
             }
@@ -1261,6 +1263,9 @@ impl FileManagerApp {
     ) -> Result<(), crate::fat32::FsError> {
         if path == "/" || path.eq_ignore_ascii_case(TRASH_PATH) {
             return Err(crate::fat32::FsError::InvalidPath);
+        }
+        if crate::security::is_protected_path(path) {
+            return Err(crate::fat32::FsError::PermissionDenied);
         }
         if is_dir {
             let children = crate::fat32::list_dir(path).ok_or(crate::fat32::FsError::NotFound)?;
