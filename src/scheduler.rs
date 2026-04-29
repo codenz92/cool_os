@@ -419,13 +419,15 @@ pub fn exit_current(code: u64) {
         let sched = SCHEDULER.lock();
         sched.current
     };
+
     crate::vfs::drop_task(task_id);
+    crate::crashdump::record_task_report(task_id, "task exited");
+    crate::notifications::push("Task exited", &format!("pid {} exit {}", task_id, code));
+
     let mut sched = SCHEDULER.lock();
     if let Some(task) = sched.tasks.get_mut(task_id) {
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
-        crate::crashdump::record_task_report(task_id, "task exited");
-        crate::notifications::push("Task exited", &format!("pid {} exit {}", task_id, code));
     }
 }
 
@@ -455,11 +457,13 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         }
     }
 
+    {
+        let mut sched = SCHEDULER.lock();
+        let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
+        task.status = TaskStatus::Exited;
+        task.exit_code = Some(code);
+    }
     crate::vfs::drop_task(task_id);
-    let mut sched = SCHEDULER.lock();
-    let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
-    task.status = TaskStatus::Exited;
-    task.exit_code = Some(code);
     crate::crashdump::record_task_report(task_id, "task killed");
     crate::notifications::push("Task killed", &format!("pid {} exit {}", task_id, code));
     Ok(())
@@ -479,15 +483,17 @@ pub fn send_signal(
             _ => SignalError::InvalidTask,
         });
     }
-    let mut sched = SCHEDULER.lock();
-    let task = sched
-        .tasks
-        .get_mut(task_id)
-        .ok_or(SignalError::InvalidTask)?;
-    if task.status == TaskStatus::Reaped {
-        return Err(SignalError::AlreadyReaped);
+    {
+        let mut sched = SCHEDULER.lock();
+        let task = sched
+            .tasks
+            .get_mut(task_id)
+            .ok_or(SignalError::InvalidTask)?;
+        if task.status == TaskStatus::Reaped {
+            return Err(SignalError::AlreadyReaped);
+        }
+        task.pending_signal = Some(signal);
     }
-    task.pending_signal = Some(signal);
     crate::notifications::push(
         "Signal queued",
         &format!("pid {} {}", task_id, signal.label()),
@@ -563,7 +569,9 @@ pub fn reap_all_exited(parent: usize) -> usize {
 /// Must only be called from the naked timer ISR with all GP registers already
 /// pushed onto the stack and interrupts disabled by the CPU.
 pub unsafe extern "C" fn timer_schedule(current_rsp: usize) -> usize {
-    let mut sched = SCHEDULER.lock();
+    let Some(mut sched) = SCHEDULER.try_lock() else {
+        return current_rsp;
+    };
     if sched.tasks.is_empty() {
         return current_rsp;
     }

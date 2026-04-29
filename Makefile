@@ -94,7 +94,9 @@ smoke: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds 6 \
-		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!"
+		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
+		--expect "[ring3 pid=1] sentinel ok" \
+		--expect "[ring3 pid=2] sentinel ok"
 
 smoke-ui: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -102,17 +104,21 @@ smoke-ui: build
 		--fsimg "$(FSIMG)" \
 		--seconds 6 \
 		--expect "FB 1280x720" \
-		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!"
+		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
+		--expect "[ring3 pid=1] sentinel ok" \
+		--expect "[ring3 pid=2] sentinel ok"
 
 smoke-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(USB_INIT_BIOS)" \
 		--fsimg "$(USB_INIT_FSIMG)" \
 		--usb \
-		--seconds 12 \
+		--seconds 16 \
 		--expect "[xhci] active init ready" \
 		--expect "[input] USB keyboard detected; PS/2 keyboard fallback disabled" \
-		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled"
+		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled" \
+		--expect "[ring3 pid=1] sentinel ok" \
+		--expect "[ring3 pid=2] sentinel ok"
 
 smoke-hotplug-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_hotplug_smoke.py \
