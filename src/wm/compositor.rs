@@ -13,6 +13,7 @@ use crate::apps::{
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
+use crate::keyboard::{Key, KeyInput};
 use crate::wm::window::{Window, TITLE_H};
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -619,6 +620,7 @@ pub struct WindowManager {
 
 impl WindowManager {
     pub fn new() -> Self {
+        desktop_settings::load_from_disk();
         let settings = desktop_settings::snapshot();
         let w = crate::framebuffer::width();
         let h = crate::framebuffer::height();
@@ -1051,11 +1053,132 @@ impl WindowManager {
         }
     }
 
+    pub fn handle_key_input(&mut self, input: KeyInput) {
+        if self.handle_global_shortcut(input) {
+            crate::wm::request_repaint();
+            return;
+        }
+        if let Some(c) = input.legacy_char() {
+            self.handle_key(c);
+        }
+    }
+
+    fn handle_global_shortcut(&mut self, input: KeyInput) -> bool {
+        match input.key {
+            Key::Tab if input.has_alt() => {
+                self.focus_previous_window();
+                true
+            }
+            Key::F4 if input.has_alt() => {
+                if let Some(idx) = self.focused {
+                    self.close_window(idx);
+                    true
+                } else {
+                    false
+                }
+            }
+            Key::F5 => {
+                self.refresh_desktop_state();
+                true
+            }
+            Key::Escape if input.has_ctrl() => {
+                self.start_menu_open = !self.start_menu_open;
+                self.context_menu = None;
+                true
+            }
+            Key::Character('w') | Key::Character('W') if input.has_ctrl() => {
+                if let Some(idx) = self.focused {
+                    self.close_window(idx);
+                    true
+                } else {
+                    false
+                }
+            }
+            Key::Character('r') | Key::Character('R') if input.has_ctrl() => {
+                self.refresh_desktop_state();
+                true
+            }
+            Key::Character('f') | Key::Character('F') if input.has_ctrl() => {
+                let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(self.shadow_width as i32 - 220);
+                let wy = (10 + off).min(taskbar_y - 120);
+                self.launch_file_manager_at("/", wx, wy);
+                self.start_menu_open = false;
+                true
+            }
+            Key::Character('n') | Key::Character('N') if input.has_ctrl() => {
+                let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(self.shadow_width as i32 - 220);
+                let wy = (10 + off).min(taskbar_y - 120);
+                self.launch_app("Terminal", wx, wy);
+                self.start_menu_open = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn focus_previous_window(&mut self) {
+        if self.z_order.is_empty() {
+            self.focused = None;
+            return;
+        }
+        let start = self
+            .focused
+            .and_then(|focused| self.z_order.iter().position(|&idx| idx == focused))
+            .unwrap_or_else(|| self.z_order.len().saturating_sub(1));
+
+        let mut pos = start;
+        for _ in 0..self.z_order.len() {
+            pos = if pos == 0 {
+                self.z_order.len() - 1
+            } else {
+                pos - 1
+            };
+            let candidate = self.z_order[pos];
+            if candidate < self.windows.len() && !self.windows[candidate].window().minimized {
+                self.z_order.remove(pos);
+                self.z_order.push(candidate);
+                self.focused = Some(candidate);
+                self.context_menu = None;
+                self.start_menu_open = false;
+                return;
+            }
+        }
+    }
+
+    fn close_window(&mut self, win_idx: usize) {
+        if win_idx >= self.windows.len() {
+            return;
+        }
+        if self.key_sink_window == Some(win_idx) {
+            self.stop_key_sink();
+        } else if let Some(target) = self.key_sink_window {
+            if target > win_idx {
+                self.key_sink_window = Some(target - 1);
+            }
+        }
+        self.windows.remove(win_idx);
+        self.z_order.retain(|&i| i != win_idx);
+        for z in self.z_order.iter_mut() {
+            if *z > win_idx {
+                *z -= 1;
+            }
+        }
+        self.focused = self.z_order.last().copied();
+        self.drag = None;
+        self.resize = None;
+        self.scroll_drag = None;
+        self.context_menu = None;
+    }
+
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
         // Drain buffered keystrokes.
-        while let Some(c) = crate::keyboard::pop() {
-            self.handle_key(c);
+        while let Some(input) = crate::keyboard::pop_input() {
+            self.handle_key_input(input);
         }
 
         // Drain syscall write() output into the first terminal window.
@@ -1145,39 +1268,31 @@ impl WindowManager {
                     self.z_order.push(win_idx);
                     self.focused = Some(win_idx);
 
-                    let w = self.windows[win_idx].window();
-                    if w.hit_close(mx_i, my_i) {
-                        if self.key_sink_window == Some(win_idx) {
-                            self.stop_key_sink();
-                        } else if let Some(target) = self.key_sink_window {
-                            if target > win_idx {
-                                self.key_sink_window = Some(target - 1);
-                            }
-                        }
-                        self.windows.remove(win_idx);
-                        self.z_order.retain(|&i| i != win_idx);
-                        for z in self.z_order.iter_mut() {
-                            if *z > win_idx {
-                                *z -= 1;
-                            }
-                        }
-                        self.focused = self.z_order.last().copied();
-                        self.drag = None;
-                    } else if w.hit_minimize(mx_i, my_i) {
+                    let hit_close = self.windows[win_idx].window().hit_close(mx_i, my_i);
+                    let hit_minimize = self.windows[win_idx].window().hit_minimize(mx_i, my_i);
+                    let hit_maximize = self.windows[win_idx].window().hit_maximize(mx_i, my_i);
+                    let hit_title = self.windows[win_idx].window().hit_title(mx_i, my_i);
+                    let hit_resize = self.windows[win_idx].window().hit_resize(mx_i, my_i);
+                    let hit_scrollbar = self.windows[win_idx].window().hit_scrollbar(mx_i, my_i);
+
+                    if hit_close {
+                        self.close_window(win_idx);
+                        crate::wm::request_repaint();
+                    } else if hit_minimize {
                         self.windows[win_idx].window_mut().minimize();
                         crate::wm::request_repaint();
-                    } else if w.hit_maximize(mx_i, my_i) {
+                    } else if hit_maximize {
                         let sw = self.shadow_width as i32;
                         let sh = self.shadow_height as i32;
                         self.windows[win_idx].window_mut().maximize(sw, sh);
                         crate::wm::request_repaint();
-                    } else if self.windows[win_idx].window().hit_title(mx_i, my_i) {
+                    } else if hit_title {
                         self.drag = Some(DragState {
                             window: win_idx,
                             off_x: mx_i - self.windows[win_idx].window().x,
                             off_y: my_i - self.windows[win_idx].window().y,
                         });
-                    } else if self.windows[win_idx].window().hit_resize(mx_i, my_i) {
+                    } else if hit_resize {
                         let w = self.windows[win_idx].window();
                         self.resize = Some(ResizeState {
                             window: win_idx,
@@ -1186,7 +1301,7 @@ impl WindowManager {
                             start_mx: mx_i,
                             start_my: my_i,
                         });
-                    } else if self.windows[win_idx].window().hit_scrollbar(mx_i, my_i) {
+                    } else if hit_scrollbar {
                         let w = self.windows[win_idx].window();
                         let view_h = (w.height - TITLE_H).max(0);
                         self.scroll_drag = Some(ScrollDragState {

@@ -252,7 +252,7 @@ extern "C" fn timer_inner(current_rsp: usize) -> usize {
 // ── Keyboard interrupt (IRQ1, vector 33) ─────────────────────────────────────
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+    use pc_keyboard::{layouts, HandleControl, Keyboard, ScancodeSet1};
     use x86_64::instructions::port::Port;
 
     lazy_static! {
@@ -267,26 +267,13 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let scancode: u8 = unsafe { port.read() };
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-        if let Some(key) = keyboard.process_keyevent(key_event) {
+        let code = key_event.code;
+        let state = key_event.state;
+        let decoded = keyboard.process_keyevent(key_event);
+        if crate::keyboard::handle_driver_event(code, state, decoded) {
             // Push to the lock-free queue — never touch WM.lock() from
             // interrupt context (compose() may already hold it).
-            let ch = match key {
-                DecodedKey::Unicode(c) => Some(c),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowUp) => Some('\u{F700}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowDown) => Some('\u{F701}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowLeft) => Some('\u{F702}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowRight) => Some('\u{F703}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::Home) => Some('\u{F704}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::End) => Some('\u{F705}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::PageUp) => Some('\u{F706}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::PageDown) => Some('\u{F707}'),
-                DecodedKey::RawKey(pc_keyboard::KeyCode::Delete) => Some('\u{007F}'),
-                _ => None,
-            };
-            if let Some(c) = ch {
-                crate::keyboard::push(c);
-                crate::wm::request_repaint();
-            }
+            crate::wm::request_repaint();
         }
     }
 

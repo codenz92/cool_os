@@ -12,12 +12,13 @@ layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.16
+# Current state — v1.17
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps, and the shell also exposes desktop icons plus a start menu/taskbar flow.
+apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
+global keyboard shortcuts, and desktop settings that persist to the FAT32 disk.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`:
@@ -49,7 +50,7 @@ FAT32-backed VFS.
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, minimise/maximise/restore, resize grip, close button, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, and clock. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, global shortcuts, persistent settings, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -75,6 +76,23 @@ FAT32-backed VFS.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
+
+### Desktop shortcuts
+
+| Shortcut | Action |
+| :------- | :----- |
+| **Alt+Tab** | Cycle focus to the previous visible window. |
+| **Alt+F4** | Close the focused window. |
+| **F5** | Refresh desktop state and rebuild the wallpaper. |
+| **Ctrl+Esc** | Toggle the start menu. |
+| **Ctrl+W** | Close the focused window. |
+| **Ctrl+F** | Open File Manager at `/`. |
+| **Ctrl+N** | Open Terminal. |
+| **Ctrl+R** | Refresh desktop state and rebuild the wallpaper. |
+
+Display Settings and Personalize write their state to `/CONFIG/DESK.CFG` on
+the FAT32 image, so icon visibility, compact spacing, sort order, and wallpaper
+selection survive reboot.
 
 ### Terminal commands
 
@@ -150,7 +168,8 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
   mouse.rs         PS/2 mouse hardware init and packet decoder
-  keyboard.rs      Lock-free ring buffer — IRQ handler pushes chars, compositor drains
+  keyboard.rs      Modifier-aware lock-free input queue — IRQ/USB handlers push key events,
+                   compositor drains them into global shortcuts or focused apps
   wm/
     mod.rs         Public WM API — request_repaint, compose_if_needed
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
