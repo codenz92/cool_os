@@ -39,6 +39,7 @@ const WORKSPACE_COUNT: usize = 4;
 const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
+const START_MENU_SECTION_H: i32 = 11;
 
 // ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
@@ -767,6 +768,9 @@ pub struct WindowManager {
     desktop_icon_drag: Option<DesktopIconDragState>,
     desktop_select_drag: Option<(i32, i32)>,
     start_menu_open: bool,
+    start_menu_pinned: Vec<String>,
+    start_menu_entries: Vec<StartMenuEntry>,
+    start_menu_widget_line: String,
     notification_center_open: bool,
     launcher: Option<LauncherState>,
     taskbar_menu: Option<TaskbarMenu>,
@@ -844,6 +848,9 @@ impl WindowManager {
             desktop_icon_drag: None,
             desktop_select_drag: None,
             start_menu_open: false,
+            start_menu_pinned: Vec::new(),
+            start_menu_entries: Vec::new(),
+            start_menu_widget_line: String::new(),
             notification_center_open: false,
             launcher: None,
             taskbar_menu: None,
@@ -1186,6 +1193,25 @@ impl WindowManager {
             self.context_menu = None;
             self.taskbar_menu = None;
         }
+    }
+
+    fn toggle_start_menu(&mut self) {
+        if self.start_menu_open {
+            self.start_menu_open = false;
+        } else {
+            self.refresh_start_menu_cache();
+            self.start_menu_open = true;
+        }
+        self.context_menu = None;
+        self.launcher = None;
+        self.taskbar_menu = None;
+        self.notification_center_open = false;
+    }
+
+    fn refresh_start_menu_cache(&mut self) {
+        self.start_menu_pinned = crate::app_lifecycle::pinned_apps();
+        self.start_menu_entries = build_start_menu_entries();
+        self.start_menu_widget_line = start_menu_widget_status_line();
     }
 
     fn handle_launcher_input(&mut self, input: KeyInput) -> bool {
@@ -2195,8 +2221,7 @@ impl WindowManager {
                 true
             }
             Key::Escape if input.has_ctrl() => {
-                self.start_menu_open = !self.start_menu_open;
-                self.context_menu = None;
+                self.toggle_start_menu();
                 true
             }
             Key::Character('w') | Key::Character('W') if input.has_ctrl() => {
@@ -2371,11 +2396,7 @@ impl WindowManager {
         // Start button click — flush left, full height
         let taskbar_click = left_pressed && my_i >= taskbar_y && mx_i < START_BTN_W;
         if taskbar_click {
-            self.start_menu_open = !self.start_menu_open;
-            self.context_menu = None;
-            self.launcher = None;
-            self.taskbar_menu = None;
-            self.notification_center_open = false;
+            self.toggle_start_menu();
             left_press_consumed = true;
             crate::wm::request_repaint();
         }
@@ -2637,7 +2658,7 @@ impl WindowManager {
                 left_press_consumed = true;
                 // Left column — app list rows
                 if mx_i < menu_x + left_w {
-                    let pinned_apps = crate::app_lifecycle::pinned_apps();
+                    let pinned_apps = &self.start_menu_pinned;
                     let item_h = if prefs.compact { 32i32 } else { 40i32 };
                     let items_y = menu_y + left_hdr_h + 8;
                     let srch_x = menu_x + 8;
@@ -2662,10 +2683,11 @@ impl WindowManager {
                     } else if my_i >= items_y && my_i < items_y + item_h * limit as i32 {
                         let item_idx = ((my_i - items_y) / item_h) as usize;
                         if item_idx < limit {
+                            let item = pinned_apps[item_idx].clone();
                             let off = self.windows.len() as i32 * 16;
                             let wx = (10 + off).min(sw as i32 - 200);
                             let wy = (10 + off).min(bar_y - 80);
-                            self.activate_start_item(&pinned_apps[item_idx], wx, wy);
+                            self.activate_start_item(&item, wx, wy);
                             self.start_menu_open = false;
                             crate::wm::request_repaint();
                         }
@@ -2685,7 +2707,7 @@ impl WindowManager {
                     let settings_h = 20i32;
                     let settings_x = banner_x + 56;
                     let settings_y = banner_y + 38;
-                    let link_h = 24i32;
+                    let link_h = 22i32;
                     let links_y = banner_y + banner_h + 8;
                     let sd_w = 96i32;
                     let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
@@ -2714,18 +2736,18 @@ impl WindowManager {
                         self.start_menu_open = false;
                         crate::wm::request_repaint();
                     } else if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
-                        let link_idx = ((my_i - links_y) / link_h) as usize;
-                        let entries = start_menu_entries();
-                        if let Some(entry) = entries.get(link_idx) {
-                            let ly = links_y + link_idx as i32 * link_h;
-                            if ly + link_h <= bar_y - 8 {
-                                let off = self.windows.len() as i32 * 16;
-                                let wx = (10 + off).min(sw as i32 - 200);
-                                let wy = (10 + off).min(bar_y - 80);
-                                self.activate_launcher_kind(&entry.kind, wx, wy);
-                                self.start_menu_open = false;
-                                crate::wm::request_repaint();
-                            }
+                        let entries = &self.start_menu_entries;
+                        let max_h = bar_y - links_y - 8;
+                        if let Some(entry_idx) =
+                            start_menu_entry_at(entries, my_i - links_y, link_h, max_h)
+                        {
+                            let kind = entries[entry_idx].kind.clone();
+                            let off = self.windows.len() as i32 * 16;
+                            let wx = (10 + off).min(sw as i32 - 200);
+                            let wy = (10 + off).min(bar_y - 80);
+                            self.activate_launcher_kind(&kind, wx, wy);
+                            self.start_menu_open = false;
+                            crate::wm::request_repaint();
                         }
                     }
                 }
@@ -3348,7 +3370,7 @@ impl WindowManager {
 
                 let item_h = if prefs.compact { 32i32 } else { 40i32 };
                 let items_y = menu_y + left_hdr_h + 8;
-                let pinned_apps = crate::app_lifecycle::pinned_apps();
+                let pinned_apps = &self.start_menu_pinned;
                 let pinned_limit = pinned_apps.len().min(start_menu_pinned_limit(
                     menu_h, bottom_h, left_hdr_h, item_h,
                 ));
@@ -3546,12 +3568,30 @@ impl WindowManager {
                 );
                 s_fill(s, sw, settings_x, settings_y, settings_w, 2, ACCENT);
 
-                let link_h = 24i32;
+                let link_h = 22i32;
                 let links_y = banner_y + banner_h + 8;
-                let entries = start_menu_entries();
+                let entries = &self.start_menu_entries;
                 let mut last_section = "";
-                for (i, entry) in entries.iter().enumerate() {
-                    let ly = links_y + i as i32 * link_h;
+                let mut row_y = links_y;
+                for entry in entries.iter() {
+                    if entry.section != last_section {
+                        if row_y + START_MENU_SECTION_H > bar_y - 8 {
+                            break;
+                        }
+                        s_draw_str_small(
+                            s,
+                            sw,
+                            rc_x + 10,
+                            row_y + 2,
+                            entry.section,
+                            0x00_44_77_99,
+                            0x00_00_05_12,
+                            rc_x + rc_w - 4,
+                        );
+                        row_y += START_MENU_SECTION_H;
+                        last_section = entry.section;
+                    }
+                    let ly = row_y;
                     if ly + link_h > bar_y - 8 {
                         break;
                     }
@@ -3562,25 +3602,12 @@ impl WindowManager {
                         s_fill(s, sw, rc_x, ly, rc_w, link_h - 1, link_bg);
                         s_fill(s, sw, rc_x, ly + 6, 2, link_h - 13, ACCENT);
                     }
-                    if entry.section != last_section {
-                        s_draw_str_small(
-                            s,
-                            sw,
-                            rc_x + 10,
-                            ly + 2,
-                            entry.section,
-                            0x00_44_77_99,
-                            link_bg,
-                            rc_x + rc_w - 4,
-                        );
-                        last_section = entry.section;
-                    }
                     let glyph = launcher_kind_glyph(&entry.kind);
                     s_draw_str_small(
                         s,
                         sw,
                         rc_x + 10,
-                        ly + 8,
+                        ly + 7,
                         glyph,
                         launcher_kind_accent(&entry.kind),
                         link_bg,
@@ -3590,7 +3617,7 @@ impl WindowManager {
                         s,
                         sw,
                         rc_x + 34,
-                        ly + 8,
+                        ly + 7,
                         &entry.label,
                         if is_hov { WHITE } else { 0x00_88_CC_FF },
                         link_bg,
@@ -3600,12 +3627,13 @@ impl WindowManager {
                         s,
                         sw,
                         rc_x + rc_w - 68,
-                        ly + 8,
+                        ly + 7,
                         &entry.detail,
                         0x00_44_77_99,
                         link_bg,
                         rc_x + rc_w - 4,
                     );
+                    row_y += link_h;
                 }
 
                 if prefs.show_widgets {
@@ -3616,6 +3644,7 @@ impl WindowManager {
                         banner_y + 62,
                         (banner_w - 66).max(64),
                         16,
+                        &self.start_menu_widget_line,
                     );
                 }
             }
@@ -6443,7 +6472,7 @@ fn settings_action(page: &str) -> String {
     action
 }
 
-fn start_menu_entries() -> Vec<StartMenuEntry> {
+fn build_start_menu_entries() -> Vec<StartMenuEntry> {
     let prefs = crate::app_lifecycle::start_menu_prefs();
     let mut out = Vec::new();
     if prefs.show_recent {
@@ -6517,6 +6546,39 @@ fn start_menu_entries() -> Vec<StartMenuEntry> {
 
 fn start_menu_pinned_limit(menu_h: i32, bottom_h: i32, left_hdr_h: i32, item_h: i32) -> usize {
     ((menu_h - bottom_h - left_hdr_h - item_h - 18).max(0) / item_h.max(1)) as usize
+}
+
+fn start_menu_entry_at(
+    entries: &[StartMenuEntry],
+    rel_y: i32,
+    item_h: i32,
+    max_h: i32,
+) -> Option<usize> {
+    if rel_y < 0 {
+        return None;
+    }
+    let mut y = 0i32;
+    let mut last_section = "";
+    for (idx, entry) in entries.iter().enumerate() {
+        if entry.section != last_section {
+            if y + START_MENU_SECTION_H > max_h {
+                return None;
+            }
+            if rel_y >= y && rel_y < y + START_MENU_SECTION_H {
+                return None;
+            }
+            y += START_MENU_SECTION_H;
+            last_section = entry.section;
+        }
+        if y + item_h > max_h {
+            return None;
+        }
+        if rel_y >= y && rel_y < y + item_h {
+            return Some(idx);
+        }
+        y += item_h;
+    }
+    None
 }
 
 fn start_item_kind(item: &str) -> LauncherMatchKind {
@@ -6621,10 +6683,7 @@ fn ctrl_number_slot(c: char) -> Option<usize> {
     }
 }
 
-fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32) {
-    let bg = 0x00_00_05_12;
-    s_fill(s, sw, x, y, w, h, bg);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_00_33_66);
+fn start_menu_widget_status_line() -> String {
     let mut line = String::new();
     if let Some(stats) = crate::fat32::stats() {
         line.push_str("disk ");
@@ -6637,11 +6696,18 @@ fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: 
     line.push_str(if crate::net::protocol_lines().is_empty() {
         "idle"
     } else {
-        "ready"
+        "ok"
     });
-    line.push_str("  jobs ");
+    line.push_str("  job ");
     push_decimal(&mut line, crate::jobs::recent(6).len() as u64);
-    s_draw_str_small(s, sw, x + 6, y + 5, &line, 0x00_66_AA_DD, bg, x + w - 6);
+    line
+}
+
+fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, line: &str) {
+    let bg = 0x00_00_05_12;
+    s_fill(s, sw, x, y, w, h, bg);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_00_33_66);
+    s_draw_str_small(s, sw, x + 6, y + 5, line, 0x00_66_AA_DD, bg, x + w - 6);
 }
 
 fn file_name(path: &str) -> String {
