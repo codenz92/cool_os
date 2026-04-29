@@ -377,6 +377,73 @@ pub fn installed_app_manifests() -> Vec<AppManifest> {
     manifests
 }
 
+pub fn validate_installed_manifests() -> Result<usize, &'static str> {
+    let Some(dirs) = crate::vfs::vfs_list_dir("/APPS") else {
+        return Err("missing /APPS");
+    };
+    let mut count = 0usize;
+    for dir in dirs.iter().filter(|entry| entry.is_dir).take(64) {
+        let mut path = String::from("/APPS/");
+        path.push_str(&dir.name);
+        path.push_str("/APP.CFG");
+        let Some(bytes) = crate::vfs::vfs_read_file(&path) else {
+            return Err("missing APP.CFG");
+        };
+        let text = core::str::from_utf8(&bytes).map_err(|_| "manifest is not utf8")?;
+        validate_manifest_text(text)?;
+        let command = manifest_value(text, "command").ok_or("missing command")?;
+        if !command.eq_ignore_ascii_case(&dir.name) {
+            return Err("manifest command mismatch");
+        }
+        count += 1;
+    }
+    if count < APPS.len() {
+        return Err("missing built-in manifests");
+    }
+    Ok(count)
+}
+
+pub fn validate_manifest_text(text: &str) -> Result<(), &'static str> {
+    let id = manifest_value(text, "id").ok_or("missing id")?;
+    let name = manifest_value(text, "name").ok_or("missing name")?;
+    let command = manifest_value(text, "command").ok_or("missing command")?;
+    let icon = manifest_value(text, "icon").ok_or("missing icon")?;
+    let category = manifest_value(text, "category").ok_or("missing category")?;
+    let permission = manifest_value(text, "permission").ok_or("missing permission")?;
+
+    if !id.starts_with("app.") || !safe_manifest_token(id, true) {
+        return Err("invalid id");
+    }
+    if name.len() > 32 || !safe_manifest_label(name) {
+        return Err("invalid name");
+    }
+    if command.len() > 24 || !safe_manifest_token(command, false) {
+        return Err("invalid command");
+    }
+    if icon.len() > 4 || icon.contains('/') || icon.contains("..") {
+        return Err("invalid icon");
+    }
+    if !APP_CATEGORIES
+        .iter()
+        .any(|known| known.label().eq_ignore_ascii_case(category))
+    {
+        return Err("invalid category");
+    }
+    if permission.len() > 32 || !safe_manifest_token(permission, false) {
+        return Err("invalid permission");
+    }
+    if let Some(associations) = manifest_value(text, "associations") {
+        for assoc in associations.split(',').map(str::trim) {
+            if !assoc.is_empty()
+                && (assoc.len() > 12 || assoc.contains('/') || assoc.contains(".."))
+            {
+                return Err("invalid association");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn category_lines() -> Vec<String> {
     let mut lines = Vec::new();
     for category in APP_CATEGORIES {
@@ -435,6 +502,25 @@ fn matches_ignore_ascii(value: &str, options: &[&str]) -> bool {
     options
         .iter()
         .any(|option| value.eq_ignore_ascii_case(option))
+}
+
+fn safe_manifest_label(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains("..")
+        && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+}
+
+fn safe_manifest_token(value: &str, allow_dot: bool) -> bool {
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains("..")
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || byte == b'-'
+                || byte == b'_'
+                || (allow_dot && byte == b'.')
+        })
 }
 
 fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {

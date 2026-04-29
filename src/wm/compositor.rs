@@ -6551,6 +6551,7 @@ fn settings_shortcuts() -> &'static [(&'static str, &'static str)] {
     &[
         ("Display settings", "desktop"),
         ("Accessibility settings", "accessibility"),
+        ("Diagnostics settings", "diagnostics"),
         ("Network settings", "network"),
         ("Storage settings", "storage"),
         ("Log viewer settings", "logs"),
@@ -6616,7 +6617,7 @@ fn build_start_menu_entries() -> Vec<StartMenuEntry> {
         });
     }
 
-    for shortcut in settings_shortcuts().iter().take(6) {
+    for shortcut in settings_shortcuts().iter().take(7) {
         out.push(StartMenuEntry {
             section: "SETTINGS",
             label: String::from(shortcut.0),

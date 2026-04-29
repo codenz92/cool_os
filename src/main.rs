@@ -232,6 +232,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     wm::init();
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
     wm::compose_if_needed();
+    println!(
+        "[ui] ready pinned={}",
+        app_lifecycle::pinned_order_summary()
+    );
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();

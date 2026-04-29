@@ -43,6 +43,10 @@ jobs:
       - name: Boot budget smoke
         run: make smoke-boot-budget
 
+      - name: Convert smoke screenshots to PNG
+        if: failure()
+        run: python3 scripts/ppm_to_png.py target/smoke-artifacts
+
       - name: Upload smoke failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -71,6 +75,9 @@ jobs:
       - name: Framebuffer UI smoke
         run: make smoke-ui
 
+      - name: UI ready-state smoke
+        run: make smoke-ui-ready-state
+
       - name: Framebuffer screendump assertion
         run: make smoke-framebuffer
 
@@ -79,6 +86,10 @@ jobs:
 
       - name: Start menu screenshot smoke
         run: make smoke-start-menu
+
+      - name: Convert UI screenshots to PNG
+        if: failure()
+        run: python3 scripts/ppm_to_png.py target/smoke-artifacts
 
       - name: Upload UI failure artifacts
         if: failure()
@@ -105,6 +116,10 @@ jobs:
 
       - name: USB init smoke
         run: make smoke-usb-init
+
+      - name: Convert USB screenshots to PNG
+        if: failure()
+        run: python3 scripts/ppm_to_png.py target/smoke-artifacts
 
       - name: Upload USB failure artifacts
         if: failure()
@@ -138,6 +153,10 @@ jobs:
 
       - name: QEMU matrix ${{ matrix.target }}
         run: make ${{ matrix.target }}
+
+      - name: Convert matrix screenshots to PNG
+        if: failure()
+        run: python3 scripts/ppm_to_png.py target/smoke-artifacts
 
       - name: Upload matrix failure artifacts
         if: failure()

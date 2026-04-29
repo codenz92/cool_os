@@ -139,6 +139,19 @@ pub fn pinned_apps() -> Vec<String> {
     STATE.lock().pinned_apps.clone()
 }
 
+pub fn pinned_order_summary() -> String {
+    ensure_loaded();
+    let state = STATE.lock();
+    let mut out = String::new();
+    for (idx, app) in state.pinned_apps.iter().enumerate() {
+        if idx > 0 {
+            out.push('|');
+        }
+        out.push_str(app);
+    }
+    out
+}
+
 pub fn startup_apps() -> Vec<String> {
     ensure_loaded();
     STATE.lock().startup_apps.clone()

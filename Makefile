@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-ui-goldens smoke-start-menu smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-start-menu smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -120,6 +120,20 @@ smoke-ui: build
 		--expect "[ring3 pid=2] sentinel ok" \
 		--expect "[boot] desktop ready"
 
+smoke-ui-ready-state: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-esc" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-ready-state.ppm" \
+		--expect-framebuffer-start-menu \
+		--expect "[boot] desktop ready" \
+		--expect "[ui] ready pinned=Terminal|File Manager|System Monitor|Diagnostics|Display Settings|Personalize"
+
 smoke-framebuffer: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
@@ -216,7 +230,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=" \
+		--expect "[selftest] kernel unit checks ok=8 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build

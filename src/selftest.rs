@@ -44,6 +44,18 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "vfs-write-enforcement",
+        vfs_write_enforcement(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
+        "app-manifest-validation",
+        crate::app_metadata::validate_installed_manifests().is_ok(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }
@@ -79,5 +91,39 @@ fn fat32_mutation_roundtrip() -> bool {
     }
     crate::fat32::read_file(path)
         .map(|bytes| bytes.as_slice() == b"selftest\n")
+        .unwrap_or(false)
+}
+
+fn vfs_write_enforcement() -> bool {
+    if !matches!(
+        crate::vfs::vfs_create_file("/CONFIG/SELFTEST.DENY"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return false;
+    }
+    if !matches!(
+        crate::vfs::vfs_safe_write_file("/TMP/../CONFIG/SELFTEST.DENY", b"deny\n"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return false;
+    }
+    if !matches!(
+        crate::vfs::vfs_create_dir("/APPS/SELFTEST.DENY"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return false;
+    }
+
+    let _ = crate::vfs::vfs_create_dir("/TMP");
+    let path = "/TMP/VFS_OK.TXT";
+    match crate::vfs::vfs_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return false,
+    }
+    if crate::vfs::vfs_safe_write_file("/TMP/./VFS_OK.TXT", b"vfs-ok\n").is_err() {
+        return false;
+    }
+    crate::vfs::vfs_read_file(path)
+        .map(|bytes| bytes.as_slice() == b"vfs-ok\n")
         .unwrap_or(false)
 }

@@ -52,6 +52,7 @@ pub fn is_protected_path(path: &str) -> bool {
         || upper.starts_with("/CONFIG/")
         || upper.starts_with("/LOGS/")
         || upper.starts_with("/DEV/")
+        || upper.starts_with("/APPS/")
 }
 
 pub fn can_write_path(path: &str) -> bool {

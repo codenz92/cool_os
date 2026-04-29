@@ -20,19 +20,26 @@ const ACCENT_DIM: u32 = 0x00_00_55_88;
 const LABEL: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 const GOOD: u32 = 0x00_00_FF_AA;
+const TAB_X: usize = 14;
+const TAB_Y: usize = 46;
+const TAB_W: usize = 64;
+const TAB_H: usize = 22;
+const TAB_STEP: usize = 68;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
     Desktop,
     Accessibility,
+    Diagnostics,
     Logs,
     Network,
     Storage,
 }
 
-const SETTINGS_PAGES: [(SettingsPage, &str); 5] = [
+const SETTINGS_PAGES: [(SettingsPage, &str); 6] = [
     (SettingsPage::Desktop, "Desktop"),
     (SettingsPage::Accessibility, "Access"),
+    (SettingsPage::Diagnostics, "Diag"),
     (SettingsPage::Logs, "Logs"),
     (SettingsPage::Network, "Net"),
     (SettingsPage::Storage, "Storage"),
@@ -142,7 +149,7 @@ impl DisplaySettingsApp {
             stride,
             18,
             24,
-            "desktop, logs, network, storage, accessibility",
+            "desktop, diagnostics, logs, network, storage, accessibility",
             MUTED,
         );
         self.draw_page_tabs(stride);
@@ -150,6 +157,7 @@ impl DisplaySettingsApp {
         match self.page {
             SettingsPage::Desktop => self.render_desktop_page(stride, content_h, settings),
             SettingsPage::Accessibility => self.render_accessibility_page(stride, access),
+            SettingsPage::Diagnostics => self.render_diagnostics_page(stride),
             SettingsPage::Logs => self.render_lines_page(
                 stride,
                 "LOGS + PROFILER",
@@ -259,6 +267,80 @@ impl DisplaySettingsApp {
         );
     }
 
+    fn render_diagnostics_page(&mut self, stride: usize) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        let card_w = panel_w.saturating_sub(12) / 2;
+        let stats = crate::wm::compositor::compositor_stats();
+        let service_count = crate::services::lines().len();
+        let config_count = crate::config_store::lines().len().saturating_sub(1);
+        let crash_count = crate::crashdump::lines()
+            .iter()
+            .filter(|line| !line.contains("no crash"))
+            .count();
+
+        self.draw_panel(stride, 16, 82, card_w, 76);
+        self.draw_panel(stride, 28 + card_w, 82, card_w, 76);
+        self.draw_panel(stride, 16, 168, card_w, 86);
+        self.draw_panel(stride, 28 + card_w, 168, card_w, 86);
+        self.draw_panel(stride, 16, 264, panel_w, 96);
+
+        self.put_str(stride, 28, 96, "HEALTH", LABEL);
+        self.put_str(stride, 28, 112, "selftests active at boot", WHITE);
+        let mut crash_line = String::from("crash reports ");
+        push_number(&mut crash_line, crash_count);
+        self.put_str(
+            stride,
+            28,
+            128,
+            &crash_line,
+            if crash_count == 0 { GOOD } else { WHITE },
+        );
+        let mut service_line = String::from("services tracked ");
+        push_number(&mut service_line, service_count);
+        self.put_str(stride, 28, 142, &service_line, MUTED);
+
+        let right_x = 40 + card_w;
+        self.put_str(stride, right_x, 96, "COMPOSITOR", LABEL);
+        let mut fps_line = String::from("fps ");
+        push_number(&mut fps_line, stats.fps as usize);
+        fps_line.push_str("  frames ");
+        push_number(&mut fps_line, stats.frames as usize);
+        self.put_str(stride, right_x, 112, &fps_line, WHITE);
+        let mut damage_line = String::from("damage rows ");
+        push_number(&mut damage_line, stats.damage_rows as usize);
+        self.put_str(stride, right_x, 128, &damage_line, MUTED);
+        let mut pixels_line = String::from("pixels ");
+        push_number(&mut pixels_line, stats.damage_pixels as usize);
+        self.put_str(stride, right_x, 142, &pixels_line, MUTED);
+
+        self.put_str(stride, 28, 182, "CONFIG", LABEL);
+        self.put_str(stride, 28, 198, "/CONFIG validation", WHITE);
+        let mut config_line = String::from("known files ");
+        push_number(&mut config_line, config_count);
+        self.put_str(stride, 28, 214, &config_line, MUTED);
+        self.put_str(stride, 28, 230, "recovery uses temp-write", GOOD);
+
+        self.put_str(stride, right_x, 182, "PACKAGES", LABEL);
+        let manifests = crate::app_metadata::installed_app_manifests();
+        let mut manifest_line = String::from("app manifests ");
+        push_number(&mut manifest_line, manifests.len());
+        self.put_str(stride, right_x, 198, &manifest_line, WHITE);
+        let validation = if crate::app_metadata::validate_installed_manifests().is_ok() {
+            "manifest validation ok"
+        } else {
+            "manifest validation failed"
+        };
+        self.put_str(stride, right_x, 214, validation, GOOD);
+        self.put_str(stride, right_x, 230, "/APPS/*/APP.CFG", MUTED);
+
+        self.put_str(stride, 28, 278, "RECENT EVENTS", LABEL);
+        let mut y = 294usize;
+        for line in crate::event_bus::lines(4).iter() {
+            self.put_str(stride, 28, y, line, WHITE);
+            y += 14;
+        }
+    }
+
     fn render_lines_page(&mut self, stride: usize, title: &str, lines: alloc::vec::Vec<String>) {
         let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
         self.draw_panel(stride, 16, 82, panel_w, 276);
@@ -272,14 +354,28 @@ impl DisplaySettingsApp {
 
     fn draw_page_tabs(&mut self, stride: usize) {
         for (idx, (page, label)) in SETTINGS_PAGES.iter().enumerate() {
-            let x = 18 + idx * 78;
+            let x = TAB_X + idx * TAB_STEP;
             let active = *page == self.page;
-            self.fill_rect(stride, x, 46, 72, 22, if active { ACCENT } else { PANEL });
-            self.draw_rect_border(stride, x, 46, 72, 22, if active { WHITE } else { BORDER });
+            self.fill_rect(
+                stride,
+                x,
+                TAB_Y,
+                TAB_W,
+                TAB_H,
+                if active { ACCENT } else { PANEL },
+            );
+            self.draw_rect_border(
+                stride,
+                x,
+                TAB_Y,
+                TAB_W,
+                TAB_H,
+                if active { WHITE } else { BORDER },
+            );
             self.put_str(
                 stride,
-                x + 8,
-                53,
+                x + 4,
+                TAB_Y + 7,
                 label,
                 if active { 0x00_00_09_18 } else { LABEL },
             );
@@ -287,12 +383,14 @@ impl DisplaySettingsApp {
     }
 
     fn hit_page_tab(&self, lx: i32, ly: i32) -> Option<SettingsPage> {
-        if !(46..68).contains(&ly) {
+        let tab_y = TAB_Y as i32;
+        let tab_h = TAB_H as i32;
+        if !(tab_y..tab_y + tab_h).contains(&ly) {
             return None;
         }
         for (idx, (page, _)) in SETTINGS_PAGES.iter().enumerate() {
-            let x = 18 + idx as i32 * 78;
-            if lx >= x && lx < x + 72 {
+            let x = TAB_X as i32 + idx as i32 * TAB_STEP as i32;
+            if lx >= x && lx < x + TAB_W as i32 {
                 return Some(*page);
             }
         }
@@ -472,6 +570,7 @@ impl DisplaySettingsApp {
 fn page_from_name(name: &str) -> SettingsPage {
     match name.to_ascii_lowercase().as_str() {
         "access" | "accessibility" => SettingsPage::Accessibility,
+        "diag" | "diagnostics" | "health" => SettingsPage::Diagnostics,
         "logs" | "log" | "profiler" => SettingsPage::Logs,
         "net" | "network" => SettingsPage::Network,
         "storage" | "disk" => SettingsPage::Storage,
