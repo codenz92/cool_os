@@ -6,7 +6,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from typing import Callable
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +54,11 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Text to inject through QEMU HMP sendkey before screendump; may include \\n",
+    )
+    parser.add_argument(
+        "--interact-after",
+        default="[boot] desktop ready",
+        help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
     )
     parser.add_argument(
         "--artifact-dir",
@@ -323,6 +330,65 @@ def write_artifacts(args: argparse.Namespace, cmd: list[str], output: str, resul
                 dst.write(src.read())
 
 
+def start_output_reader(proc: subprocess.Popen[bytes]) -> tuple[Callable[[], str], threading.Thread]:
+    chunks: list[str] = []
+    lock = threading.Lock()
+
+    def reader() -> None:
+        if proc.stdout is None:
+            return
+        fd = proc.stdout.fileno()
+        while True:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            text = chunk.decode(errors="replace")
+            with lock:
+                chunks.append(text)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+
+    def output() -> str:
+        with lock:
+            return "".join(chunks)
+
+    return output, thread
+
+
+def output_has_patterns(output: str, patterns: list[str]) -> bool:
+    return all(pattern in output for pattern in patterns)
+
+
+def wait_for_patterns(
+    proc: subprocess.Popen[bytes],
+    get_output: Callable[[], str],
+    patterns: list[str],
+    deadline: float,
+) -> bool:
+    if not patterns:
+        return True
+    while time.time() < deadline:
+        output = get_output()
+        if output_has_patterns(output, patterns):
+            return True
+        if proc.poll() is not None:
+            return output_has_patterns(get_output(), patterns)
+        time.sleep(0.05)
+    return output_has_patterns(get_output(), patterns)
+
+
+def stop_qemu(proc: subprocess.Popen[bytes], reader_thread: threading.Thread) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+    reader_thread.join(timeout=1.0)
+
+
 def main() -> int:
     args = parse_args()
     monitor_socket = None
@@ -342,45 +408,67 @@ def main() -> int:
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
     )
+    get_output, reader_thread = start_output_reader(proc)
+    deadline = time.time() + args.seconds
+    did_interact = False
+    started_at = time.time()
 
     try:
-        output, _ = proc.communicate(timeout=args.seconds)
-        exited_early = True
-    except subprocess.TimeoutExpired:
-        if (args.hmp or args.type_text) and monitor_socket:
+        needs_interaction = bool(args.hmp or args.type_text or args.screendump)
+        if needs_interaction and args.interact_after:
+            if not wait_for_patterns(proc, get_output, [args.interact_after], deadline):
+                stop_qemu(proc, reader_thread)
+                output = get_output()
+                print(
+                    f"missing pre-interaction output: {args.interact_after}",
+                    file=sys.stderr,
+                )
+                write_artifacts(args, cmd, output, "missing-pre-interaction-output")
+                if output:
+                    sys.stdout.write(output)
+                    if not output.endswith("\n"):
+                        sys.stdout.write("\n")
+                return 1
+
+        if needs_interaction and monitor_socket:
             for command in args.hmp:
                 run_monitor_command(monitor_socket, command)
             for text in args.type_text:
                 type_text(monitor_socket, text.replace("\\n", "\n"))
             time.sleep(max(0.0, args.post_hmp_delay))
-        if args.screendump and monitor_socket:
-            request_screendump(monitor_socket, args.screendump)
-        proc.terminate()
-        try:
-            output, _ = proc.communicate(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            output, _ = proc.communicate()
-        exited_early = False
+            if args.screendump:
+                request_screendump(monitor_socket, args.screendump)
+            did_interact = True
+
+        if not wait_for_patterns(proc, get_output, args.expect, deadline):
+            stop_qemu(proc, reader_thread)
+            output = get_output()
+            if output:
+                sys.stdout.write(output)
+                if not output.endswith("\n"):
+                    sys.stdout.write("\n")
+            missing = [pattern for pattern in args.expect if pattern not in output]
+            for pattern in missing:
+                print(f"missing expected output: {pattern}", file=sys.stderr)
+            write_artifacts(args, cmd, output, "missing-output")
+            return 1
+
+        stop_qemu(proc, reader_thread)
+        output = get_output()
+    except Exception:
+        stop_qemu(proc, reader_thread)
+        raise
 
     if output:
         sys.stdout.write(output)
         if not output.endswith("\n"):
             sys.stdout.write("\n")
 
-    if exited_early and proc.returncode not in (0, None):
+    if proc.returncode not in (0, None, -15) and not output_has_patterns(output, args.expect):
         print(f"qemu exited early with status {proc.returncode}", file=sys.stderr)
         write_artifacts(args, cmd, output, f"qemu-exit-{proc.returncode}")
         return proc.returncode or 1
-
-    missing = [pattern for pattern in args.expect if pattern not in output]
-    if missing:
-        for pattern in missing:
-            print(f"missing expected output: {pattern}", file=sys.stderr)
-        write_artifacts(args, cmd, output, "missing-output")
-        return 1
 
     if args.screendump:
         if not os.path.exists(args.screendump):
@@ -416,7 +504,11 @@ def main() -> int:
                 write_artifacts(args, cmd, output, "dialog-framebuffer-failed")
                 return 1
 
-    print(f"smoke ok after {args.seconds:.1f}s", flush=True)
+    elapsed = time.time() - started_at
+    if did_interact:
+        print(f"smoke ok after {elapsed:.1f}s (max {args.seconds:.1f}s)", flush=True)
+    else:
+        print(f"smoke ok after {elapsed:.1f}s", flush=True)
     write_artifacts(args, cmd, output, "ok")
     return 0
 
