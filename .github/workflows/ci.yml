@@ -20,6 +20,8 @@ jobs:
   boot-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SMOKE_BOOT_BUDGET_SECONDS: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -44,6 +46,8 @@ jobs:
   ui-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      SMOKE_FRAMEBUFFER_SECONDS: 18
     steps:
       - name: Checkout
         uses: actions/checkout@v5
