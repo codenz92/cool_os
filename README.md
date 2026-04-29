@@ -61,7 +61,7 @@ FAT32-backed VFS.
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
-| **FAT32 parser** | Read-only. BPB parsing, FAT chain walking, 8.3 filename lookup, directory traversal, cluster→sector mapping. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
+| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, plus create/write/rename/delete/copy helpers. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, and File Manager. |
 | **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, and `/bin/terminal`. The Makefile attaches it to QEMU as the IDE slave. |
@@ -74,7 +74,7 @@ FAT32-backed VFS.
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
-| **File Manager** | Right-click / desktop icon | Browse the FAT32 disk image, navigate folders, and open UTF-8 text files in the Text Viewer. |
+| **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
 
 ### Terminal commands
 
@@ -143,7 +143,7 @@ src/
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
                    SCHEDULER global, timer_schedule, spawn_with_pml4
   ata.rs           ATA PIO driver — LBA28 read_sector, BSY/DRQ polling, nIEN disable
-  fat32.rs         Read-only FAT32 — BPB, FAT chain, 8.3 directory lookup, read_file
+  fat32.rs         FAT32 — BPB, FAT chain, LFN/short-name lookup, read/write/create/rename/delete/copy
 vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem objects,
                     selective child-fd inheritance, vfs_open/vfs_pipe/vfs_read/vfs_write/vfs_close,
                     vfs_shmem_create/vfs_shmem_map
@@ -229,10 +229,11 @@ primary-bus slave (`if=ide,index=1`). The ATA PIO driver targets ports
 0x1F0–0x1F7; it sets nIEN=1 in the Device Control Register (0x3F6) before
 issuing any command so the drive never fires IRQ14. Unused PIC IRQs (including
 IRQ14/15) are masked after PIC initialisation to prevent unhandled interrupt
-vectors from reaching the CPU. The read-only FAT32 layer parses the BPB, walks
-the FAT chain, and resolves 8.3 absolute paths. A thin VFS layer wraps this
-into a 16-slot FD table. Syscalls 5–7 (`open`, `read`, `close`) expose the VFS
-to ring-3 code, and the kernel's `fs-test` task reads `/bin/hello.txt` on boot.
+vectors from reaching the CPU. The FAT32 layer parses the BPB, walks the FAT
+chain, resolves short-name and long-filename absolute paths, and supports the
+shell/file-manager mutation helpers. A thin VFS layer wraps reads into a
+16-slot FD table. Syscalls 5–7 (`open`, `read`, `close`) expose the VFS to
+ring-3 code, and the kernel's `fs-test` task reads `/bin/hello.txt` on boot.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half

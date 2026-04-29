@@ -232,8 +232,9 @@ a write to an unmapped address in one process does not affect the other.
 **Goal:** Programs and data live on disk. The kernel can load files by name.
 
 - [x] Write an ATA PIO driver to read 512-byte sectors from a virtual disk image.
-- [x] Implement a read-only FAT32 parser — BPB parsing, FAT chain walking, 8.3
-      directory traversal, file lookup by absolute path, cluster-to-sector mapping.
+- [x] Implement a FAT32 layer — BPB parsing, FAT chain walking, short-name/LFN
+      directory traversal, file lookup by absolute path, cluster-to-sector mapping,
+      and file-manager mutations for create/write/rename/delete/copy.
 - [x] Expose a VFS layer: `vfs_open(path)`, `vfs_read(fd, buf, len)`, `vfs_close(fd)`.
 - [x] Map VFS operations to syscalls: `sys_open` (5), `sys_read` (6), `sys_close` (7).
 - [x] Build a 64 MiB FAT32 disk image in the Makefile using a host-side `fs-image`
@@ -247,9 +248,10 @@ a write to an unmapped address in one process does not affect the other.
   LBA28 mode with BSY→select→DRQ polling; two independent 10 M-iteration
   timeout loops return `false` without hanging.
 - `src/fat32.rs`: `Bpb::load()` parses the boot sector.  `fat_next()` chases
-  FAT32 chains 4 bytes at a time.  `find_entry()` scans directory clusters,
-  skipping LFN entries.  `read_file(path)` walks `/`-split components top-down
-  and returns `Option<Vec<u8>>`.
+  FAT32 chains 4 bytes at a time.  Directory scanning assembles LFN fragments
+  and falls back to short names. `read_file(path)` walks `/`-split components
+  top-down and returns `Option<Vec<u8>>`; create/write/rename/delete/copy
+  helpers back the desktop shell and File Manager.
 - `src/vfs.rs`: a 16-slot `FdTable` protected by a `spin::Mutex`.  `vfs_open`
   calls `fat32::read_file` and caches the entire file in a heap `Vec`; `vfs_read`
   copies into the caller's buffer with an offset cursor.

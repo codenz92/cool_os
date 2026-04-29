@@ -757,6 +757,18 @@ impl WindowManager {
                     }
                 }
             }
+            FileManagerOpenRequest::Exec(path) => {
+                if let Err(err) = crate::elf::spawn_elf_process(&path) {
+                    if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                        AppWindow::Terminal(t) => Some(t),
+                        _ => None,
+                    }) {
+                        term.print_str("exec failed: ");
+                        term.print_str(err.as_str());
+                        term.print_char('\n');
+                    }
+                }
+            }
             FileManagerOpenRequest::App(app) => {
                 let off = self.windows.len() as i32 * 16;
                 let wx = (10 + off).min(sw as i32 - 220);

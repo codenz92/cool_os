@@ -1,7 +1,8 @@
 /// FAT32 filesystem access.
 ///
-/// Supports 8.3 filenames only. Reads and writes sectors through `crate::ata`
-/// and exposes a small mutation surface for creating empty files and folders.
+/// Reads and writes sectors through `crate::ata`, supports short names plus
+/// FAT long filename entries, and exposes create/write/rename/delete/copy
+/// primitives used by the shell and file manager.
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;

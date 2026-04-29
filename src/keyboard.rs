@@ -132,6 +132,11 @@ fn handle_usb_key_event(code: KeyCode, state: KeyState) {
             DecodedKey::RawKey(KeyCode::ArrowDown) => Some('\u{F701}'),
             DecodedKey::RawKey(KeyCode::ArrowLeft) => Some('\u{F702}'),
             DecodedKey::RawKey(KeyCode::ArrowRight) => Some('\u{F703}'),
+            DecodedKey::RawKey(KeyCode::Home) => Some('\u{F704}'),
+            DecodedKey::RawKey(KeyCode::End) => Some('\u{F705}'),
+            DecodedKey::RawKey(KeyCode::PageUp) => Some('\u{F706}'),
+            DecodedKey::RawKey(KeyCode::PageDown) => Some('\u{F707}'),
+            DecodedKey::RawKey(KeyCode::Delete) => Some('\u{007F}'),
             _ => None,
         };
         if let Some(c) = ch {

@@ -276,6 +276,11 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
                 DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowDown) => Some('\u{F701}'),
                 DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowLeft) => Some('\u{F702}'),
                 DecodedKey::RawKey(pc_keyboard::KeyCode::ArrowRight) => Some('\u{F703}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::Home) => Some('\u{F704}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::End) => Some('\u{F705}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::PageUp) => Some('\u{F706}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::PageDown) => Some('\u{F707}'),
+                DecodedKey::RawKey(pc_keyboard::KeyCode::Delete) => Some('\u{007F}'),
                 _ => None,
             };
             if let Some(c) = ch {
