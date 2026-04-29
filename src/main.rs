@@ -4,23 +4,31 @@
 
 extern crate alloc;
 
+mod acpi;
 mod allocator;
+mod app_metadata;
 mod apps;
 mod ata;
 mod boot_splash;
 mod branding;
+mod clipboard;
 mod desktop_settings;
+mod device_registry;
 mod elf;
 mod fat32;
 mod framebuffer;
 mod gdt;
 mod interrupts;
 mod keyboard;
+mod klog;
 mod memory;
 mod mouse;
+mod net;
+mod notifications;
 mod pci;
 mod rtc;
 mod scheduler;
+mod shortcuts;
 mod syscall;
 mod usb;
 mod userspace;
@@ -121,6 +129,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut heap_frame_allocator).expect("heap init failed");
     boot_splash::show("allocating heap", 7, boot_splash::BOOT_PROGRESS_TOTAL);
+    klog::init();
+    device_registry::refresh_pci();
+    acpi::init();
+    net::init();
 
     // Build a fresh allocator starting after the frames consumed by the heap
     // (the heap allocator's `next` counter tells us how many frames it used).
@@ -171,6 +183,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         boot_splash::BOOT_PROGRESS_TOTAL,
     );
     wm::prepare();
+    shortcuts::load_from_disk();
     wm::init();
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
     wm::compose_if_needed();
@@ -178,6 +191,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // xHCI probe runs after the first desktop frame so the splash doesn't linger
     // on a near-complete stage while the compositor draws the initial shell.
     usb::init();
+    let _ = klog::flush_to_disk();
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()
@@ -212,6 +226,8 @@ fn fs_test_task() -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    klog::log("kernel panic");
+    klog::dump_to_console();
     crate::vga_buffer::reset_cursor();
     crate::vga_buffer::set_framebuffer_output(true);
     println!("{}", info);

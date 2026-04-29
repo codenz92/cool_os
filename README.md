@@ -12,14 +12,16 @@ layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.18
+# Current state — v1.19
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
-global keyboard shortcuts, a task switcher overlay, edge/keyboard window
-snapping, and desktop settings that persist to the FAT32 disk.
+global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
+switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
+session restore, File Manager drag/drop between windows, a shared clipboard,
+notification center, and desktop settings that persist to the FAT32 disk.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`:
@@ -50,21 +52,22 @@ FAT32-backed VFS.
 | :-------- | :------ |
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
-| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, global shortcuts, persistent settings, and clock. |
+| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, notification center, File Manager drag/drop, shared clipboard plumbing, persistent settings, session restore, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>`; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/exited states, records exit codes, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
+| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>`; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/exited/reaped states, records parents and exit codes, supports `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
-| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, plus create/write/rename/delete/copy helpers. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
+| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status foundation, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, and File Manager. |
 | **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, and `/bin/terminal`. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -82,6 +85,8 @@ FAT32-backed VFS.
 
 | Shortcut | Action |
 | :------- | :----- |
+| **Ctrl+Space** | Open launcher/search palette for apps, paths, and commands. |
+| **Ctrl+Alt+M** | Toggle notification center. |
 | **Alt+Tab** | Cycle focus to the previous visible window. |
 | **Alt+F4** | Close the focused window. |
 | **F5** | Refresh desktop state and rebuild the wallpaper. |
@@ -93,9 +98,9 @@ FAT32-backed VFS.
 | **Ctrl+N** | Open Terminal. |
 | **Ctrl+R** | Refresh desktop state and rebuild the wallpaper. |
 
-Display Settings and Personalize write their state to `/CONFIG/DESK.CFG` on
-the FAT32 image, so icon visibility, compact spacing, sort order, and wallpaper
-selection survive reboot.
+Shortcut bindings are loaded from `/CONFIG/SHORTCUT.CFG`. Display Settings and
+Personalize write their state to `/CONFIG/DESK.CFG`, and the compositor writes
+window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 
 ### Terminal commands
 
@@ -106,10 +111,21 @@ selection survive reboot.
 | `exec <path> [args...]` | Load a userspace ELF from disk and spawn it with argv |
 | `ps` | List scheduler tasks, ring, status, and exit codes |
 | `kill <pid>` | Terminate a non-idle task and mark it exited |
+| `wait <pid>` | Reap an exited task and print its exit code |
+| `reap` | Reap all exited tasks visible to the shell |
 | `ipc` | Create a shared pipe and launch the userspace reader/writer demo |
 | `keydemo` | Send fixed-size WM key and click event packets to `/bin/keyecho` over an inherited pipe until `~` closes it |
 | `term` | Launch a userspace terminal as a ring-3 process with pipe-based input (Ctrl+D to exit) |
 | `info` | CPU vendor and heap usage |
+| `devices` | Print the central PCI/USB/system device registry |
+| `net` | Print network adapter/protocol status |
+| `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
+| `log` | Flush and print the kernel log tail |
+| `fsck` | Print FAT32 consistency and root-entry summary |
+| `df` | Print FAT32 used/free/total space |
+| `shortcuts` | Print configured global shortcuts |
+| `clip [text]` | Show clipboard summary or copy text |
+| `paste` | Paste shared clipboard text |
 | `uptime` | Timer ticks and seconds since boot |
 | `clear` | Clear the terminal |
 | `reboot` | Hardware reset |
@@ -164,12 +180,21 @@ src/
                    map_page_in, map_region, switch_to, switch_to_boot, alloc_zeroed_frame
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
-                   SCHEDULER global, timer_schedule, spawn_with_pml4
+                   SCHEDULER global, timer_schedule, spawn_with_pml4, waitpid/reap
   ata.rs           ATA PIO driver — LBA28 read_sector, BSY/DRQ polling, nIEN disable
-  fat32.rs         FAT32 — BPB, FAT chain, LFN/short-name lookup, read/write/create/rename/delete/copy
+  fat32.rs         FAT32 — BPB, FAT chain, LFN/short-name lookup,
+                   read/write/create/rename/delete/copy, safe_write_file, stats/check
 vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem objects,
                     selective child-fd inheritance, vfs_open/vfs_pipe/vfs_read/vfs_write/vfs_close,
                     vfs_shmem_create/vfs_shmem_map
+  klog.rs          Kernel log ring buffer + /LOGS/KERNEL.TXT flushing
+  notifications.rs Desktop notification queue used by USB/task/filesystem events
+  clipboard.rs     Shared text/path clipboard service
+  device_registry.rs Central PCI/USB/system device table
+  net.rs           Network adapter detection/status foundation
+  acpi.rs          Power-control status foundation
+  app_metadata.rs  App/package metadata and file associations
+  shortcuts.rs     /CONFIG/SHORTCUT.CFG global shortcut loader
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
   mouse.rs         PS/2 mouse hardware init and packet decoder

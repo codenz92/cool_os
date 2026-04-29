@@ -87,6 +87,7 @@ impl SysMonApp {
                     crate::scheduler::TaskStatus::Running => {}
                     crate::scheduler::TaskStatus::Blocked => blocked += 1,
                     crate::scheduler::TaskStatus::Exited => exited += 1,
+                    crate::scheduler::TaskStatus::Reaped => {}
                 }
             }
             (sched.tasks.len(), ready, blocked, exited, sched.current)

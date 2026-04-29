@@ -498,6 +498,67 @@ pub struct DirEntryInfo {
     pub size: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FsStats {
+    pub total_clusters: u32,
+    pub free_clusters: u32,
+    pub used_clusters: u32,
+    pub bytes_per_cluster: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FsCheckReport {
+    pub ok: bool,
+    pub root_entries: usize,
+    pub stats: FsStats,
+}
+
+pub fn stats() -> Option<FsStats> {
+    let bpb = Bpb::load()?;
+    let total_entries = bpb.fat_entry_count();
+    let mut free_clusters = 0u32;
+    let mut used_clusters = 0u32;
+    let mut sec = [0u8; SECTOR_SIZE];
+    let entries_per_sector = bpb.bytes_per_sector as usize / 4;
+
+    for sector_index in 0..bpb.sectors_per_fat {
+        if !crate::ata::read_sector(bpb.fat_start_lba() + sector_index, &mut sec) {
+            return None;
+        }
+        for entry_idx in 0..entries_per_sector {
+            let cluster = sector_index * entries_per_sector as u32 + entry_idx as u32;
+            if cluster < 2 || cluster >= total_entries {
+                continue;
+            }
+            let off = entry_idx * 4;
+            let value = u32::from_le_bytes([sec[off], sec[off + 1], sec[off + 2], sec[off + 3]])
+                & FAT_ENTRY_MASK;
+            if value == FAT_FREE {
+                free_clusters += 1;
+            } else {
+                used_clusters += 1;
+            }
+        }
+    }
+
+    Some(FsStats {
+        total_clusters: total_entries.saturating_sub(2),
+        free_clusters,
+        used_clusters,
+        bytes_per_cluster: bpb.sectors_per_cluster as u32 * bpb.bytes_per_sector as u32,
+    })
+}
+
+pub fn check() -> Option<FsCheckReport> {
+    let root_entries = list_dir("/")?.len();
+    let stats = stats()?;
+    Some(FsCheckReport {
+        ok: stats.free_clusters + stats.used_clusters == stats.total_clusters,
+        root_entries,
+        stats,
+    })
+}
+
 pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
     let bpb = Bpb::load()?;
     let cluster = resolve_dir_cluster(&bpb, path).ok()?;
@@ -733,6 +794,30 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
     let data = read_file(src).ok_or(FsError::NotFound)?;
     create_file(dst)?;
     write_file(dst, &data)
+}
+
+pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    let (parent, name) = split_parent_and_name(path)?;
+    let mut tmp = parent.clone();
+    if !tmp.ends_with('/') {
+        tmp.push('/');
+    }
+    tmp.push_str("CWTMP.TMP");
+
+    match delete_file(&tmp) {
+        Ok(()) | Err(FsError::NotFound) => {}
+        Err(err) => return Err(err),
+    }
+    create_file(&tmp)?;
+    write_file(&tmp, data)?;
+    match delete_file(path) {
+        Ok(()) | Err(FsError::NotFound) => {}
+        Err(err) => {
+            let _ = delete_file(&tmp);
+            return Err(err);
+        }
+    }
+    rename(&tmp, &name)
 }
 
 // ── Path + lookup helpers ─────────────────────────────────────────────────────

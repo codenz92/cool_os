@@ -20,6 +20,7 @@
 ///   10 dup(fd) → new fd on success, u64::MAX on failure
 ///   11 shmem_create(len) → id on success, u64::MAX on failure
 ///   12 shmem_map(id) → virtual address on success, u64::MAX on failure
+///   13 waitpid(pid, status_ptr) → pid on success, u64::MAX on failure
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -202,6 +203,7 @@ extern "C" fn syscall_dispatch(
         10 => sys_dup(a1),
         11 => sys_shmem_create(a1),
         12 => sys_shmem_map(a1),
+        13 => sys_waitpid(a1, a2 as *mut u64),
         _ => u64::MAX,
     }
 }
@@ -309,6 +311,19 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
 
 fn sys_close(fd: u64) {
     crate::vfs::vfs_close(fd as usize);
+}
+
+fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
+    let parent = crate::scheduler::current_task_id();
+    match crate::scheduler::waitpid(parent, pid as usize) {
+        Ok(code) => unsafe {
+            if !status_ptr.is_null() {
+                *status_ptr = code;
+            }
+            pid
+        },
+        Err(_) => u64::MAX,
+    }
 }
 
 fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64 {

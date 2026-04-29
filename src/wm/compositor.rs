@@ -3,7 +3,7 @@
 ///
 /// Visual theme: Retro-Futuristic CRT Phosphor Blue
 extern crate alloc;
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
@@ -32,6 +32,12 @@ const EVENT_KIND_KEY_CHAR: u8 = 1;
 const EVENT_KIND_MOUSE_DOWN: u8 = 2;
 const SNAP_EDGE_PX: i32 = 18;
 const TASK_SWITCHER_MS: u64 = 1200;
+const SESSION_PATH: &str = "/CONFIG/SESSION.CFG";
+const SESSION_SAVE_MS: u64 = 1200;
+const MAX_SESSION_WINDOWS: usize = 8;
+const TASKBAR_MENU_W: i32 = 152;
+const TASKBAR_MENU_ROW_H: i32 = 24;
+const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 
 // ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
@@ -495,12 +501,29 @@ struct ScrollDragState {
     track_h: i32,
 }
 
+struct FileDragState {
+    source_window: usize,
+    paths: Vec<String>,
+    cut: bool,
+}
+
 #[derive(Clone, Copy)]
 enum SnapTarget {
     Left,
     Right,
     Bottom,
     Maximize,
+}
+
+struct LauncherState {
+    query: String,
+    selected: usize,
+}
+
+struct TaskbarMenu {
+    window: usize,
+    x: i32,
+    y: i32,
 }
 
 // ── AppWindow ─────────────────────────────────────────────────────────────────
@@ -565,6 +588,18 @@ impl AppWindow {
             fm.handle_dbl_click(lx, ly);
         }
     }
+    pub fn begin_file_drag(&mut self, lx: i32, ly: i32) -> Option<Vec<String>> {
+        match self {
+            AppWindow::FileManager(fm) => fm.drag_paths_at(lx, ly),
+            _ => None,
+        }
+    }
+    pub fn drop_file_paths(&mut self, paths: Vec<String>, cut: bool) -> bool {
+        match self {
+            AppWindow::FileManager(fm) => fm.drop_paths(paths, cut),
+            _ => false,
+        }
+    }
     pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
         match self {
             AppWindow::FileManager(fm) => fm.take_open_request(),
@@ -605,6 +640,7 @@ pub struct WindowManager {
     drag: Option<DragState>,
     resize: Option<ResizeState>,
     scroll_drag: Option<ScrollDragState>,
+    file_drag: Option<FileDragState>,
     prev_left: bool,
     prev_right: bool,
     context_menu: Option<ContextMenu>,
@@ -614,6 +650,12 @@ pub struct WindowManager {
     icon_selected: Option<usize>,
     pressed_icon: Option<usize>,
     start_menu_open: bool,
+    notification_center_open: bool,
+    launcher: Option<LauncherState>,
+    taskbar_menu: Option<TaskbarMenu>,
+    session_ready: bool,
+    session_dirty: bool,
+    last_session_save_tick: u64,
     last_click_tick: u64,
     last_click_window: Option<usize>,
     last_click_x: i32,
@@ -649,7 +691,7 @@ impl WindowManager {
             crate::boot_splash::BOOT_PROGRESS_TOTAL,
         );
 
-        WindowManager {
+        let mut wm = WindowManager {
             windows: Vec::new(),
             z_order: Vec::new(),
             focused: None,
@@ -658,6 +700,7 @@ impl WindowManager {
             drag: None,
             resize: None,
             scroll_drag: None,
+            file_drag: None,
             prev_left: false,
             prev_right: false,
             context_menu: None,
@@ -667,6 +710,12 @@ impl WindowManager {
             icon_selected: None,
             pressed_icon: None,
             start_menu_open: false,
+            notification_center_open: false,
+            launcher: None,
+            taskbar_menu: None,
+            session_ready: false,
+            session_dirty: false,
+            last_session_save_tick: 0,
             last_click_tick: 0,
             last_click_window: None,
             last_click_x: 0,
@@ -678,7 +727,13 @@ impl WindowManager {
             blit_scratch: alloc::vec![0u8; w * 3],
             wallpaper,
             wallpaper_preset: settings.wallpaper,
+        };
+        wm.restore_session();
+        if wm.windows.is_empty() {
+            wm.add_window(AppWindow::Terminal(TerminalApp::new(24, 24)));
         }
+        wm.session_ready = true;
+        wm
     }
 
     pub fn add_window(&mut self, w: AppWindow) {
@@ -686,6 +741,110 @@ impl WindowManager {
         self.windows.push(w);
         self.z_order.push(idx);
         self.focused = Some(idx);
+        self.notify_session_changed();
+    }
+
+    fn notify_session_changed(&mut self) {
+        if self.session_ready {
+            self.session_dirty = true;
+        }
+    }
+
+    fn maybe_save_session(&mut self, ticks: u64) {
+        if !self.session_ready || !self.session_dirty {
+            return;
+        }
+        let interval = crate::interrupts::ticks_for_millis(SESSION_SAVE_MS);
+        if self.last_session_save_tick != 0
+            && ticks.wrapping_sub(self.last_session_save_tick) < interval
+        {
+            return;
+        }
+        self.save_session();
+        self.session_dirty = false;
+        self.last_session_save_tick = ticks;
+    }
+
+    fn save_session(&self) {
+        let _ = crate::fat32::create_dir("/CONFIG");
+        let mut data = String::new();
+        for window in self.windows.iter().take(MAX_SESSION_WINDOWS) {
+            let win = window.window();
+            data.push_str(win.title);
+            data.push('|');
+            push_i32_decimal(&mut data, win.x);
+            data.push('|');
+            push_i32_decimal(&mut data, win.y);
+            data.push('|');
+            push_i32_decimal(&mut data, win.width);
+            data.push('|');
+            push_i32_decimal(&mut data, win.height);
+            data.push('|');
+            if let AppWindow::FileManager(fm) = window {
+                data.push_str(fm.current_path());
+            }
+            data.push('\n');
+        }
+        let _ = crate::fat32::safe_write_file(SESSION_PATH, data.as_bytes());
+    }
+
+    fn restore_session(&mut self) {
+        let Some(bytes) = crate::fat32::read_file(SESSION_PATH) else {
+            return;
+        };
+        let Ok(text) = core::str::from_utf8(&bytes) else {
+            return;
+        };
+
+        let mut restored = 0usize;
+        for line in text.lines() {
+            if restored >= MAX_SESSION_WINDOWS {
+                break;
+            }
+            let mut parts = line.split('|');
+            let title = parts.next().unwrap_or("");
+            let Some(x) = parts.next().and_then(parse_i32_field) else {
+                continue;
+            };
+            let Some(y) = parts.next().and_then(parse_i32_field) else {
+                continue;
+            };
+            let Some(width) = parts.next().and_then(parse_i32_field) else {
+                continue;
+            };
+            let Some(height) = parts.next().and_then(parse_i32_field) else {
+                continue;
+            };
+            let extra = parts.next().unwrap_or("");
+            let before = self.windows.len();
+            let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+            let screen_w = self.shadow_width as i32;
+            let x = x.clamp(-screen_w + 80, screen_w - 80);
+            let y = y.clamp(0, taskbar_y.saturating_sub(40));
+            let width = width.clamp(180, self.shadow_width as i32);
+            let height = height.clamp(TITLE_H + 80, taskbar_y.max(TITLE_H + 80));
+
+            match canonical_app_title(title) {
+                "File Manager" => {
+                    let dir = if extra.is_empty() { "/" } else { extra };
+                    self.launch_file_manager_at(dir, x, y);
+                }
+                "Terminal" | "System Monitor" | "Text Viewer" | "Color Picker"
+                | "Display Settings" | "Personalize" => self.launch_app(title, x, y),
+                _ => {}
+            }
+
+            if self.windows.len() > before {
+                let idx = self.windows.len() - 1;
+                self.windows[idx]
+                    .window_mut()
+                    .set_bounds(x, y, width, height);
+                restored += 1;
+            }
+        }
+        if restored > 0 {
+            crate::klog::log_owned(format!("desktop restored {} window(s)", restored));
+        }
     }
 
     fn sync_desktop_settings(&mut self) {
@@ -741,6 +900,180 @@ impl WindowManager {
             FileManagerApp::new_at_path(wx, wy, dir)
         };
         self.add_window(AppWindow::FileManager(app));
+    }
+
+    fn focus_window(&mut self, win_idx: usize) {
+        if win_idx >= self.windows.len() {
+            return;
+        }
+        if self.windows[win_idx].is_minimized() {
+            self.windows[win_idx].window_mut().restore();
+        }
+        if let Some(z_pos) = self.z_order.iter().position(|&i| i == win_idx) {
+            self.z_order.remove(z_pos);
+        }
+        self.z_order.push(win_idx);
+        self.focused = Some(win_idx);
+    }
+
+    fn toggle_launcher(&mut self) {
+        if self.launcher.is_some() {
+            self.launcher = None;
+        } else {
+            self.launcher = Some(LauncherState {
+                query: String::new(),
+                selected: 0,
+            });
+            self.start_menu_open = false;
+            self.context_menu = None;
+            self.taskbar_menu = None;
+        }
+    }
+
+    fn handle_launcher_input(&mut self, input: KeyInput) -> bool {
+        if self.launcher.is_none() {
+            return false;
+        }
+
+        let mut activate = false;
+        let mut close = false;
+        if let Some(state) = self.launcher.as_mut() {
+            match input.key {
+                Key::Escape => close = true,
+                Key::Backspace => {
+                    state.query.pop();
+                    state.selected = 0;
+                }
+                Key::ArrowUp => {
+                    state.selected = state.selected.saturating_sub(1);
+                }
+                Key::ArrowDown => {
+                    let count = launcher_matches(&state.query).len();
+                    if count > 0 {
+                        state.selected = (state.selected + 1).min(count - 1);
+                    }
+                }
+                Key::Enter => activate = true,
+                Key::Space if !input.has_ctrl() && !input.has_alt() => {
+                    state.query.push(' ');
+                    state.selected = 0;
+                }
+                Key::Character(c) if !input.has_ctrl() && !input.has_alt() => {
+                    if c >= ' ' && c != '\u{7f}' {
+                        state.query.push(c);
+                        state.selected = 0;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if close {
+            self.launcher = None;
+            return true;
+        }
+        if activate {
+            self.activate_launcher_selection();
+        }
+        true
+    }
+
+    fn activate_launcher_selection(&mut self) {
+        let Some(state) = self.launcher.as_ref() else {
+            return;
+        };
+        let matches = launcher_matches(&state.query);
+        if matches.is_empty() {
+            return;
+        }
+        let entry = matches[state.selected.min(matches.len() - 1)];
+        self.launcher = None;
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let off = self.windows.len() as i32 * 16;
+        let wx = (16 + off).min(self.shadow_width as i32 - 220);
+        let wy = (16 + off).min(taskbar_y - 120);
+
+        match entry.kind {
+            crate::app_metadata::LauncherKind::App(app) => self.launch_app(app, wx, wy),
+            crate::app_metadata::LauncherKind::Path(path) => {
+                self.open_associated_path(path, wx, wy);
+            }
+            crate::app_metadata::LauncherKind::Command(command) => {
+                self.run_terminal_command(command);
+            }
+        }
+    }
+
+    fn open_associated_path(&mut self, path: &str, wx: i32, wy: i32) {
+        if crate::fat32::list_dir(path).is_some() {
+            self.launch_file_manager_at(path, wx, wy);
+            return;
+        }
+        match crate::app_metadata::association_for(path, false) {
+            crate::app_metadata::Association::Executable => {
+                if let Err(err) = crate::elf::spawn_elf_process(path) {
+                    self.print_to_terminal("exec failed: ");
+                    self.print_to_terminal(err.as_str());
+                    self.print_to_terminal("\n");
+                }
+            }
+            crate::app_metadata::Association::AppShortcut(app) => self.launch_app(app, wx, wy),
+            crate::app_metadata::Association::Text | crate::app_metadata::Association::Unknown => {
+                match TextViewerApp::open_file(wx, wy, path) {
+                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
+                    Err(err) => {
+                        self.print_to_terminal("open failed: ");
+                        self.print_to_terminal(err);
+                        self.print_to_terminal("\n");
+                    }
+                }
+            }
+            crate::app_metadata::Association::Directory => {
+                self.launch_file_manager_at(path, wx, wy)
+            }
+        }
+    }
+
+    fn print_to_terminal(&mut self, msg: &str) {
+        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+            AppWindow::Terminal(t) => Some(t),
+            _ => None,
+        }) {
+            term.print_str(msg);
+        }
+    }
+
+    fn run_terminal_command(&mut self, command: &str) {
+        let mut idx = self
+            .windows
+            .iter()
+            .position(|w| matches!(w, AppWindow::Terminal(_)));
+        if idx.is_none() {
+            let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+            let off = self.windows.len() as i32 * 16;
+            let wx = (16 + off).min(self.shadow_width as i32 - 220);
+            let wy = (16 + off).min(taskbar_y - 120);
+            self.launch_app("Terminal", wx, wy);
+            idx = self.windows.len().checked_sub(1);
+        }
+        if let Some(win_idx) = idx {
+            self.focus_window(win_idx);
+            for c in command.chars() {
+                self.windows[win_idx].handle_key(c);
+            }
+            self.windows[win_idx].handle_key('\n');
+        }
+    }
+
+    fn toggle_notification_center(&mut self) {
+        self.notification_center_open = !self.notification_center_open;
+        if self.notification_center_open {
+            crate::notifications::mark_all_read();
+            self.launcher = None;
+            self.start_menu_open = false;
+            self.context_menu = None;
+            self.taskbar_menu = None;
+        }
     }
 
     fn consume_window_open_request(&mut self, win_idx: usize, sw: usize, taskbar_y: i32) {
@@ -837,6 +1170,80 @@ impl WindowManager {
         self.desktop_icons()
             .iter()
             .position(|icon| icon.hit(px, py))
+    }
+
+    fn taskbar_button_hit(&self, px: i32, py: i32, sw: i32, taskbar_y: i32) -> Option<usize> {
+        let show_desktop_x = sw - TASKBAR_CLOCK_W - SHOW_DESKTOP_W - 8;
+        let taskbar_btn_x0 = START_BTN_W + 8;
+        if px < taskbar_btn_x0 || px >= show_desktop_x - 6 {
+            return None;
+        }
+        if py < taskbar_y + 2 || py >= taskbar_y + TASKBAR_H {
+            return None;
+        }
+        let idx = ((px - taskbar_btn_x0) / (BUTTON_W + 6)) as usize;
+        let bx = taskbar_btn_x0 + idx as i32 * (BUTTON_W + 6);
+        if idx < self.windows.len() && px < bx + BUTTON_W {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    fn open_taskbar_menu(&mut self, win_idx: usize, mx: i32, taskbar_y: i32, sw: i32) {
+        if win_idx >= self.windows.len() {
+            return;
+        }
+        let x = mx.min(sw - TASKBAR_MENU_W - 4).max(4);
+        let y = (taskbar_y - TASKBAR_MENU_H - 4).max(0);
+        self.taskbar_menu = Some(TaskbarMenu {
+            window: win_idx,
+            x,
+            y,
+        });
+        self.start_menu_open = false;
+        self.context_menu = None;
+        self.launcher = None;
+    }
+
+    fn handle_taskbar_menu_click(&mut self, mx: i32, my: i32) -> bool {
+        let Some(menu) = self.taskbar_menu.take() else {
+            return false;
+        };
+        if mx < menu.x
+            || mx >= menu.x + TASKBAR_MENU_W
+            || my < menu.y
+            || my >= menu.y + TASKBAR_MENU_H
+        {
+            return false;
+        }
+        if menu.window >= self.windows.len() {
+            return true;
+        }
+        let row_y = menu.y + 5;
+        let row = ((my - row_y) / TASKBAR_MENU_ROW_H).clamp(0, 2);
+        match row {
+            0 => {
+                if self.windows[menu.window].is_minimized() {
+                    self.windows[menu.window].window_mut().restore();
+                    self.focus_window(menu.window);
+                } else {
+                    self.windows[menu.window].window_mut().minimize();
+                    if self.focused == Some(menu.window) {
+                        self.focused = self.z_order.iter().rev().copied().find(|&idx| {
+                            idx < self.windows.len() && !self.windows[idx].is_minimized()
+                        });
+                    }
+                }
+            }
+            1 => {
+                self.snap_window(menu.window, SnapTarget::Maximize);
+            }
+            _ => {
+                self.close_window(menu.window);
+            }
+        }
+        true
     }
 
     fn open_context_menu(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
@@ -1049,6 +1456,7 @@ impl WindowManager {
         self.focused = Some(win_idx);
         self.context_menu = None;
         self.start_menu_open = false;
+        self.notify_session_changed();
         true
     }
 
@@ -1130,6 +1538,13 @@ impl WindowManager {
     }
 
     pub fn handle_key_input(&mut self, input: KeyInput) {
+        if self.launcher.is_some()
+            && !crate::shortcuts::matches(crate::shortcuts::Action::Launcher, input)
+        {
+            self.handle_launcher_input(input);
+            crate::wm::request_repaint();
+            return;
+        }
         if self.handle_global_shortcut(input) {
             crate::wm::request_repaint();
             return;
@@ -1140,6 +1555,14 @@ impl WindowManager {
     }
 
     fn handle_global_shortcut(&mut self, input: KeyInput) -> bool {
+        if crate::shortcuts::matches(crate::shortcuts::Action::Launcher, input) {
+            self.toggle_launcher();
+            return true;
+        }
+        if crate::shortcuts::matches(crate::shortcuts::Action::Notifications, input) {
+            self.toggle_notification_center();
+            return true;
+        }
         match input.key {
             Key::Tab if input.has_alt() => {
                 self.focus_previous_window();
@@ -1260,7 +1683,10 @@ impl WindowManager {
         self.drag = None;
         self.resize = None;
         self.scroll_drag = None;
+        self.file_drag = None;
         self.context_menu = None;
+        self.taskbar_menu = None;
+        self.notify_session_changed();
     }
 
     /// Full composite frame into shadow, then blit to hardware framebuffer.
@@ -1319,11 +1745,27 @@ impl WindowManager {
         if taskbar_click {
             self.start_menu_open = !self.start_menu_open;
             self.context_menu = None;
+            self.launcher = None;
+            self.taskbar_menu = None;
+            self.notification_center_open = false;
             left_press_consumed = true;
             crate::wm::request_repaint();
         }
 
-        if right_pressed && my_i < taskbar_y {
+        if left_pressed {
+            let had_taskbar_menu = self.taskbar_menu.is_some();
+            if self.handle_taskbar_menu_click(mx_i, my_i) || had_taskbar_menu {
+                left_press_consumed = true;
+                crate::wm::request_repaint();
+            }
+        }
+
+        if right_pressed && my_i >= taskbar_y {
+            if let Some(btn_idx) = self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y) {
+                self.open_taskbar_menu(btn_idx, mx_i, taskbar_y, sw as i32);
+                crate::wm::request_repaint();
+            }
+        } else if right_pressed && my_i < taskbar_y {
             if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
                 let win_idx = self.z_order[z_pos];
                 self.z_order.remove(z_pos);
@@ -1346,7 +1788,9 @@ impl WindowManager {
         }
 
         if left_pressed {
-            if self.context_menu.is_some() {
+            if left_press_consumed {
+                // Already handled by shell chrome such as Start or a taskbar jump list.
+            } else if self.context_menu.is_some() {
                 left_press_consumed = true;
                 let _ = self.handle_context_menu_click(mx_i, my_i, sw as i32, taskbar_y);
             } else {
@@ -1374,6 +1818,7 @@ impl WindowManager {
                         let sw = self.shadow_width as i32;
                         let sh = self.shadow_height as i32;
                         self.windows[win_idx].window_mut().maximize(sw, sh);
+                        self.notify_session_changed();
                         crate::wm::request_repaint();
                     } else if hit_title {
                         self.drag = Some(DragState {
@@ -1416,7 +1861,15 @@ impl WindowManager {
                                 }
                             }
                         }
+                        let file_drag_paths = self.windows[win_idx].begin_file_drag(lx, ly);
                         self.windows[win_idx].handle_click(lx, ly);
+                        if let Some(paths) = file_drag_paths {
+                            self.file_drag = Some(FileDragState {
+                                source_window: win_idx,
+                                paths,
+                                cut: false,
+                            });
+                        }
                         self.consume_window_open_request(win_idx, sw, taskbar_y);
                         let is_double_click = self.last_click_window == Some(win_idx)
                             && uptime_ticks.wrapping_sub(self.last_click_tick)
@@ -1438,9 +1891,13 @@ impl WindowManager {
                     left_press_consumed = true;
                     // Tray icon click → open System Monitor
                     let tray_clk_x = sw as i32 - TASKBAR_CLOCK_W;
+                    let clock_box_x = tray_clk_x + TASKBAR_TRAY_W;
                     let t_gap = 20i32;
                     let t_start = tray_clk_x + (TASKBAR_TRAY_W - (t_gap * 2 + 13)) / 2;
-                    if mx_i >= t_start && mx_i < t_start + t_gap * 2 + 14 {
+                    if mx_i >= clock_box_x {
+                        self.toggle_notification_center();
+                        crate::wm::request_repaint();
+                    } else if mx_i >= t_start && mx_i < t_start + t_gap * 2 + 14 {
                         let off = self.windows.len() as i32 * 16;
                         let wx = (10 + off).min(sw as i32 - 540);
                         let wy = (10 + off).min(taskbar_y - 310);
@@ -1475,6 +1932,7 @@ impl WindowManager {
         }
 
         if left_released {
+            let session_changed = self.drag.is_some() || self.resize.is_some();
             let drag_window = self.drag.as_ref().map(|d| d.window);
             if let Some(win_idx) = drag_window {
                 if self.snap_dragged_window_on_release(win_idx) {
@@ -1484,6 +1942,30 @@ impl WindowManager {
             self.drag = None;
             self.resize = None;
             self.scroll_drag = None;
+            if let Some(file_drag) = self.file_drag.take() {
+                if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
+                    let target = self.z_order[z_pos];
+                    if target != file_drag.source_window && target < self.windows.len() {
+                        let count = file_drag.paths.len();
+                        let cut = file_drag.cut;
+                        let paths = file_drag.paths;
+                        if self.windows[target].drop_file_paths(paths, cut) {
+                            crate::notifications::push(
+                                "File drop",
+                                if count == 1 {
+                                    "copied 1 item"
+                                } else {
+                                    "copied selected items"
+                                },
+                            );
+                            crate::wm::request_repaint();
+                        }
+                    }
+                }
+            }
+            if session_changed {
+                self.notify_session_changed();
+            }
         }
 
         if left {
@@ -1635,6 +2117,7 @@ impl WindowManager {
         }
 
         self.sync_desktop_settings();
+        self.maybe_save_session(uptime_ticks);
 
         // ── Render ────────────────────────────────────────────────────────────
         // Blit wallpaper before taking the exclusive &mut shadow borrow,
@@ -2443,6 +2926,13 @@ impl WindowManager {
                 );
             }
 
+            if let Some(idx) = hovered_btn {
+                if idx < self.windows.len() {
+                    let bx = taskbar_btn_x0 + idx as i32 * (BUTTON_W + 6);
+                    draw_taskbar_preview(s, sw, taskbar_y, bx, &self.windows[idx]);
+                }
+            }
+
             // ── Clock / system tray — refined phosphor readout ────────────────────
             let clock_sep_x = sw as i32 - TASKBAR_CLOCK_W - 4;
             // Thin left separator
@@ -2607,6 +3097,27 @@ impl WindowManager {
                     clock_box_x + clock_box_w,
                 );
             }
+            let unread = crate::notifications::unread_count();
+            if unread > 0 {
+                let badge_x = clock_box_x + clock_box_w - 22;
+                let badge_y = taskbar_y + 5;
+                s_fill(s, sw, badge_x, badge_y, 16, 10, 0x00_BB_22_22);
+                draw_rect_border(s, sw, badge_x, badge_y, 16, 10, 0x00_FF_88_88);
+                let count_char = if unread > 9 {
+                    '+'
+                } else {
+                    (b'0' + unread as u8) as char
+                };
+                s_draw_char_small(
+                    s,
+                    sw,
+                    badge_x + 4,
+                    badge_y + 1,
+                    count_char,
+                    WHITE,
+                    0x00_BB_22_22,
+                );
+            }
 
             // ── Context menu ──────────────────────────────────────────────────────
             if let Some(ref cm) = self.context_menu {
@@ -2624,6 +3135,20 @@ impl WindowManager {
                 );
             }
 
+            if let Some(ref menu) = self.taskbar_menu {
+                draw_taskbar_menu(s, sw, menu, &self.windows, mx_i, my_i);
+            }
+
+            if self.notification_center_open {
+                draw_notification_center(s, sw, taskbar_y);
+            } else {
+                draw_notification_toasts(s, sw, taskbar_y, uptime_ticks);
+            }
+
+            if let Some(ref launcher) = self.launcher {
+                draw_launcher_overlay(s, sw, taskbar_y, launcher);
+            }
+
             if self.task_switcher_until_tick > uptime_ticks {
                 draw_task_switcher_overlay(
                     s,
@@ -2633,6 +3158,10 @@ impl WindowManager {
                     &self.z_order,
                     self.focused,
                 );
+            }
+
+            if let Some(ref file_drag) = self.file_drag {
+                draw_file_drag_badge(s, sw, mx_i + 16, my_i + 18, file_drag.paths.len());
             }
 
             // ── Cursor — switches to resize cursor over resize handles ────────────
@@ -3743,7 +4272,15 @@ fn draw_task_switcher_overlay(
     let panel_x = ((sw as i32 - panel_w) / 2).max(0);
     let panel_y = ((taskbar_y - panel_h) / 2).max(0);
 
-    s_fill_alpha(s, sw, panel_x - 6, panel_y - 6, panel_w + 12, panel_h + 12, 0x44_00_00_00);
+    s_fill_alpha(
+        s,
+        sw,
+        panel_x - 6,
+        panel_y - 6,
+        panel_w + 12,
+        panel_h + 12,
+        0x44_00_00_00,
+    );
     s_fill(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_07_18);
     s_fill(s, sw, panel_x, panel_y, panel_w, 3, ACCENT);
     draw_rect_border(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_66_BB);
@@ -3791,7 +4328,11 @@ fn draw_task_switcher_overlay(
         let y = panel_y + 42;
         let selected = focused == Some(win_idx);
         let accent = window_accent(win.title);
-        let bg = if selected { 0x00_00_1E_3C } else { 0x00_00_0B_20 };
+        let bg = if selected {
+            0x00_00_1E_3C
+        } else {
+            0x00_00_0B_20
+        };
         let border = if selected { ACCENT_HOV } else { 0x00_00_33_66 };
 
         s_fill(s, sw, x, y, item_w, item_h, bg);
@@ -3800,7 +4341,15 @@ fn draw_task_switcher_overlay(
 
         let icon_bg = blend_color(bg, accent, 90);
         s_fill(s, sw, x + 10, y + 14, 30, 30, icon_bg);
-        draw_rect_border(s, sw, x + 10, y + 14, 30, 30, blend_color(accent, WHITE, 90));
+        draw_rect_border(
+            s,
+            sw,
+            x + 10,
+            y + 14,
+            30,
+            30,
+            blend_color(accent, WHITE, 90),
+        );
         s_draw_str_small(
             s,
             sw,
@@ -3839,6 +4388,491 @@ fn draw_task_switcher_overlay(
         );
 
         drawn += 1;
+    }
+}
+
+fn draw_file_drag_badge(s: &mut [u32], sw: usize, x: i32, y: i32, count: usize) {
+    let w = 132i32;
+    let h = 34i32;
+    let x = x.min(sw as i32 - w - 4).max(4);
+    let sh = if sw > 0 { s.len() / sw } else { 0 };
+    let y = y.min(sh as i32 - h - 4).max(4);
+    let bg = 0x00_00_08_18;
+    s_fill_alpha(s, sw, x + 4, y + 4, w, h, 0x44_00_00_00);
+    s_fill(s, sw, x, y, w, h, bg);
+    s_fill(s, sw, x, y, 3, h, ACCENT);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_00_66_BB);
+    s_draw_str_small(s, sw, x + 12, y + 7, "DROP FILES", WHITE, bg, x + w - 8);
+    let text = if count == 1 {
+        String::from("1 item")
+    } else {
+        format!("{} items", count)
+    };
+    s_draw_str_small(s, sw, x + 12, y + 19, &text, 0x00_66_AA_DD, bg, x + w - 8);
+}
+
+fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32, app: &AppWindow) {
+    let win = app.window();
+    let preview_w = 208i32;
+    let preview_h = 74i32;
+    let x = (button_x + BUTTON_W / 2 - preview_w / 2)
+        .max(4)
+        .min(sw as i32 - preview_w - 4);
+    let y = (taskbar_y - preview_h - 8).max(0);
+    let accent = window_accent(win.title);
+    s_fill_alpha(s, sw, x + 5, y + 5, preview_w, preview_h, 0x40_00_00_00);
+    s_fill(s, sw, x, y, preview_w, preview_h, 0x00_00_08_18);
+    s_fill(s, sw, x, y, preview_w, 3, accent);
+    draw_rect_border(s, sw, x, y, preview_w, preview_h, 0x00_00_66_BB);
+    let icon_bg = blend_color(0x00_00_08_18, accent, 90);
+    s_fill(s, sw, x + 10, y + 16, 32, 32, icon_bg);
+    draw_rect_border(
+        s,
+        sw,
+        x + 10,
+        y + 16,
+        32,
+        32,
+        blend_color(accent, WHITE, 88),
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        x + 17,
+        y + 28,
+        window_glyph(win.title),
+        accent,
+        icon_bg,
+        x + 40,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        x + 52,
+        y + 16,
+        win.title,
+        WHITE,
+        0x00_00_08_18,
+        x + preview_w - 10,
+    );
+    let state = if win.minimized { "minimized" } else { "open" };
+    s_draw_str_small(
+        s,
+        sw,
+        x + 52,
+        y + 32,
+        state,
+        0x00_66_AA_DD,
+        0x00_00_08_18,
+        x + preview_w - 10,
+    );
+    let bounds = format!("{}x{} @ {},{}", win.width, win.height, win.x, win.y);
+    s_draw_str_small(
+        s,
+        sw,
+        x + 10,
+        y + 56,
+        &bounds,
+        0x00_44_88_BB,
+        0x00_00_08_18,
+        x + preview_w - 10,
+    );
+}
+
+fn draw_taskbar_menu(
+    s: &mut [u32],
+    sw: usize,
+    menu: &TaskbarMenu,
+    windows: &[AppWindow],
+    mx: i32,
+    my: i32,
+) {
+    if menu.window >= windows.len() {
+        return;
+    }
+    let bg = 0x00_00_08_18;
+    s_fill_alpha(
+        s,
+        sw,
+        menu.x + 4,
+        menu.y + 4,
+        TASKBAR_MENU_W,
+        TASKBAR_MENU_H,
+        0x44_00_00_00,
+    );
+    s_fill(s, sw, menu.x, menu.y, TASKBAR_MENU_W, TASKBAR_MENU_H, bg);
+    s_fill(s, sw, menu.x, menu.y, TASKBAR_MENU_W, 3, ACCENT);
+    draw_rect_border(
+        s,
+        sw,
+        menu.x,
+        menu.y,
+        TASKBAR_MENU_W,
+        TASKBAR_MENU_H,
+        0x00_00_66_BB,
+    );
+    let labels = [
+        if windows[menu.window].is_minimized() {
+            "Restore"
+        } else {
+            "Minimize"
+        },
+        "Maximize",
+        "Close",
+    ];
+    for (i, label) in labels.iter().enumerate() {
+        let row_y = menu.y + 5 + i as i32 * TASKBAR_MENU_ROW_H;
+        let hot = mx >= menu.x + 4
+            && mx < menu.x + TASKBAR_MENU_W - 4
+            && my >= row_y
+            && my < row_y + TASKBAR_MENU_ROW_H;
+        let row_bg = if hot { 0x00_00_18_34 } else { bg };
+        if hot {
+            s_fill(
+                s,
+                sw,
+                menu.x + 3,
+                row_y,
+                TASKBAR_MENU_W - 6,
+                TASKBAR_MENU_ROW_H,
+                row_bg,
+            );
+            s_fill(
+                s,
+                sw,
+                menu.x + 4,
+                row_y + 5,
+                2,
+                TASKBAR_MENU_ROW_H - 10,
+                ACCENT,
+            );
+        }
+        s_draw_str_small(
+            s,
+            sw,
+            menu.x + 14,
+            row_y + 8,
+            label,
+            if hot { WHITE } else { 0x00_88_CC_FF },
+            row_bg,
+            menu.x + TASKBAR_MENU_W - 10,
+        );
+    }
+}
+
+fn draw_notification_center(s: &mut [u32], sw: usize, taskbar_y: i32) {
+    let panel_w = 340i32;
+    let panel_h = 260i32;
+    let x = (sw as i32 - panel_w - 12).max(0);
+    let y = (taskbar_y - panel_h - 10).max(0);
+    let bg = 0x00_00_08_18;
+    s_fill_alpha(s, sw, x + 5, y + 5, panel_w, panel_h, 0x50_00_00_00);
+    s_fill(s, sw, x, y, panel_w, panel_h, bg);
+    s_fill(s, sw, x, y, panel_w, 3, ACCENT);
+    draw_rect_border(s, sw, x, y, panel_w, panel_h, 0x00_00_66_BB);
+    s_draw_str_small(
+        s,
+        sw,
+        x + 14,
+        y + 14,
+        "NOTIFICATIONS",
+        WHITE,
+        bg,
+        x + panel_w - 12,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        x + 14,
+        y + 28,
+        "Ctrl+Alt+M toggles this panel",
+        0x00_55_88_AA,
+        bg,
+        x + panel_w - 12,
+    );
+    let list = crate::notifications::latest(7);
+    if list.is_empty() {
+        s_draw_str_small(
+            s,
+            sw,
+            x + 14,
+            y + 62,
+            "No system events yet.",
+            0x00_66_AA_DD,
+            bg,
+            x + panel_w - 12,
+        );
+        return;
+    }
+    for (i, note) in list.iter().enumerate() {
+        let row_y = y + 54 + i as i32 * 28;
+        let row_bg = if note.unread {
+            0x00_00_18_34
+        } else {
+            0x00_00_0C_20
+        };
+        s_fill(s, sw, x + 10, row_y, panel_w - 20, 24, row_bg);
+        if note.unread {
+            s_fill(s, sw, x + 10, row_y + 5, 2, 14, ACCENT_HOV);
+        }
+        s_draw_str_small(
+            s,
+            sw,
+            x + 18,
+            row_y + 4,
+            &note.title,
+            if note.unread { WHITE } else { 0x00_AA_DD_FF },
+            row_bg,
+            x + panel_w - 18,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 18,
+            row_y + 15,
+            &note.body,
+            0x00_66_AA_DD,
+            row_bg,
+            x + panel_w - 18,
+        );
+    }
+}
+
+fn draw_notification_toasts(s: &mut [u32], sw: usize, taskbar_y: i32, ticks: u64) {
+    let list = crate::notifications::latest(2);
+    if list.is_empty() {
+        return;
+    }
+    let timeout = crate::interrupts::ticks_for_millis(6500);
+    let toast_w = 294i32;
+    let toast_h = 50i32;
+    let mut drawn = 0i32;
+    for note in list.iter() {
+        if ticks.wrapping_sub(note.tick) > timeout {
+            continue;
+        }
+        let x = (sw as i32 - toast_w - 12).max(0);
+        let y = (taskbar_y - 12 - (drawn + 1) * (toast_h + 8)).max(0);
+        let bg = 0x00_00_08_18;
+        s_fill_alpha(s, sw, x + 4, y + 4, toast_w, toast_h, 0x44_00_00_00);
+        s_fill(s, sw, x, y, toast_w, toast_h, bg);
+        s_fill(s, sw, x, y, 3, toast_h, ACCENT);
+        draw_rect_border(s, sw, x, y, toast_w, toast_h, 0x00_00_66_BB);
+        s_draw_str_small(
+            s,
+            sw,
+            x + 12,
+            y + 10,
+            &note.title,
+            WHITE,
+            bg,
+            x + toast_w - 10,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 12,
+            y + 26,
+            &note.body,
+            0x00_66_AA_DD,
+            bg,
+            x + toast_w - 10,
+        );
+        drawn += 1;
+    }
+}
+
+fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &LauncherState) {
+    let panel_w = 560i32.min(sw as i32 - 24);
+    let panel_h = 292i32;
+    let x = ((sw as i32 - panel_w) / 2).max(0);
+    let y = ((taskbar_y - panel_h) / 4).max(8);
+    let bg = 0x00_00_08_18;
+    s_fill_alpha(s, sw, 0, 0, sw as i32, taskbar_y, 0x28_00_00_00);
+    s_fill_alpha(s, sw, x + 7, y + 7, panel_w, panel_h, 0x55_00_00_00);
+    s_fill(s, sw, x, y, panel_w, panel_h, bg);
+    s_fill(s, sw, x, y, panel_w, 3, ACCENT);
+    draw_rect_border(s, sw, x, y, panel_w, panel_h, 0x00_00_77_CC);
+    s_draw_str_small(
+        s,
+        sw,
+        x + 16,
+        y + 14,
+        "LAUNCHER",
+        WHITE,
+        bg,
+        x + panel_w - 16,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        x + panel_w - 178,
+        y + 14,
+        "Ctrl+Space",
+        0x00_55_88_AA,
+        bg,
+        x + panel_w - 16,
+    );
+
+    let search_x = x + 16;
+    let search_y = y + 38;
+    let search_h = 30i32;
+    s_fill(
+        s,
+        sw,
+        search_x,
+        search_y,
+        panel_w - 32,
+        search_h,
+        0x00_00_03_0C,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        search_x,
+        search_y,
+        panel_w - 32,
+        search_h,
+        0x00_00_66_BB,
+    );
+    let query = if state.query.is_empty() {
+        "type app, file, or command..."
+    } else {
+        &state.query
+    };
+    s_draw_str_small(
+        s,
+        sw,
+        search_x + 12,
+        search_y + 11,
+        query,
+        if state.query.is_empty() {
+            0x00_44_77_99
+        } else {
+            WHITE
+        },
+        0x00_00_03_0C,
+        search_x + panel_w - 44,
+    );
+
+    let matches = launcher_matches(&state.query);
+    if matches.is_empty() {
+        s_draw_str_small(
+            s,
+            sw,
+            x + 18,
+            y + 88,
+            "No matching app, file, or command.",
+            0x00_66_AA_DD,
+            bg,
+            x + panel_w - 18,
+        );
+        return;
+    }
+
+    let max_rows = 7usize.min(matches.len());
+    for i in 0..max_rows {
+        let entry = matches[i];
+        let row_y = y + 82 + i as i32 * 28;
+        let selected = i == state.selected.min(matches.len() - 1);
+        let row_bg = if selected { 0x00_00_1A_38 } else { bg };
+        if selected {
+            s_fill(s, sw, x + 10, row_y, panel_w - 20, 24, row_bg);
+            s_fill(s, sw, x + 10, row_y + 5, 3, 14, ACCENT);
+        }
+        let glyph = launcher_kind_glyph(entry.kind);
+        s_draw_str_small(
+            s,
+            sw,
+            x + 22,
+            row_y + 8,
+            glyph,
+            if selected { ACCENT_HOV } else { 0x00_55_88_AA },
+            row_bg,
+            x + 48,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 54,
+            row_y + 4,
+            entry.label,
+            if selected { WHITE } else { 0x00_AA_DD_FF },
+            row_bg,
+            x + panel_w - 140,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 54,
+            row_y + 15,
+            entry.detail,
+            0x00_55_88_AA,
+            row_bg,
+            x + panel_w - 18,
+        );
+    }
+}
+
+fn launcher_kind_glyph(kind: crate::app_metadata::LauncherKind) -> &'static str {
+    match kind {
+        crate::app_metadata::LauncherKind::App(app) => window_glyph(app),
+        crate::app_metadata::LauncherKind::Path(_) => "FS",
+        crate::app_metadata::LauncherKind::Command(_) => "$>",
+    }
+}
+
+fn launcher_matches(query: &str) -> Vec<crate::app_metadata::LauncherEntry> {
+    let mut matches = Vec::new();
+    for &entry in crate::app_metadata::LAUNCHER_ENTRIES.iter() {
+        if query.is_empty()
+            || contains_ignore_ascii(entry.label, query)
+            || contains_ignore_ascii(entry.detail, query)
+        {
+            matches.push(entry);
+        }
+    }
+    matches
+}
+
+fn contains_ignore_ascii(haystack: &str, needle: &str) -> bool {
+    let hay = haystack.as_bytes();
+    let nee = needle.as_bytes();
+    if nee.is_empty() {
+        return true;
+    }
+    if nee.len() > hay.len() {
+        return false;
+    }
+    for start in 0..=hay.len() - nee.len() {
+        let mut ok = true;
+        for i in 0..nee.len() {
+            if !ascii_byte_eq(hay[start + i], nee[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
+fn ascii_byte_eq(a: u8, b: u8) -> bool {
+    a.to_ascii_lowercase() == b.to_ascii_lowercase()
+}
+
+fn parse_i32_field(value: &str) -> Option<i32> {
+    value.parse::<i32>().ok()
+}
+
+fn push_i32_decimal(out: &mut String, n: i32) {
+    if n < 0 {
+        out.push('-');
+        push_decimal(out, n.unsigned_abs() as u64);
+    } else {
+        push_decimal(out, n as u64);
     }
 }
 

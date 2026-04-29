@@ -126,7 +126,9 @@ impl FileManagerApp {
     }
 
     pub(super) fn apply_search_filter(&mut self) {
-        let selected_path = self.focused.and_then(|idx| self.entry_paths.get(idx).cloned());
+        let selected_path = self
+            .focused
+            .and_then(|idx| self.entry_paths.get(idx).cloned());
         if self.search_filter.is_empty() {
             self.entries = self.all_entries.clone();
             self.entry_kinds = self.all_entry_kinds.clone();
@@ -319,6 +321,49 @@ impl FileManagerApp {
         }
     }
 
+    pub fn drag_paths_at(&mut self, lx: i32, ly: i32) -> Option<Vec<String>> {
+        if self.modal.is_some() || self.context_menu.is_some() {
+            return None;
+        }
+        let idx = self.hit_main_entry(lx, ly)?;
+        if !matches!(self.entry_kind(idx), EntryKind::Fs) {
+            return None;
+        }
+        if !self.selected.contains(&idx) {
+            self.set_selected_single(idx);
+        }
+        let mut paths = Vec::new();
+        for &selected in self.selected.iter() {
+            if matches!(self.entry_kind(selected), EntryKind::Fs) {
+                if let Some(path) = self.entry_paths.get(selected) {
+                    paths.push(path.clone());
+                }
+            }
+        }
+        if paths.is_empty() {
+            None
+        } else {
+            Some(paths)
+        }
+    }
+
+    pub fn drop_paths(&mut self, paths: Vec<String>, cut: bool) -> bool {
+        if paths.is_empty() {
+            return false;
+        }
+        let entries = paths
+            .iter()
+            .map(|path| FileTarget {
+                path: path.clone(),
+                name: Self::path_name(path),
+                is_dir: crate::fat32::list_dir(path).is_some(),
+            })
+            .collect();
+        self.clipboard = Some(ClipboardState { entries, cut });
+        self.paste_clipboard();
+        true
+    }
+
     pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
         self.pending_open.take()
     }
@@ -379,15 +424,18 @@ impl FileManagerApp {
         let abs = self.make_abs(sel);
         if self.is_dir_idx(sel) {
             self.navigate_to(&abs);
-        } else if self
-            .entries
-            .get(sel)
-            .map(|entry| Self::file_ext(&entry.name).eq_ignore_ascii_case("ELF"))
-            .unwrap_or(false)
-        {
-            self.pending_open = Some(FileManagerOpenRequest::Exec(abs));
         } else {
-            self.pending_open = Some(FileManagerOpenRequest::File(abs));
+            match crate::app_metadata::association_for(&abs, false) {
+                crate::app_metadata::Association::Executable => {
+                    self.pending_open = Some(FileManagerOpenRequest::Exec(abs));
+                }
+                crate::app_metadata::Association::AppShortcut(app) => {
+                    self.pending_open = Some(FileManagerOpenRequest::App(app));
+                }
+                _ => {
+                    self.pending_open = Some(FileManagerOpenRequest::File(abs));
+                }
+            }
         }
     }
 
@@ -521,8 +569,8 @@ impl FileManagerApp {
     pub(super) fn is_editable_text_name(name: &str) -> bool {
         let ext = Self::file_ext(name);
         for editable in [
-            "TXT", "MD", "LOG", "RST", "CSV", "RS", "TOML", "JSON", "YAML", "YML", "SH",
-            "BASH", "C", "H", "PY", "JS", "TS", "ASM", "S", "INI", "CFG",
+            "TXT", "MD", "LOG", "RST", "CSV", "RS", "TOML", "JSON", "YAML", "YML", "SH", "BASH",
+            "C", "H", "PY", "JS", "TS", "ASM", "S", "INI", "CFG",
         ] {
             if ext.eq_ignore_ascii_case(editable) {
                 return true;
@@ -558,7 +606,9 @@ impl FileManagerApp {
             self.selected.clear();
             return false;
         }
-        let current = self.focused.unwrap_or_else(|| self.selected.first().copied().unwrap_or(0));
+        let current = self
+            .focused
+            .unwrap_or_else(|| self.selected.first().copied().unwrap_or(0));
         let max = self.entries.len().saturating_sub(1) as isize;
         let next = (current as isize + delta).clamp(0, max) as usize;
         self.move_focus_to(next)
@@ -919,14 +969,22 @@ impl FileManagerApp {
             .all(|target| Self::path_is_trash_or_inside(&target.path));
         let mut message = String::new();
         fmt_push_u(&mut message, targets.len() as u64);
-        message.push_str(if targets.len() == 1 { " item" } else { " items" });
+        message.push_str(if targets.len() == 1 {
+            " item"
+        } else {
+            " items"
+        });
         message.push_str(if permanent {
             " will be deleted permanently."
         } else {
             " will move to Trash."
         });
         self.modal = Some(ModalState::Confirm(ConfirmDialogState {
-            title: String::from(if permanent { "Delete Item" } else { "Move to Trash" }),
+            title: String::from(if permanent {
+                "Delete Item"
+            } else {
+                "Move to Trash"
+            }),
             message,
             confirm_label: String::from(if permanent { "Delete" } else { "Trash" }),
             cancel_label: String::from("Cancel"),
@@ -1051,10 +1109,12 @@ impl FileManagerApp {
             return false;
         }
         let count = targets.len();
+        let shared_paths = targets.iter().map(|target| target.path.clone()).collect();
         self.clipboard = Some(ClipboardState {
             entries: targets,
             cut,
         });
+        crate::clipboard::set_paths(shared_paths, cut);
         let mut note = String::new();
         fmt_push_u(&mut note, count as u64);
         note.push_str(if count == 1 { " item " } else { " items " });
@@ -1065,7 +1125,19 @@ impl FileManagerApp {
     }
 
     pub(super) fn paste_clipboard(&mut self) {
-        let Some(clipboard) = self.clipboard.clone() else {
+        let clipboard = if let Some(clipboard) = self.clipboard.clone() {
+            clipboard
+        } else if let Some((paths, cut)) = crate::clipboard::get_paths() {
+            let entries = paths
+                .iter()
+                .map(|path| FileTarget {
+                    path: path.clone(),
+                    name: Self::path_name(path),
+                    is_dir: crate::fat32::list_dir(path).is_some(),
+                })
+                .collect();
+            ClipboardState { entries, cut }
+        } else {
             self.status_note = Some(String::from("clipboard empty"));
             self.render();
             return;
@@ -1321,7 +1393,12 @@ impl FileManagerApp {
 
     pub(super) fn recursive_stats(&self, path: &str, is_dir: bool) -> (u64, usize) {
         if !is_dir {
-            return (crate::fat32::read_file(path).map(|b| b.len() as u64).unwrap_or(0), 0);
+            return (
+                crate::fat32::read_file(path)
+                    .map(|b| b.len() as u64)
+                    .unwrap_or(0),
+                0,
+            );
         }
         let mut total = 0u64;
         let mut count = 0usize;

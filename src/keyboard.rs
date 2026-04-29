@@ -7,7 +7,7 @@
 //! compose() holds WM.lock(), IRQ tries to acquire WM.lock(), single-core
 //! deadlock.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use pc_keyboard::{
     layouts, DecodedKey, HandleControl, KeyCode, KeyEvent, KeyState, Keyboard, ScancodeSet1,
@@ -51,6 +51,7 @@ pub enum Key {
     Enter,
     Escape,
     Tab,
+    Space,
     F4,
     F5,
 }
@@ -78,6 +79,7 @@ impl KeyInput {
             Key::Enter => Some('\n'),
             Key::Escape => Some('\u{001B}'),
             Key::Tab => Some('\t'),
+            Key::Space => Some(' '),
             Key::F4 | Key::F5 => None,
         }
     }
@@ -214,6 +216,7 @@ fn raw_key_to_special(code: KeyCode) -> Option<Key> {
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Escape => Some(Key::Escape),
         KeyCode::Tab => Some(Key::Tab),
+        KeyCode::Spacebar => Some(Key::Space),
         KeyCode::F4 => Some(Key::F4),
         KeyCode::F5 => Some(Key::F5),
         _ => None,
@@ -231,6 +234,8 @@ fn shortcut_key_from_raw(code: KeyCode) -> Option<Key> {
         KeyCode::V => Some(Key::Character('v')),
         KeyCode::W => Some(Key::Character('w')),
         KeyCode::X => Some(Key::Character('x')),
+        KeyCode::M => Some(Key::Character('m')),
+        KeyCode::Spacebar => Some(Key::Space),
         KeyCode::Tab => Some(Key::Tab),
         KeyCode::Escape => Some(Key::Escape),
         KeyCode::F4 => Some(Key::F4),
@@ -255,6 +260,7 @@ fn encode_input(input: KeyInput) -> u32 {
         | Key::Enter
         | Key::Escape
         | Key::Tab
+        | Key::Space
         | Key::F4
         | Key::F5 => (EVENT_KIND_KEY, special_key_id(input.key) as u32),
     };
@@ -291,8 +297,9 @@ fn special_key_id(key: Key) -> u8 {
         Key::Enter => 11,
         Key::Escape => 12,
         Key::Tab => 13,
-        Key::F4 => 14,
-        Key::F5 => 15,
+        Key::Space => 14,
+        Key::F4 => 15,
+        Key::F5 => 16,
     }
 }
 
@@ -311,8 +318,9 @@ fn special_key_from_id(id: u8) -> Option<Key> {
         11 => Some(Key::Enter),
         12 => Some(Key::Escape),
         13 => Some(Key::Tab),
-        14 => Some(Key::F4),
-        15 => Some(Key::F5),
+        14 => Some(Key::Space),
+        15 => Some(Key::F4),
+        16 => Some(Key::F5),
         _ => None,
     }
 }

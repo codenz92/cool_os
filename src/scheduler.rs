@@ -27,7 +27,7 @@
 ///   [stack_ptr + 136]  RFLAGS
 ///   [stack_ptr + 144]  RSP   (task's stack pointer restored by iretq)
 ///   [stack_ptr + 152]  SS
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::paging::PhysFrame;
 
@@ -51,6 +51,7 @@ pub enum TaskStatus {
     Running,
     Blocked,
     Exited,
+    Reaped,
 }
 
 // ── Task ──────────────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ pub struct Task {
     pub stack_ptr: usize,
     pub status: TaskStatus,
     pub exit_code: Option<u64>,
+    pub parent: Option<usize>,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -105,6 +107,7 @@ impl Scheduler {
             stack_ptr: 0,
             status: TaskStatus::Running,
             exit_code: None,
+            parent: None,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -161,6 +164,11 @@ impl Scheduler {
             stack_ptr: stack_ptr_addr,
             status: TaskStatus::Ready,
             exit_code: None,
+            parent: if self.tasks.is_empty() {
+                None
+            } else {
+                Some(self.current)
+            },
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -284,11 +292,14 @@ pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty
 pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum KillError {
     CannotKillIdle,
     CannotKillCurrent,
     InvalidTask,
     AlreadyExited,
+    AlreadyReaped,
+    NotChild,
 }
 
 impl KillError {
@@ -298,6 +309,26 @@ impl KillError {
             KillError::CannotKillCurrent => "cannot kill current task",
             KillError::InvalidTask => "no such task",
             KillError::AlreadyExited => "task already exited",
+            KillError::AlreadyReaped => "task already reaped",
+            KillError::NotChild => "not a child task",
+        }
+    }
+}
+
+pub enum WaitError {
+    InvalidTask,
+    NotChild,
+    NotExited,
+    AlreadyReaped,
+}
+
+impl WaitError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WaitError::InvalidTask => "no such task",
+            WaitError::NotChild => "not a child task",
+            WaitError::NotExited => "task has not exited",
+            WaitError::AlreadyReaped => "task already reaped",
         }
     }
 }
@@ -344,6 +375,7 @@ pub fn exit_current(code: u64) {
     if let Some(task) = sched.tasks.get_mut(task_id) {
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
+        crate::notifications::push("Task exited", &format!("pid {} exit {}", task_id, code));
     }
 }
 
@@ -368,6 +400,9 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         if task.status == TaskStatus::Exited {
             return Err(KillError::AlreadyExited);
         }
+        if task.status == TaskStatus::Reaped {
+            return Err(KillError::AlreadyReaped);
+        }
     }
 
     crate::vfs::drop_task(task_id);
@@ -375,7 +410,52 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
     let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
     task.status = TaskStatus::Exited;
     task.exit_code = Some(code);
+    crate::notifications::push("Task killed", &format!("pid {} exit {}", task_id, code));
     Ok(())
+}
+
+pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
+    if task_id == 0 {
+        return Err(WaitError::InvalidTask);
+    }
+    let mut sched = SCHEDULER.lock();
+    let task = sched.tasks.get_mut(task_id).ok_or(WaitError::InvalidTask)?;
+    if task.parent != Some(parent) && parent != 0 {
+        return Err(WaitError::NotChild);
+    }
+    match task.status {
+        TaskStatus::Exited => {
+            let code = task.exit_code.unwrap_or(0);
+            task.status = TaskStatus::Reaped;
+            task.stack.clear();
+            task.stack_ptr = 0;
+            task.syscall_stack_top = 0;
+            task.pml4 = None;
+            Ok(code)
+        }
+        TaskStatus::Reaped => Err(WaitError::AlreadyReaped),
+        _ => Err(WaitError::NotExited),
+    }
+}
+
+pub fn reap_all_exited(parent: usize) -> usize {
+    let mut sched = SCHEDULER.lock();
+    let mut count = 0usize;
+    for (idx, task) in sched.tasks.iter_mut().enumerate() {
+        if idx == 0 || task.status != TaskStatus::Exited {
+            continue;
+        }
+        if task.parent != Some(parent) && parent != 0 {
+            continue;
+        }
+        task.status = TaskStatus::Reaped;
+        task.stack.clear();
+        task.stack_ptr = 0;
+        task.syscall_stack_top = 0;
+        task.pml4 = None;
+        count += 1;
+    }
+    count
 }
 
 // ── Timer ISR entry point (called from timer_naked in interrupts.rs) ──────────

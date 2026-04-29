@@ -339,4 +339,8 @@ impl FileManagerApp {
         Self::shell_link_path_with_roots(label, &root_names)
     }
 
+    pub fn current_path(&self) -> &str {
+        &self.path
+    }
+
 }

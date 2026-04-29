@@ -267,7 +267,13 @@ impl FileManagerApp {
             &child_count,
             rect.w - 28,
         );
-        self.draw_property_row(rect.x + 14, rect.y + 182, target_kind, &state.note, rect.w - 28);
+        self.draw_property_row(
+            rect.x + 14,
+            rect.y + 182,
+            target_kind,
+            &state.note,
+            rect.w - 28,
+        );
 
         self.draw_dialog_button(close, "Close");
     }

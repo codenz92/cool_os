@@ -288,9 +288,66 @@ impl TerminalApp {
                 }
             },
 
+            Some("wait") => match words.next().and_then(parse_usize) {
+                Some(pid) => self.cmd_wait(pid),
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: wait <pid>\n");
+                }
+            },
+
+            Some("reap") => self.cmd_reap(),
+
             Some("info") => self.cmd_info(),
 
             Some("uptime") => self.cmd_uptime(),
+
+            Some("devices") => self.cmd_devices(),
+
+            Some("net") => self.cmd_lines("NETWORK", crate::net::status_lines()),
+
+            Some("power") => self.cmd_power(words.next()),
+
+            Some("log") => self.cmd_log(),
+
+            Some("fsck") => self.cmd_fsck(),
+
+            Some("df") => self.cmd_df(),
+
+            Some("shortcuts") => self.cmd_lines("SHORTCUTS", crate::shortcuts::summary_lines()),
+
+            Some("clip") => {
+                let mut text = String::new();
+                for word in words {
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(word);
+                }
+                if text.is_empty() {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("clipboard: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(&crate::clipboard::summary());
+                    self.print_char('\n');
+                } else {
+                    crate::clipboard::set_text(&text);
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("copied text\n");
+                }
+            }
+
+            Some("paste") => match crate::clipboard::get_text() {
+                Some(text) => {
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(&text);
+                    self.print_char('\n');
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("paste: clipboard has no text\n");
+                }
+            },
 
             Some("exec") => match words.next() {
                 Some(path) => {
@@ -445,10 +502,21 @@ impl TerminalApp {
             ("cat <path>", "print file to terminal"),
             ("ps", "list running processes"),
             ("kill <pid>", "terminate a task"),
+            ("wait <pid>", "reap an exited child"),
+            ("reap", "reap all exited tasks"),
             ("exec <path>", "run ELF binary"),
             ("info", "CPU, memory, and system info"),
             ("uptime", "time since boot"),
             ("usb", "USB controller status"),
+            ("devices", "PCI/USB/device registry"),
+            ("net", "network stack status"),
+            ("power <op>", "ACPI power status"),
+            ("log", "kernel log tail"),
+            ("fsck", "filesystem check summary"),
+            ("df", "filesystem free space"),
+            ("shortcuts", "configured shortcut keys"),
+            ("clip [text]", "shared clipboard"),
+            ("paste", "paste shared clipboard text"),
             ("echo <text>", "print text"),
             ("ipc", "pipe demo"),
             ("keydemo", "keyboard event stream"),
@@ -578,6 +646,7 @@ impl TerminalApp {
             bool,
             bool,
             Option<u64>,
+            Option<usize>,
         )> = {
             let sched = crate::scheduler::SCHEDULER.lock();
             let cur = sched.current;
@@ -585,18 +654,35 @@ impl TerminalApp {
                 .tasks
                 .iter()
                 .enumerate()
-                .map(|(i, t)| (i, t.name, t.status, i == cur, t.pml4.is_some(), t.exit_code))
+                .map(|(i, t)| {
+                    (
+                        i,
+                        t.name,
+                        t.status,
+                        i == cur,
+                        t.pml4.is_some(),
+                        t.exit_code,
+                        t.parent,
+                    )
+                })
                 .collect()
         };
 
         self.set_fg(FG_ACCENT);
-        self.print_str("PID  RING  STATUS   EXIT  NAME\n");
+        self.print_str("PID  PPID  RING  STATUS   EXIT  NAME\n");
         self.set_fg(FG_DIM);
-        self.print_str("---  ----  -------  ----  ----\n");
-        for (id, name, status, is_cur, is_user, exit_code) in tasks {
+        self.print_str("---  ----  ----  -------  ----  ----\n");
+        for (id, name, status, is_cur, is_user, exit_code, parent) in tasks {
             self.set_fg(if is_cur { FG_PROMPT } else { FG_OUTPUT });
             self.print_u64(id as u64);
             self.print_str("    ");
+            self.set_fg(FG_DIM);
+            if let Some(parent) = parent {
+                self.print_u64(parent as u64);
+            } else {
+                self.print_char('-');
+            }
+            self.print_str("     ");
             self.set_fg(FG_DIM);
             let ring = if is_user { "u" } else { "k" };
             self.print_str(ring);
@@ -607,6 +693,7 @@ impl TerminalApp {
                 crate::scheduler::TaskStatus::Ready => "ready  ",
                 crate::scheduler::TaskStatus::Blocked => "blocked",
                 crate::scheduler::TaskStatus::Exited => "exited ",
+                crate::scheduler::TaskStatus::Reaped => "reaped ",
             };
             self.print_str(status_str);
             self.print_str("  ");
@@ -644,6 +731,136 @@ impl TerminalApp {
                 self.set_fg(FG_OUTPUT);
                 self.print_str(err.as_str());
                 self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_wait(&mut self, pid: usize) {
+        match crate::scheduler::waitpid(0, pid) {
+            Ok(code) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("reaped ");
+                self.set_fg(FG_OUTPUT);
+                self.print_u64(pid as u64);
+                self.print_str(" exit ");
+                self.print_u64(code);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("wait: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_reap(&mut self) {
+        let count = crate::scheduler::reap_all_exited(0);
+        self.set_fg(FG_ACCENT);
+        self.print_str("reaped ");
+        self.set_fg(FG_OUTPUT);
+        self.print_u64(count as u64);
+        self.print_str(" task(s)\n");
+    }
+
+    fn cmd_devices(&mut self) {
+        crate::device_registry::refresh_pci();
+        self.cmd_lines("DEVICES", crate::device_registry::lines());
+    }
+
+    fn cmd_lines(&mut self, title: &str, lines: Vec<String>) {
+        self.set_fg(FG_ACCENT);
+        self.print_str(title);
+        self.print_char('\n');
+        if lines.is_empty() {
+            self.set_fg(FG_DIM);
+            self.print_str("(none)\n");
+            return;
+        }
+        for line in lines {
+            self.set_fg(FG_OUTPUT);
+            self.print_str(&line);
+            self.print_char('\n');
+        }
+    }
+
+    fn cmd_power(&mut self, op: Option<&str>) {
+        match op {
+            Some("reboot") => crate::interrupts::reboot(),
+            Some("shutdown") => self.print_power_result(crate::acpi::shutdown()),
+            Some("sleep") => self.print_power_result(crate::acpi::sleep()),
+            _ => self.cmd_lines("POWER", crate::acpi::status_lines()),
+        }
+    }
+
+    fn print_power_result(&mut self, result: Result<(), &'static str>) {
+        match result {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("power operation requested\n");
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("power: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err);
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_log(&mut self) {
+        let _ = crate::klog::flush_to_disk();
+        self.cmd_lines("KERNEL LOG", crate::klog::lines());
+    }
+
+    fn cmd_fsck(&mut self) {
+        match crate::fat32::check() {
+            Some(report) => {
+                self.set_fg(if report.ok { FG_ACCENT } else { FG_WARN });
+                self.print_str(if report.ok {
+                    "filesystem ok\n"
+                } else {
+                    "filesystem warning\n"
+                });
+                self.set_fg(FG_OUTPUT);
+                self.print_str("root entries ");
+                self.print_u64(report.root_entries as u64);
+                self.print_str("  clusters ");
+                self.print_u64(report.stats.used_clusters as u64);
+                self.print_char('/');
+                self.print_u64(report.stats.total_clusters as u64);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("fsck: unable to read filesystem\n");
+            }
+        }
+    }
+
+    fn cmd_df(&mut self) {
+        match crate::fat32::stats() {
+            Some(stats) => {
+                let free = stats.free_clusters as usize * stats.bytes_per_cluster as usize;
+                let used = stats.used_clusters as usize * stats.bytes_per_cluster as usize;
+                let total = stats.total_clusters as usize * stats.bytes_per_cluster as usize;
+                self.set_fg(FG_ACCENT);
+                self.print_str("Filesystem  Used  Free  Total\n");
+                self.set_fg(FG_OUTPUT);
+                self.print_str("fat32       ");
+                self.print_size(used);
+                self.print_str("  ");
+                self.print_size(free);
+                self.print_str("  ");
+                self.print_size(total);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("df: unable to read filesystem\n");
             }
         }
     }
