@@ -455,26 +455,34 @@ pub fn unblock(task_id: usize) {
 
 pub fn exit_current(code: u64) {
     let (task_id, name) = {
-        let mut sched = SCHEDULER.lock();
+        let sched = SCHEDULER.lock();
         let task_id = sched.current;
         let name = sched
             .tasks
             .get(task_id)
             .map(|task| task.name)
             .unwrap_or("task");
-        if let Some(task) = sched.tasks.get_mut(task_id) {
-            task.status = TaskStatus::Exited;
-            task.exit_code = Some(code);
-        }
         (task_id, name)
     };
 
+    // Keep the exiting task schedulable while cleanup may allocate or take
+    // locks. If it is marked Exited first, a timer tick can switch it out
+    // permanently in the middle of cleanup and strand a held lock.
     crate::vfs::drop_task(task_id);
     crate::profiler::record_task(task_id, name, "exited");
     crate::crashdump::record_task_report(task_id, "task exited");
     crate::notifications::push_transient("Task exited", &format!("pid {} exit {}", task_id, code));
     crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
+
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = SCHEDULER.lock();
+        if let Some(task) = sched.tasks.get_mut(task_id) {
+            task.status = TaskStatus::Exited;
+            task.exit_code = Some(code);
+            task.wake_tick = None;
+        }
+    });
 }
 
 pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
