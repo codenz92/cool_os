@@ -14,6 +14,7 @@ const ATTR_LFN: u8 = 0x0F;
 const FAT_ENTRY_MASK: u32 = 0x0FFF_FFFF;
 const FAT_FREE: u32 = 0x0000_0000;
 const FAT_EOC: u32 = 0x0FFF_FFFF;
+const LFN_CHAR_OFFSETS: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsError {
@@ -22,6 +23,7 @@ pub enum FsError {
     Io,
     NoSpace,
     NotDirectory,
+    NotEmpty,
     NotFound,
     UnsupportedName,
 }
@@ -34,8 +36,9 @@ impl FsError {
             FsError::Io => "disk I/O failed",
             FsError::NoSpace => "filesystem full",
             FsError::NotDirectory => "not a directory",
+            FsError::NotEmpty => "directory not empty",
             FsError::NotFound => "not found",
-            FsError::UnsupportedName => "8.3 names only",
+            FsError::UnsupportedName => "invalid name",
         }
     }
 }
@@ -236,20 +239,21 @@ impl DirEntry {
     }
 }
 
-#[derive(Clone, Copy)]
 struct DirEntryLocation {
     entry: DirEntry,
     lba: u32,
     offset: usize,
+    lfn_locations: Vec<(u32, usize)>,
+}
+
+struct FatName {
+    short: [u8; 11],
+    lfn_entries: Vec<[u8; DIR_ENTRY_SIZE]>,
 }
 
 fn name_to_83(s: &[u8]) -> [u8; 11] {
     let mut out = [b' '; 11];
-    let s = if s.last() == Some(&0) {
-        &s[..s.len() - 1]
-    } else {
-        s
-    };
+    let s = strip_trailing_nul(s);
     let dot = s.iter().rposition(|&b| b == b'.');
     let (base, ext) = match dot {
         Some(p) => (&s[..p], &s[p + 1..]),
@@ -295,6 +299,195 @@ fn is_valid_short_name_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'$' | b'~')
 }
 
+// ── LFN helpers ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct LfnFragment {
+    seq: u8,
+    is_last: bool,
+    checksum: u8,
+    chars: [u16; 13],
+}
+
+fn lfn_checksum(name83: &[u8; 11]) -> u8 {
+    name83
+        .iter()
+        .fold(0u8, |sum, &b| (sum >> 1 | (sum & 1) << 7).wrapping_add(b))
+}
+
+fn read_lfn_chars(b: &[u8]) -> [u16; 13] {
+    let mut chars = [0u16; 13];
+    for (i, &off) in LFN_CHAR_OFFSETS.iter().enumerate() {
+        chars[i] = u16::from_le_bytes([b[off], b[off + 1]]);
+    }
+    chars
+}
+
+fn read_lfn_fragment(b: &[u8]) -> Option<LfnFragment> {
+    if b.len() < DIR_ENTRY_SIZE || b[11] != ATTR_LFN {
+        return None;
+    }
+    let seq = b[0] & 0x3F;
+    if seq == 0 || b[12] != 0 || b[26] != 0 || b[27] != 0 {
+        return None;
+    }
+    Some(LfnFragment {
+        seq,
+        is_last: b[0] & 0x40 != 0,
+        checksum: b[13],
+        chars: read_lfn_chars(b),
+    })
+}
+
+fn assemble_lfn(fragments: &[(u8, [u16; 13])]) -> Option<String> {
+    if fragments.is_empty() {
+        return None;
+    }
+    let mut sorted = fragments.to_vec();
+    sorted.sort_by_key(|(seq, _)| *seq);
+    for (i, (seq, _)) in sorted.iter().enumerate() {
+        if *seq as usize != i + 1 {
+            return None;
+        }
+    }
+    let mut utf16: Vec<u16> = Vec::new();
+    for (_, chars) in &sorted {
+        for &ch in chars.iter() {
+            if ch == 0x0000 {
+                return utf16_to_string(&utf16);
+            }
+            if ch != 0xFFFF {
+                utf16.push(ch);
+            }
+        }
+    }
+    utf16_to_string(&utf16)
+}
+
+fn utf16_to_string(utf16: &[u16]) -> Option<String> {
+    let mut s = String::new();
+    let mut i = 0usize;
+    while i < utf16.len() {
+        let ch = utf16[i];
+        if (0xD800..0xDC00).contains(&ch) {
+            if i + 1 >= utf16.len() {
+                return None;
+            }
+            let low = utf16[i + 1];
+            if !(0xDC00..0xE000).contains(&low) {
+                return None;
+            }
+            let code = 0x10000u32 + ((ch as u32 - 0xD800) << 10) + (low as u32 - 0xDC00);
+            s.push(char::from_u32(code)?);
+            i += 2;
+        } else if (0xDC00..0xE000).contains(&ch) {
+            return None;
+        } else {
+            s.push(char::from_u32(ch as u32)?);
+            i += 1;
+        }
+    }
+    Some(s)
+}
+
+fn assemble_lfn_for_entry(entry: &DirEntry, fragments: &[LfnFragment]) -> Option<String> {
+    if fragments.is_empty() {
+        return None;
+    }
+
+    let checksum = lfn_checksum(&entry.name);
+    if fragments
+        .iter()
+        .any(|fragment| fragment.checksum != checksum)
+    {
+        return None;
+    }
+
+    let last = fragments.iter().find(|fragment| fragment.is_last)?;
+    if fragments.iter().filter(|fragment| fragment.is_last).count() != 1 {
+        return None;
+    }
+    if last.seq as usize != fragments.len() {
+        return None;
+    }
+
+    let mut ordered = Vec::new();
+    for fragment in fragments {
+        ordered.push((fragment.seq, fragment.chars));
+    }
+    assemble_lfn(&ordered)
+}
+
+fn strip_trailing_nul(s: &[u8]) -> &[u8] {
+    if s.last() == Some(&0) {
+        &s[..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn lfn_name_matches(lfn_name: &str, component: &[u8]) -> bool {
+    core::str::from_utf8(strip_trailing_nul(component))
+        .map(|component| lfn_name.eq_ignore_ascii_case(component))
+        .unwrap_or(false)
+}
+
+fn validate_lfn_name(name: &str) -> Result<(), FsError> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(FsError::InvalidPath);
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err(FsError::UnsupportedName);
+    }
+    let mut utf16_len = 0usize;
+    for ch in name.chars() {
+        if (ch as u32) < 0x20 || matches!(ch, '"' | '*' | '/' | ':' | '<' | '>' | '?' | '\\' | '|')
+        {
+            return Err(FsError::UnsupportedName);
+        }
+        utf16_len += ch.len_utf16();
+    }
+    if utf16_len > 255 {
+        return Err(FsError::UnsupportedName);
+    }
+    Ok(())
+}
+
+fn encode_lfn_entries(name: &str, name83: &[u8; 11]) -> Result<Vec<[u8; DIR_ENTRY_SIZE]>, FsError> {
+    let utf16: Vec<u16> = name.encode_utf16().collect();
+    if utf16.is_empty() || utf16.len() > 255 {
+        return Err(FsError::UnsupportedName);
+    }
+
+    let checksum = lfn_checksum(name83);
+    let count = (utf16.len() + 12) / 13;
+    let mut entries = Vec::new();
+    for seq in (1..=count).rev() {
+        let start = (seq - 1) * 13;
+        let end = (start + 13).min(utf16.len());
+        let chars = &utf16[start..end];
+        let mut entry = [0u8; DIR_ENTRY_SIZE];
+        entry[0] = seq as u8;
+        if seq == count {
+            entry[0] |= 0x40;
+        }
+        entry[11] = ATTR_LFN;
+        entry[13] = checksum;
+        for (i, &off) in LFN_CHAR_OFFSETS.iter().enumerate() {
+            let value = if i < chars.len() {
+                chars[i]
+            } else if i == chars.len() {
+                0x0000
+            } else {
+                0xFFFF
+            };
+            entry[off..off + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -311,13 +504,32 @@ pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
     let sectors = bpb.cluster_chain_sectors(cluster);
     let mut buf = [0u8; SECTOR_SIZE];
     let mut entries = Vec::new();
+    let mut lfn_fragments: Vec<LfnFragment> = Vec::new();
     for lba in sectors {
         if !crate::ata::read_sector(lba, &mut buf) {
             return None;
         }
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
-            if let Some(entry) = DirEntry::from_bytes(&buf[offset..]) {
-                let name = entry.name_as_string();
+            let slot = &buf[offset..offset + DIR_ENTRY_SIZE];
+            if slot[0] == 0x00 {
+                return Some(entries);
+            }
+            if slot[0] == 0xE5 {
+                lfn_fragments.clear();
+                continue;
+            }
+            if slot[11] == ATTR_LFN {
+                if let Some(fragment) = read_lfn_fragment(slot) {
+                    lfn_fragments.push(fragment);
+                } else {
+                    lfn_fragments.clear();
+                }
+                continue;
+            }
+            if let Some(entry) = DirEntry::from_bytes(slot) {
+                let name = assemble_lfn_for_entry(&entry, &lfn_fragments)
+                    .unwrap_or_else(|| entry.name_as_string());
+                lfn_fragments.clear();
                 if name == "." || name == ".." {
                     continue;
                 }
@@ -326,8 +538,8 @@ pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
                     is_dir: entry.is_dir(),
                     size: entry.file_size,
                 });
-            } else if buf[offset] == 0x00 {
-                return Some(entries);
+            } else {
+                lfn_fragments.clear();
             }
         }
     }
@@ -365,13 +577,14 @@ pub fn read_file(path: &str) -> Option<Vec<u8>> {
 }
 
 pub fn create_file(path: &str) -> Result<(), FsError> {
-    let (bpb, parent_cluster, name83) = prepare_create(path)?;
-    let entry = encode_dir_entry(name83, ATTR_ARCHIVE, 0, 0);
-    append_dir_entry(&bpb, parent_cluster, &entry)
+    let (bpb, parent_cluster, fat_name) = prepare_create(path)?;
+    let mut entries = fat_name.lfn_entries;
+    entries.push(encode_dir_entry(fat_name.short, ATTR_ARCHIVE, 0, 0));
+    append_dir_entries(&bpb, parent_cluster, &entries)
 }
 
 pub fn create_dir(path: &str) -> Result<(), FsError> {
-    let (bpb, parent_cluster, name83) = prepare_create(path)?;
+    let (bpb, parent_cluster, fat_name) = prepare_create(path)?;
     let new_cluster = alloc_cluster(&bpb)?;
 
     if let Err(err) = init_directory_cluster(&bpb, new_cluster, parent_cluster) {
@@ -379,8 +592,14 @@ pub fn create_dir(path: &str) -> Result<(), FsError> {
         return Err(err);
     }
 
-    let entry = encode_dir_entry(name83, ATTR_DIRECTORY, new_cluster, 0);
-    if let Err(err) = append_dir_entry(&bpb, parent_cluster, &entry) {
+    let mut entries = fat_name.lfn_entries;
+    entries.push(encode_dir_entry(
+        fat_name.short,
+        ATTR_DIRECTORY,
+        new_cluster,
+        0,
+    ));
+    if let Err(err) = append_dir_entries(&bpb, parent_cluster, &entries) {
         let _ = free_single_cluster(&bpb, new_cluster);
         return Err(err);
     }
@@ -393,18 +612,49 @@ pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
     if old_name.eq_ignore_ascii_case(new_name) {
         return Ok(());
     }
-    let new_name83 = name_to_83_checked(new_name)?;
     let bpb = Bpb::load().ok_or(FsError::Io)?;
     let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
-    if find_entry(&bpb, parent_cluster, new_name.as_bytes()).is_some() {
-        return Err(FsError::AlreadyExists);
-    }
     let location =
         find_entry_location(&bpb, parent_cluster, old_name.as_bytes()).ok_or(FsError::NotFound)?;
-    let mut sec = [0u8; SECTOR_SIZE];
-    read_sector_exact(location.lba, &mut sec)?;
-    sec[location.offset..location.offset + 11].copy_from_slice(&new_name83);
-    write_sector_exact(location.lba, &sec)
+    if let Some(existing) = find_entry_location(&bpb, parent_cluster, new_name.as_bytes()) {
+        if existing.lba != location.lba || existing.offset != location.offset {
+            return Err(FsError::AlreadyExists);
+        }
+    }
+
+    let fat_name = encode_name_for_dir(
+        &bpb,
+        parent_cluster,
+        new_name,
+        Some((location.lba, location.offset)),
+    )?;
+    let mut short_entry = read_dir_slot(location.lba, location.offset)?;
+    short_entry[0..11].copy_from_slice(&fat_name.short);
+
+    if fat_name.lfn_entries.is_empty() {
+        write_dir_slot(location.lba, location.offset, &short_entry)?;
+        for &(lba, offset) in &location.lfn_locations {
+            mark_dir_slot_deleted(lba, offset)?;
+        }
+        return Ok(());
+    }
+
+    if location.lfn_locations.len() == fat_name.lfn_entries.len() {
+        for (entry, &(lba, offset)) in fat_name
+            .lfn_entries
+            .iter()
+            .zip(location.lfn_locations.iter())
+        {
+            write_dir_slot(lba, offset, entry)?;
+        }
+        write_dir_slot(location.lba, location.offset, &short_entry)?;
+        return Ok(());
+    }
+
+    let mut entries = fat_name.lfn_entries;
+    entries.push(short_entry);
+    append_dir_entries(&bpb, parent_cluster, &entries)?;
+    mark_entry_location_deleted(&location)
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
@@ -454,6 +704,36 @@ pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     Ok(())
 }
 
+pub fn delete_file(path: &str) -> Result<(), FsError> {
+    let (parent_path, name) = split_parent_and_name(path)?;
+    let bpb = Bpb::load().ok_or(FsError::Io)?;
+    let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
+    let location =
+        find_entry_location(&bpb, parent_cluster, name.as_bytes()).ok_or(FsError::NotFound)?;
+    if location.entry.is_dir() {
+        let dir_cluster = location.entry.first_cluster();
+        let children = list_dir(path).unwrap_or_default();
+        if !children.is_empty() {
+            return Err(FsError::NotEmpty);
+        }
+        if dir_cluster >= 2 {
+            free_cluster_chain(&bpb, dir_cluster)?;
+        }
+    } else {
+        let first_cluster = location.entry.first_cluster();
+        if first_cluster >= 2 {
+            free_cluster_chain(&bpb, first_cluster)?;
+        }
+    }
+    mark_entry_location_deleted(&location)
+}
+
+pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
+    let data = read_file(src).ok_or(FsError::NotFound)?;
+    create_file(dst)?;
+    write_file(dst, &data)
+}
+
 // ── Path + lookup helpers ─────────────────────────────────────────────────────
 
 fn trim_abs_path(path: &str) -> Result<&str, FsError> {
@@ -485,15 +765,115 @@ fn split_parent_and_name(path: &str) -> Result<(String, String), FsError> {
     Ok((parent, name))
 }
 
-fn prepare_create(path: &str) -> Result<(Bpb, u32, [u8; 11]), FsError> {
+fn prepare_create(path: &str) -> Result<(Bpb, u32, FatName), FsError> {
     let (parent_path, name) = split_parent_and_name(path)?;
-    let name83 = name_to_83_checked(&name)?;
     let bpb = Bpb::load().ok_or(FsError::Io)?;
     let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
     if find_entry(&bpb, parent_cluster, name.as_bytes()).is_some() {
         return Err(FsError::AlreadyExists);
     }
-    Ok((bpb, parent_cluster, name83))
+    let fat_name = encode_name_for_dir(&bpb, parent_cluster, &name, None)?;
+    Ok((bpb, parent_cluster, fat_name))
+}
+
+fn encode_name_for_dir(
+    bpb: &Bpb,
+    dir_cluster: u32,
+    name: &str,
+    exclude: Option<(u32, usize)>,
+) -> Result<FatName, FsError> {
+    if let Ok(short) = name_to_83_checked(name) {
+        if short_name_exists_except(bpb, dir_cluster, &short, exclude) {
+            return Err(FsError::AlreadyExists);
+        }
+        return Ok(FatName {
+            short,
+            lfn_entries: Vec::new(),
+        });
+    }
+
+    validate_lfn_name(name)?;
+    let short = generate_short_alias(bpb, dir_cluster, name, exclude)?;
+    let lfn_entries = encode_lfn_entries(name, &short)?;
+    Ok(FatName { short, lfn_entries })
+}
+
+fn generate_short_alias(
+    bpb: &Bpb,
+    dir_cluster: u32,
+    name: &str,
+    exclude: Option<(u32, usize)>,
+) -> Result<[u8; 11], FsError> {
+    let (stem, ext) = split_lfn_stem_ext(name);
+    let mut base = sanitize_short_component(stem, b"FILE");
+    let ext = sanitize_short_component(ext, b"");
+    if base.is_empty() {
+        base.extend_from_slice(b"FILE");
+    }
+
+    for counter in 1..1_000_000u32 {
+        let mut suffix = String::from("~");
+        push_decimal(&mut suffix, counter);
+        if suffix.len() >= 8 {
+            continue;
+        }
+
+        let prefix_len = base.len().min(8 - suffix.len());
+        let mut candidate = [b' '; 11];
+        for (i, &b) in base.iter().take(prefix_len).enumerate() {
+            candidate[i] = b;
+        }
+        for (i, &b) in suffix.as_bytes().iter().enumerate() {
+            candidate[prefix_len + i] = b;
+        }
+        for (i, &b) in ext.iter().take(3).enumerate() {
+            candidate[8 + i] = b;
+        }
+
+        if !short_name_exists_except(bpb, dir_cluster, &candidate, exclude) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(FsError::NoSpace)
+}
+
+fn split_lfn_stem_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(0) | None => (name, ""),
+        Some(pos) if pos + 1 < name.len() => (&name[..pos], &name[pos + 1..]),
+        Some(_) => (name, ""),
+    }
+}
+
+fn sanitize_short_component(component: &str, fallback: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for b in component.bytes() {
+        let upper = b.to_ascii_uppercase();
+        if is_valid_short_name_char(upper) {
+            out.push(upper);
+        }
+    }
+    if out.is_empty() {
+        out.extend_from_slice(fallback);
+    }
+    out
+}
+
+fn push_decimal(out: &mut String, mut value: u32) {
+    let mut digits = [0u8; 10];
+    let mut len = 0usize;
+    loop {
+        digits[len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for &digit in digits[..len].iter().rev() {
+        out.push(digit as char);
+    }
 }
 
 fn resolve_dir_cluster(bpb: &Bpb, path: &str) -> Result<u32, FsError> {
@@ -528,21 +908,93 @@ fn find_entry(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEntry> {
 fn find_entry_location(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEntryLocation> {
     let sectors = bpb.cluster_chain_sectors(dir_cluster);
     let mut buf = [0u8; SECTOR_SIZE];
+    let mut lfn_fragments: Vec<LfnFragment> = Vec::new();
+    let mut lfn_locations: Vec<(u32, usize)> = Vec::new();
     for lba in sectors {
         if !crate::ata::read_sector(lba, &mut buf) {
             return None;
         }
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
-            if let Some(entry) = DirEntry::from_bytes(&buf[offset..]) {
-                if entry.matches(name) {
-                    return Some(DirEntryLocation { entry, lba, offset });
-                }
-            } else if buf[offset] == 0x00 {
+            let slot = &buf[offset..offset + DIR_ENTRY_SIZE];
+            if slot[0] == 0x00 {
                 return None;
             }
+            if slot[0] == 0xE5 {
+                lfn_fragments.clear();
+                lfn_locations.clear();
+                continue;
+            }
+            if slot[11] == ATTR_LFN {
+                if let Some(fragment) = read_lfn_fragment(slot) {
+                    lfn_fragments.push(fragment);
+                    lfn_locations.push((lba, offset));
+                } else {
+                    lfn_fragments.clear();
+                    lfn_locations.clear();
+                }
+                continue;
+            }
+            if let Some(entry) = DirEntry::from_bytes(slot) {
+                let lfn_name = assemble_lfn_for_entry(&entry, &lfn_fragments);
+                let short_name_matches = entry.matches(name);
+                let long_name_matches = lfn_name
+                    .as_ref()
+                    .map(|lfn_name| lfn_name_matches(lfn_name, name))
+                    .unwrap_or(false);
+                if short_name_matches || long_name_matches {
+                    let locations = if lfn_name.is_some() {
+                        lfn_locations.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    return Some(DirEntryLocation {
+                        entry,
+                        lba,
+                        offset,
+                        lfn_locations: locations,
+                    });
+                }
+            }
+            lfn_fragments.clear();
+            lfn_locations.clear();
         }
     }
     None
+}
+
+fn short_name_exists_except(
+    bpb: &Bpb,
+    dir_cluster: u32,
+    name83: &[u8; 11],
+    exclude: Option<(u32, usize)>,
+) -> bool {
+    let sectors = bpb.cluster_chain_sectors(dir_cluster);
+    let mut buf = [0u8; SECTOR_SIZE];
+    for lba in sectors {
+        if !crate::ata::read_sector(lba, &mut buf) {
+            return true;
+        }
+        for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
+            let slot = &buf[offset..offset + DIR_ENTRY_SIZE];
+            if slot[0] == 0x00 {
+                return false;
+            }
+            if slot[0] == 0xE5 || slot[11] == ATTR_LFN {
+                continue;
+            }
+            if let Some(entry) = DirEntry::from_bytes(slot) {
+                let excluded = exclude
+                    .map(|(exclude_lba, exclude_offset)| {
+                        exclude_lba == lba && exclude_offset == offset
+                    })
+                    .unwrap_or(false);
+                if !excluded && entry.name == *name83 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn read_clusters(bpb: &Bpb, start: u32, size: u32) -> Option<Vec<u8>> {
@@ -689,44 +1141,135 @@ fn init_directory_cluster(bpb: &Bpb, cluster: u32, parent_cluster: u32) -> Resul
     write_sector_exact(bpb.cluster_lba(cluster), &first_sector)
 }
 
-fn append_dir_entry(
+fn append_dir_entries(
     bpb: &Bpb,
     dir_cluster: u32,
-    entry: &[u8; DIR_ENTRY_SIZE],
+    entries: &[[u8; DIR_ENTRY_SIZE]],
 ) -> Result<(), FsError> {
-    let clusters = bpb.cluster_chain_clusters(dir_cluster);
-    let mut sec = [0u8; SECTOR_SIZE];
+    if entries.is_empty() {
+        return Ok(());
+    }
 
-    for &cluster in &clusters {
-        let base_lba = bpb.cluster_lba(cluster);
-        for sector_idx in 0..bpb.sectors_per_cluster as u32 {
-            let lba = base_lba + sector_idx;
-            read_sector_exact(lba, &mut sec)?;
-            for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
-                let first = sec[offset];
-                if first == 0xE5 || first == 0x00 {
-                    sec[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry);
-                    if first == 0x00 && offset + DIR_ENTRY_SIZE < SECTOR_SIZE {
-                        sec[offset + DIR_ENTRY_SIZE] = 0x00;
-                    }
-                    write_sector_exact(lba, &sec)?;
-                    return Ok(());
+    loop {
+        if let Some((locations, needs_end_marker)) =
+            find_free_dir_entry_run(bpb, dir_cluster, entries.len())?
+        {
+            for (entry, &(lba, offset)) in entries.iter().zip(locations.iter()) {
+                write_dir_slot(lba, offset, entry)?;
+            }
+            if needs_end_marker {
+                if let Some(&(lba, offset)) = locations.last() {
+                    write_dir_end_marker_after(bpb, dir_cluster, lba, offset)?;
                 }
+            }
+            return Ok(());
+        }
+
+        extend_dir_chain(bpb, dir_cluster)?;
+    }
+}
+
+fn find_free_dir_entry_run(
+    bpb: &Bpb,
+    dir_cluster: u32,
+    needed: usize,
+) -> Result<Option<(Vec<(u32, usize)>, bool)>, FsError> {
+    let sectors = bpb.cluster_chain_sectors(dir_cluster);
+    let mut sec = [0u8; SECTOR_SIZE];
+    let mut run: Vec<(u32, usize)> = Vec::new();
+    let mut run_hit_end = false;
+
+    for lba in sectors {
+        read_sector_exact(lba, &mut sec)?;
+        for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
+            let first = sec[offset];
+            if first == 0xE5 || first == 0x00 {
+                if run.is_empty() {
+                    run_hit_end = false;
+                }
+                if first == 0x00 {
+                    run_hit_end = true;
+                }
+                run.push((lba, offset));
+                if run.len() == needed {
+                    return Ok(Some((run, run_hit_end)));
+                }
+            } else {
+                run.clear();
+                run_hit_end = false;
             }
         }
     }
 
+    Ok(None)
+}
+
+fn extend_dir_chain(bpb: &Bpb, dir_cluster: u32) -> Result<(), FsError> {
+    let clusters = bpb.cluster_chain_clusters(dir_cluster);
     let last_cluster = *clusters.last().ok_or(FsError::Io)?;
     let new_cluster = alloc_cluster(bpb)?;
-    let mut first_sector = [0u8; SECTOR_SIZE];
-    first_sector[..DIR_ENTRY_SIZE].copy_from_slice(entry);
-    if let Err(err) = write_sector_exact(bpb.cluster_lba(new_cluster), &first_sector) {
-        let _ = free_single_cluster(bpb, new_cluster);
-        return Err(err);
-    }
     if let Err(err) = fat_write_entry(bpb, last_cluster, new_cluster) {
         let _ = free_single_cluster(bpb, new_cluster);
         return Err(err);
+    }
+    Ok(())
+}
+
+fn next_dir_slot(bpb: &Bpb, dir_cluster: u32, lba: u32, offset: usize) -> Option<(u32, usize)> {
+    let mut return_next = false;
+    for sector_lba in bpb.cluster_chain_sectors(dir_cluster) {
+        for sector_offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
+            if return_next {
+                return Some((sector_lba, sector_offset));
+            }
+            if sector_lba == lba && sector_offset == offset {
+                return_next = true;
+            }
+        }
+    }
+    None
+}
+
+fn read_dir_slot(lba: u32, offset: usize) -> Result<[u8; DIR_ENTRY_SIZE], FsError> {
+    let mut sec = [0u8; SECTOR_SIZE];
+    read_sector_exact(lba, &mut sec)?;
+    let mut entry = [0u8; DIR_ENTRY_SIZE];
+    entry.copy_from_slice(&sec[offset..offset + DIR_ENTRY_SIZE]);
+    Ok(entry)
+}
+
+fn write_dir_slot(lba: u32, offset: usize, entry: &[u8; DIR_ENTRY_SIZE]) -> Result<(), FsError> {
+    let mut sec = [0u8; SECTOR_SIZE];
+    read_sector_exact(lba, &mut sec)?;
+    sec[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry);
+    write_sector_exact(lba, &sec)
+}
+
+fn mark_dir_slot_deleted(lba: u32, offset: usize) -> Result<(), FsError> {
+    let mut sec = [0u8; SECTOR_SIZE];
+    read_sector_exact(lba, &mut sec)?;
+    sec[offset] = 0xE5;
+    write_sector_exact(lba, &sec)
+}
+
+fn mark_entry_location_deleted(location: &DirEntryLocation) -> Result<(), FsError> {
+    for &(lba, offset) in &location.lfn_locations {
+        mark_dir_slot_deleted(lba, offset)?;
+    }
+    mark_dir_slot_deleted(location.lba, location.offset)
+}
+
+fn write_dir_end_marker_after(
+    bpb: &Bpb,
+    dir_cluster: u32,
+    lba: u32,
+    offset: usize,
+) -> Result<(), FsError> {
+    if let Some((next_lba, next_offset)) = next_dir_slot(bpb, dir_cluster, lba, offset) {
+        let mut sec = [0u8; SECTOR_SIZE];
+        read_sector_exact(next_lba, &mut sec)?;
+        sec[next_offset] = 0x00;
+        write_sector_exact(next_lba, &sec)?;
     }
     Ok(())
 }

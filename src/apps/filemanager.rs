@@ -173,6 +173,8 @@ enum ContextAction {
     NewFolder,
     Rename,
     EditText,
+    Delete,
+    Duplicate,
     Refresh,
 }
 
@@ -222,10 +224,13 @@ pub struct FileManagerApp {
     pub window: Window,
     entries: Vec<DirEntryInfo>,
     entry_kinds: Vec<EntryKind>,
+    entry_child_counts: Vec<usize>,
+    all_entries: Vec<DirEntryInfo>,
+    all_entry_kinds: Vec<EntryKind>,
     path: String,
     offset: usize,
     view_h: i32,
-    selected: Option<usize>,
+    selected: Vec<usize>,
     total_rows: usize,
     pending_open: Option<FileManagerOpenRequest>,
     status_note: Option<String>,
@@ -235,6 +240,10 @@ pub struct FileManagerApp {
     sort_desc: bool,
     context_menu: Option<ContextMenuState>,
     modal: Option<ModalState>,
+    back_stack: Vec<String>,
+    forward_stack: Vec<String>,
+    search_filter: String,
+    search_active: bool,
 }
 
 impl FileManagerApp {
@@ -247,10 +256,13 @@ impl FileManagerApp {
             window: Window::new(x, y, FILEMAN_W, FILEMAN_H, "File Manager"),
             entries: Vec::new(),
             entry_kinds: Vec::new(),
+            entry_child_counts: Vec::new(),
+            all_entries: Vec::new(),
+            all_entry_kinds: Vec::new(),
             path: String::from("/"),
             offset: 0,
             view_h: 0,
-            selected: None,
+            selected: Vec::new(),
             total_rows: 0,
             pending_open: None,
             status_note: None,
@@ -260,6 +272,10 @@ impl FileManagerApp {
             sort_desc: false,
             context_menu: None,
             modal: None,
+            back_stack: Vec::new(),
+            forward_stack: Vec::new(),
+            search_filter: String::new(),
+            search_active: false,
         };
         app.load_dir(dir);
         app
@@ -284,6 +300,8 @@ impl FileManagerApp {
     ) {
         self.path.clear();
         self.path.push_str(dir);
+        self.search_filter.clear();
+        self.search_active = false;
         let (mut new_entries, mut entry_kinds) = self.load_entries_for_path(dir);
         Self::sort_entries(
             &mut new_entries,
@@ -291,15 +309,41 @@ impl FileManagerApp {
             self.sort_column,
             self.sort_desc,
         );
+        self.entry_child_counts = new_entries
+            .iter()
+            .map(|e| {
+                if e.is_dir {
+                    let mut child_path = String::from(dir);
+                    if !child_path.ends_with('/') {
+                        child_path.push('/');
+                    }
+                    child_path.push_str(&e.name);
+                    crate::fat32::list_dir(&child_path)
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                }
+            })
+            .collect();
+        self.all_entries = new_entries.clone();
+        self.all_entry_kinds = entry_kinds.clone();
         self.entries = new_entries;
         self.entry_kinds = entry_kinds;
-        self.selected = selected_name.and_then(|name| {
-            self.entries
+        self.selected.clear();
+        if let Some(name) = selected_name {
+            if let Some(pos) = self
+                .entries
                 .iter()
                 .position(|entry| entry.name.eq_ignore_ascii_case(name))
-        });
-        if self.selected.is_none() {
-            self.selected = self.entries.first().map(|_| 0);
+            {
+                self.selected.push(pos);
+            }
+        }
+        if self.selected.is_empty() {
+            if !self.entries.is_empty() {
+                self.selected.push(0);
+            }
         }
         let visible_rows = self.visible_row_capacity();
         let max_offset = self.entries.len().saturating_sub(visible_rows.max(1));
@@ -310,9 +354,169 @@ impl FileManagerApp {
         self.render();
     }
 
+    fn set_selected_single(&mut self, idx: usize) {
+        self.selected.clear();
+        self.selected.push(idx);
+    }
+
+    fn navigate_to(&mut self, path: &str) {
+        let old = self.path.clone();
+        self.forward_stack.clear();
+        self.back_stack.push(old);
+        self.load_dir(path);
+    }
+
+    fn navigate_back(&mut self) {
+        if let Some(prev) = self.back_stack.pop() {
+            let current = self.path.clone();
+            self.forward_stack.push(current);
+            self.load_dir(&prev);
+        }
+    }
+
+    fn navigate_forward(&mut self) {
+        if let Some(next) = self.forward_stack.pop() {
+            let current = self.path.clone();
+            self.back_stack.push(current);
+            self.load_dir(&next);
+        }
+    }
+
     pub fn handle_key(&mut self, c: char) {
         if self.handle_modal_key(c) {
             self.render();
+            return;
+        }
+        if self.search_active {
+            self.handle_search_key(c);
+            return;
+        }
+        let changed = self.handle_nav_key(c);
+        if changed {
+            self.render();
+        }
+    }
+
+    fn handle_search_key(&mut self, c: char) {
+        match c {
+            '\u{001B}' => {
+                self.search_active = false;
+                self.search_filter.clear();
+                self.apply_search_filter();
+            }
+            '\u{0008}' => {
+                if !self.search_filter.is_empty() {
+                    self.search_filter.pop();
+                    self.apply_search_filter();
+                }
+            }
+            '\n' | '\r' => {
+                self.search_active = false;
+            }
+            _ if !c.is_control() => {
+                self.search_filter.push(c.to_ascii_uppercase());
+                self.apply_search_filter();
+            }
+            _ => {}
+        }
+        self.render();
+    }
+
+    fn apply_search_filter(&mut self) {
+        if self.search_filter.is_empty() {
+            self.entries = self.all_entries.clone();
+            self.entry_kinds = self.all_entry_kinds.clone();
+        } else {
+            let filter = self.search_filter.to_ascii_uppercase();
+            let mut filtered_entries = Vec::new();
+            let mut filtered_kinds = Vec::new();
+            for (entry, kind) in self.all_entries.iter().zip(self.all_entry_kinds.iter()) {
+                if entry.name.to_ascii_uppercase().contains(&filter) {
+                    filtered_entries.push(entry.clone());
+                    filtered_kinds.push(*kind);
+                }
+            }
+            self.entries = filtered_entries;
+            self.entry_kinds = filtered_kinds;
+        }
+        self.selected.clear();
+        if !self.entries.is_empty() {
+            self.selected.push(0);
+        }
+        self.offset = 0;
+    }
+
+    fn handle_nav_key(&mut self, c: char) -> bool {
+        if self.path == "/" {
+            return false;
+        }
+        match c {
+            '\u{F700}' => {
+                let cursor = self.selected.first().copied().unwrap_or(0);
+                if cursor > 0 {
+                    let files = self.file_indices();
+                    let pos_in_files = files.iter().position(|&i| i == cursor);
+                    if let Some(pos) = pos_in_files {
+                        if pos > 0 {
+                            self.set_selected_single(files[pos - 1]);
+                            self.ensure_selected_visible();
+                            return true;
+                        }
+                    } else {
+                        let new_idx = cursor.saturating_sub(1);
+                        self.set_selected_single(new_idx);
+                        return true;
+                    }
+                }
+                false
+            }
+            '\u{F701}' => {
+                let cursor = self.selected.first().copied().unwrap_or(0);
+                let files = self.file_indices();
+                let pos_in_files = files.iter().position(|&i| i == cursor);
+                if let Some(pos) = pos_in_files {
+                    if pos + 1 < files.len() {
+                        self.set_selected_single(files[pos + 1]);
+                        self.ensure_selected_visible();
+                        return true;
+                    }
+                } else if cursor + 1 < self.entries.len() {
+                    self.set_selected_single(cursor + 1);
+                    return true;
+                }
+                false
+            }
+            '\n' | '\r' => {
+                self.open_selected();
+                false
+            }
+            '\u{001B}' => {
+                self.context_menu = None;
+                true
+            }
+            ' ' => {
+                let cursor = match self.selected.first().copied() {
+                    Some(i) => i,
+                    None => return false,
+                };
+                if let Some(pos) = self.selected.iter().position(|&i| i == cursor) {
+                    if self.selected.len() > 1 {
+                        self.selected.remove(pos);
+                    }
+                } else {
+                    self.selected.push(cursor);
+                    self.selected.sort_unstable();
+                }
+                true
+            }
+            '\u{007F}' => {
+                let targets = self.selected.clone();
+                if !targets.is_empty() {
+                    self.delete_entries(&targets);
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -329,21 +533,27 @@ impl FileManagerApp {
 
         if let Some(path) = self.hit_navigation(lx, ly) {
             self.context_menu = None;
-            self.load_dir(&path);
+            self.navigate_to(&path);
             return;
         }
 
         if ly >= COMMAND_H && ly < COMMAND_H + PATHBAR_H {
             self.context_menu = None;
             if self.back_button_rect().hit(lx, ly) {
-                if self.path != "/" {
-                    let parent = self.parent_path();
-                    self.load_dir(&parent);
-                }
+                self.navigate_back();
+                return;
+            }
+            if self.forward_button_rect().hit(lx, ly) {
+                self.navigate_forward();
+                return;
+            }
+            if self.search_rect(self.layout()).hit(lx, ly) {
+                self.search_active = true;
+                self.render();
                 return;
             }
             if let Some(path) = self.hit_breadcrumb(lx, ly) {
-                self.load_dir(&path);
+                self.navigate_to(&path);
             }
             return;
         }
@@ -355,8 +565,9 @@ impl FileManagerApp {
         }
 
         self.context_menu = None;
+        self.search_active = false;
         if let Some(idx) = self.hit_main_entry(lx, ly) {
-            self.selected = Some(idx);
+            self.set_selected_single(idx);
             self.render();
         }
     }
@@ -373,7 +584,9 @@ impl FileManagerApp {
         }
         let target = self.hit_main_entry(lx, ly);
         if let Some(idx) = target {
-            self.selected = Some(idx);
+            if !self.selected.contains(&idx) {
+                self.set_selected_single(idx);
+            }
         }
         self.context_menu = Some(self.clamp_context_menu(lx, ly, target));
         self.render();
@@ -384,7 +597,7 @@ impl FileManagerApp {
             return;
         }
         if let Some(idx) = self.hit_main_entry(lx, ly) {
-            self.selected = Some(idx);
+            self.set_selected_single(idx);
             self.open_selected();
         }
     }
@@ -435,7 +648,7 @@ impl FileManagerApp {
     }
 
     fn open_selected(&mut self) {
-        let sel = match self.selected {
+        let sel = match self.selected.first().copied() {
             Some(s) => s,
             None => return,
         };
@@ -448,7 +661,7 @@ impl FileManagerApp {
         }
         let abs = self.make_abs(sel);
         if self.is_dir_idx(sel) {
-            self.load_dir(&abs);
+            self.navigate_to(&abs);
         } else {
             self.pending_open = Some(FileManagerOpenRequest::File(abs));
         }
@@ -458,7 +671,7 @@ impl FileManagerApp {
         if self.path == "/" {
             return;
         }
-        let sel = match self.selected {
+        let sel = match self.selected.first().copied() {
             Some(s) => s,
             None => return,
         };
@@ -467,28 +680,6 @@ impl FileManagerApp {
             self.offset = sel;
         } else if sel >= self.offset + visible_rows {
             self.offset = sel.saturating_sub(visible_rows - 1);
-        }
-    }
-
-    fn parent_path(&self) -> String {
-        if self.path == "/" {
-            return String::from("/");
-        }
-        let mut components: Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
-        if !components.is_empty() {
-            components.pop();
-        }
-        if components.is_empty() {
-            String::from("/")
-        } else {
-            let mut s = String::from("/");
-            for (i, c) in components.iter().enumerate() {
-                if i > 0 {
-                    s.push('/');
-                }
-                s.push_str(c);
-            }
-            s
         }
     }
 
@@ -574,12 +765,36 @@ impl FileManagerApp {
     }
 
     fn is_editable_text_name(name: &str) -> bool {
-        matches!(Self::file_ext(name), "TXT" | "MD" | "LOG" | "RST" | "CSV")
+        matches!(
+            Self::file_ext(name),
+            "TXT"
+                | "MD"
+                | "LOG"
+                | "RST"
+                | "CSV"
+                | "RS"
+                | "TOML"
+                | "JSON"
+                | "YAML"
+                | "YML"
+                | "SH"
+                | "BASH"
+                | "C"
+                | "H"
+                | "PY"
+                | "JS"
+                | "TS"
+                | "ASM"
+                | "S"
+                | "INI"
+                | "CFG"
+        )
     }
 
     fn selected_name(&self) -> Option<String> {
         self.selected
-            .and_then(|idx| self.entries.get(idx))
+            .first()
+            .and_then(|&idx| self.entries.get(idx))
             .map(|entry| entry.name.clone())
     }
 
@@ -653,13 +868,20 @@ impl FileManagerApp {
             self.sort_column,
             self.sort_desc,
         );
-        self.selected = selected.and_then(|name| {
-            self.entries
+        self.selected.clear();
+        if let Some(name) = selected {
+            if let Some(pos) = self
+                .entries
                 .iter()
                 .position(|entry| entry.name.eq_ignore_ascii_case(&name))
-        });
-        if self.selected.is_none() {
-            self.selected = self.entries.first().map(|_| 0);
+            {
+                self.selected.push(pos);
+            }
+        }
+        if self.selected.is_empty() {
+            if !self.entries.is_empty() {
+                self.selected.push(0);
+            }
         }
         self.ensure_selected_visible();
         self.status_note = Some(String::from(note));
@@ -768,6 +990,12 @@ impl FileManagerApp {
             if self.entry_can_rename(idx) {
                 items.push(("Rename", ContextAction::Rename));
             }
+            if matches!(self.entry_kind(idx), EntryKind::Fs) && !self.is_dir_idx(idx) {
+                items.push(("Duplicate", ContextAction::Duplicate));
+            }
+            if matches!(self.entry_kind(idx), EntryKind::Fs) {
+                items.push(("Delete", ContextAction::Delete));
+            }
         }
         items.push(("New File", ContextAction::NewFile));
         items.push(("New Folder", ContextAction::NewFolder));
@@ -834,7 +1062,7 @@ impl FileManagerApp {
         match action {
             ContextAction::Open => {
                 if let Some(idx) = target {
-                    self.selected = Some(idx);
+                    self.set_selected_single(idx);
                     self.open_selected();
                 }
             }
@@ -872,7 +1100,86 @@ impl FileManagerApp {
                     self.open_text_editor(idx);
                 }
             }
+            ContextAction::Delete => {
+                let targets: Vec<usize> = if let Some(idx) = target {
+                    if self.selected.contains(&idx) {
+                        self.selected.clone()
+                    } else {
+                        alloc::vec![idx]
+                    }
+                } else {
+                    self.selected.clone()
+                };
+                self.delete_entries(&targets);
+            }
+            ContextAction::Duplicate => {
+                if let Some(idx) = target {
+                    self.duplicate_entry(idx);
+                }
+            }
             ContextAction::Refresh => self.refresh_current_dir(),
+        }
+    }
+
+    fn delete_entries(&mut self, indices: &[usize]) {
+        let mut last_err: Option<String> = None;
+        let mut deleted = 0usize;
+        for &idx in indices {
+            let abs = self.make_abs(idx);
+            match crate::fat32::delete_file(&abs) {
+                Ok(()) => deleted += 1,
+                Err(err) => {
+                    last_err = Some(String::from(err.as_str()));
+                }
+            }
+        }
+        let current = self.path.clone();
+        self.load_dir_with_state(&current, None, Some(self.offset));
+        if let Some(err) = last_err {
+            self.status_note = Some(err);
+        } else {
+            let mut note = String::new();
+            fmt_push_u(&mut note, deleted as u64);
+            note.push_str(" deleted");
+            self.status_note = Some(note);
+        }
+        self.render();
+    }
+
+    fn duplicate_entry(&mut self, idx: usize) {
+        let entry = match self.entries.get(idx) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        let src = self.make_abs(idx);
+        let ext = Self::file_ext(&entry.name);
+        let stem = if ext.is_empty() {
+            entry.name.as_str()
+        } else {
+            &entry.name[..entry.name.len() - ext.len() - 1]
+        };
+        let mut copy_name = String::from(stem);
+        copy_name.push_str("_CPY");
+        if !ext.is_empty() {
+            copy_name.push('.');
+            copy_name.push_str(ext);
+        }
+        let mut dst = self.path.clone();
+        if !dst.ends_with('/') {
+            dst.push('/');
+        }
+        dst.push_str(&copy_name);
+        match crate::fat32::copy_file(&src, &dst) {
+            Ok(()) => {
+                let current = self.path.clone();
+                self.load_dir_with_state(&current, Some(&copy_name), Some(self.offset));
+                self.status_note = Some(String::from("duplicated"));
+                self.render();
+            }
+            Err(err) => {
+                self.status_note = Some(String::from(err.as_str()));
+                self.render();
+            }
         }
     }
 
@@ -919,6 +1226,7 @@ impl FileManagerApp {
 
     fn draw_path_bar(&mut self, layout: Layout) {
         let back = self.back_button_rect();
+        let fwd = self.forward_button_rect();
         let crumb = self.breadcrumb_rect();
         let search = self.search_rect(layout);
 
@@ -932,28 +1240,81 @@ impl FileManagerApp {
         );
 
         self.draw_back_button(back);
+        self.draw_forward_button(fwd);
         self.fill_rect(crumb.x, crumb.y, crumb.w, crumb.h, FM_PANEL);
         self.draw_rect_border(crumb.x, crumb.y, crumb.w, crumb.h, FM_BORDER);
         self.draw_breadcrumbs(crumb);
 
-        self.fill_rect(search.x, search.y, search.w, search.h, FM_SEARCH);
-        self.draw_rect_border(search.x, search.y, search.w, search.h, FM_BORDER_SOFT);
+        let search_bg = if self.search_active {
+            FM_SELECTION
+        } else {
+            FM_SEARCH
+        };
+        let search_border = if self.search_active {
+            FM_SELECTION_GLOW
+        } else {
+            FM_BORDER_SOFT
+        };
+        self.fill_rect(search.x, search.y, search.w, search.h, search_bg);
+        self.draw_rect_border(search.x, search.y, search.w, search.h, search_border);
+        let search_text = if self.search_active && !self.search_filter.is_empty() {
+            self.search_filter.clone()
+        } else if self.search_active {
+            String::from("_")
+        } else {
+            String::from("search")
+        };
+        let search_color = if self.search_active {
+            FM_TEXT
+        } else {
+            FM_TEXT_MUTED
+        };
+        let max_chars = ((search.w - 20).max(0) as usize) / CW;
         self.put_str(
             (search.x + 10) as usize,
             (search.y + 7) as usize,
-            "search",
-            FM_TEXT_MUTED,
+            &Self::clip_text(&search_text, max_chars),
+            search_color,
+        );
+    }
+
+    fn draw_forward_button(&mut self, rect: Rect) {
+        let enabled = !self.forward_stack.is_empty();
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
+        self.draw_rect_border(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if enabled { FM_BORDER } else { FM_BORDER_SOFT },
+        );
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + 1,
+            rect.w - 2,
+            3,
+            if enabled {
+                FM_SELECTION_GLOW
+            } else {
+                FM_BORDER_SOFT
+            },
+        );
+        self.put_str(
+            (rect.x + 8) as usize,
+            (rect.y + 7) as usize,
+            ">",
+            if enabled { FM_TEXT } else { FM_TEXT_MUTED },
         );
     }
 
     fn breadcrumb_rect(&self) -> Rect {
         let layout = self.layout();
         let search = self.search_rect(layout);
-        let back = self.back_button_rect();
+        let fwd = self.forward_button_rect();
         Rect {
-            x: back.x + back.w + BACK_BTN_GAP,
+            x: fwd.x + fwd.w + BACK_BTN_GAP,
             y: COMMAND_H + 4,
-            w: (search.x - (back.x + back.w + BACK_BTN_GAP) - 12).max(104),
+            w: (search.x - (fwd.x + fwd.w + BACK_BTN_GAP) - 12).max(104),
             h: 22,
         }
     }
@@ -961,6 +1322,15 @@ impl FileManagerApp {
     fn back_button_rect(&self) -> Rect {
         Rect {
             x: 12,
+            y: COMMAND_H + 4,
+            w: BACK_BTN_W,
+            h: 22,
+        }
+    }
+
+    fn forward_button_rect(&self) -> Rect {
+        Rect {
+            x: 12 + BACK_BTN_W + 4,
             y: COMMAND_H + 4,
             w: BACK_BTN_W,
             h: 22,
@@ -1427,8 +1797,9 @@ impl FileManagerApp {
                     .entries
                     .get(state.entry_idx)
                     .map(|entry| entry.name.clone());
+                let selected_name_ref = selected_name.as_deref();
                 self.modal = None;
-                self.load_dir_with_state(&current, selected_name.as_deref(), Some(self.offset));
+                self.load_dir_with_state(&current, selected_name_ref, Some(self.offset));
                 self.status_note = Some(String::from("text saved"));
             }
             Err(err) => {
@@ -1657,7 +2028,7 @@ impl FileManagerApp {
     }
 
     fn draw_back_button(&mut self, rect: Rect) {
-        let enabled = self.path != "/";
+        let enabled = !self.back_stack.is_empty();
         self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
         self.draw_rect_border(
             rect.x,
@@ -1832,7 +2203,7 @@ impl FileManagerApp {
             FM_TEXT_MUTED,
         );
 
-        if let Some(idx) = self.selected {
+        if let Some(&idx) = self.selected.first() {
             if let Some((name, is_dir, size)) = self
                 .entries
                 .get(idx)
@@ -2087,7 +2458,7 @@ impl FileManagerApp {
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
 
-        for (visual_idx, &entry_idx) in indices.iter().take(9).enumerate() {
+        for (visual_idx, &entry_idx) in indices.iter().enumerate() {
             let col = (visual_idx % cols).min(2);
             let row = visual_idx / cols;
             let rect = Rect {
@@ -2099,20 +2470,7 @@ impl FileManagerApp {
             self.draw_folder_tile(rect, entry_idx);
         }
 
-        if indices.len() > 9 {
-            let mut more = String::from("+");
-            fmt_push_u(&mut more, (indices.len() - 9) as u64);
-            more.push_str(" more");
-            self.put_str(
-                (content_left + content_w - (more.len() as i32 * CW as i32) - 4).max(content_left)
-                    as usize,
-                y as usize,
-                &more,
-                FM_TEXT_MUTED,
-            );
-        }
-
-        let rows = ((indices.len().min(9) + cols - 1) / cols).max(1) as i32;
+        let rows = ((indices.len() + cols - 1) / cols).max(1) as i32;
         22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
     }
 
@@ -2222,7 +2580,7 @@ impl FileManagerApp {
                 None => continue,
             };
             let row_y = list_y + visual_row as i32 * LIST_ROW_H;
-            let selected = self.selected == Some(entry_idx);
+            let selected = self.selected.contains(&entry_idx);
             self.fill_rect(
                 columns.row_x,
                 row_y,
@@ -2287,14 +2645,25 @@ impl FileManagerApp {
         left.push_str(" files");
         self.put_str(10, (layout.status_y + 6) as usize, &left, FM_TEXT_MUTED);
 
-        let hint = self
-            .status_note
-            .clone()
-            .unwrap_or_else(|| String::from("Mouse navigation only"));
+        let hint = self.status_note.clone().unwrap_or_else(|| {
+            if self.search_active {
+                let mut s = String::from("search: ");
+                s.push_str(&self.search_filter);
+                s.push_str("  (Esc to clear)");
+                s
+            } else if self.selected.len() > 1 {
+                let mut s = String::new();
+                fmt_push_u(&mut s, self.selected.len() as u64);
+                s.push_str(" selected  (Del to delete, Space to toggle)");
+                s
+            } else {
+                String::new()
+            }
+        });
         let hint_x = ((layout.width as usize).saturating_sub(hint.len() * CW)) / 2;
         self.put_str(hint_x, (layout.status_y + 6) as usize, &hint, FM_TEXT_MUTED);
 
-        if let Some(idx) = self.selected {
+        if let Some(&idx) = self.selected.first() {
             if let Some(entry) = self.entries.get(idx) {
                 let entry_name = entry.name.clone();
                 let entry_is_dir = entry.is_dir;
@@ -2530,7 +2899,7 @@ impl FileManagerApp {
     }
 
     fn draw_folder_tile(&mut self, rect: Rect, entry_idx: usize) {
-        let selected = self.selected == Some(entry_idx);
+        let selected = self.selected.contains(&entry_idx);
         self.fill_rect(
             rect.x,
             rect.y,
@@ -2555,23 +2924,27 @@ impl FileManagerApp {
 
         if let Some(entry) = self.entries.get(entry_idx) {
             let entry_name = entry.name.clone();
+            let count = self.entry_child_counts.get(entry_idx).copied().unwrap_or(0);
             self.put_str(
                 (rect.x + 46) as usize,
                 (rect.y + 14) as usize,
                 &Self::clip_text(&entry_name, ((rect.w - 56).max(8) as usize) / CW),
                 if selected { FM_TEXT } else { FM_TEXT_DIM },
             );
+            let mut count_label = String::new();
+            fmt_push_u(&mut count_label, count as u64);
+            count_label.push_str(if count == 1 { " item" } else { " items" });
             self.put_str(
                 (rect.x + 46) as usize,
                 (rect.y + 28) as usize,
-                "File folder",
+                &count_label,
                 FM_TEXT_MUTED,
             );
         }
     }
 
     fn draw_drive_card(&mut self, rect: Rect, entry_idx: usize) {
-        let selected = self.selected == Some(entry_idx);
+        let selected = self.selected.contains(&entry_idx);
         self.fill_rect(
             rect.x,
             rect.y,
@@ -2722,7 +3095,7 @@ impl FileManagerApp {
         let folders = self.folder_indices();
         let files = self.file_indices();
         let section_y = self.section_start_y();
-        if let Some(idx) = self.hit_folder_grid(layout, section_y, &folders, true, lx, ly) {
+        if let Some(idx) = self.hit_folder_grid(layout, section_y, &folders, lx, ly) {
             return Some(idx);
         }
         let tiles_h = self.folder_section_height(layout, &folders);
@@ -2741,7 +3114,7 @@ impl FileManagerApp {
         let folders = self.folder_indices();
         let files = self.file_indices();
         let section_y = self.section_start_y();
-        if let Some(idx) = self.hit_folder_grid(layout, section_y, &folders, false, lx, ly) {
+        if let Some(idx) = self.hit_folder_grid(layout, section_y, &folders, lx, ly) {
             return Some(idx);
         }
 
@@ -2784,7 +3157,6 @@ impl FileManagerApp {
         layout: Layout,
         top: i32,
         indices: &[usize],
-        root_mode: bool,
         lx: i32,
         ly: i32,
     ) -> Option<usize> {
@@ -2793,8 +3165,7 @@ impl FileManagerApp {
         let tile_y = top + 22;
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
-        let max = if root_mode { 9 } else { indices.len().min(9) };
-        for (visual_idx, &entry_idx) in indices.iter().take(max).enumerate() {
+        for (visual_idx, &entry_idx) in indices.iter().enumerate() {
             let col = (visual_idx % cols).min(2);
             let row = visual_idx / cols;
             let rect = Rect {
@@ -2846,7 +3217,7 @@ impl FileManagerApp {
         let content_w = self.content_width(layout);
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
-        let rows = ((indices.len().min(9) + cols - 1) / cols).max(1) as i32;
+        let rows = ((indices.len() + cols - 1) / cols).max(1) as i32;
         22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
     }
 

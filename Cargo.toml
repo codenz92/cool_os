@@ -21,3 +21,8 @@ pic8259 = "0.10.1"
 pc-keyboard = "0.6"
 linked_list_allocator = "0.9.0"
 raw-cpuid = "10.6.0"
+
+[profile.release]
+# opt-level 3 currently sends the monolithic no_std kernel crate into a very
+# slow LLVM compile. Level 2 keeps release builds optimized and predictable.
+opt-level = 2
