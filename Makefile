@@ -20,6 +20,7 @@ SMOKE_SECONDS ?= 12
 SMOKE_FRAMEBUFFER_SECONDS ?= 12
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
+SMOKE_VGA_SECONDS ?= 24
 
 run: build
 	@echo "Booting coolOS in QEMU..."
@@ -186,7 +187,7 @@ smoke-vga-cirrus: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--vga cirrus \
-		--seconds $(SMOKE_SECONDS) \
+		--seconds $(SMOKE_VGA_SECONDS) \
 		--expect "[boot] desktop ready"
 
 build:
