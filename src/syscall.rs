@@ -251,7 +251,7 @@ fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
 }
 
 fn sys_pipe(fds_ptr: *mut u64) -> u64 {
-    if !valid_user_range(fds_ptr as u64, 16, 16) {
+    if !validate_user_range(fds_ptr as u64, 16, 16, true) {
         return u64::MAX;
     }
     match crate::vfs::vfs_pipe() {
@@ -276,7 +276,7 @@ fn sys_getpid() -> u64 {
 fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
-    if addr == 0 || len == 0 || !valid_user_range(addr, len, MAX_USER_BUFFER * 64) {
+    if addr == 0 || len == 0 || !valid_user_address_range(addr, len, MAX_USER_BUFFER * 64) {
         return u64::MAX;
     }
 
@@ -345,7 +345,7 @@ fn sys_close(fd: u64) {
 }
 
 fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
-    if !status_ptr.is_null() && !valid_user_range(status_ptr as u64, 8, 8) {
+    if !status_ptr.is_null() && !validate_user_range(status_ptr as u64, 8, 8, true) {
         return u64::MAX;
     }
     let parent = crate::scheduler::current_task_id();
@@ -377,12 +377,17 @@ fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
 fn sys_sleep_ms(ms: u64) {
     let ticks = crate::interrupts::ticks_for_millis(ms.max(1));
     let wake_tick = crate::interrupts::ticks().wrapping_add(ticks);
+    crate::wait_queue::wait("timer-sleep", crate::scheduler::current_task_id());
     crate::scheduler::block_current_until(wake_tick);
     while crate::scheduler::current_task_blocked() {
+        if crate::scheduler::current_has_pending_signal() {
+            break;
+        }
         unsafe {
             core::arch::asm!("sti; hlt", options(nomem, nostack));
         }
     }
+    crate::wait_queue::wake("timer-sleep", crate::scheduler::current_task_id());
     x86_64::instructions::interrupts::disable();
 }
 
@@ -485,7 +490,7 @@ fn sys_yield() {
     // No-op: the preemptive timer will preempt voluntarily yielding tasks.
 }
 
-fn valid_user_range(ptr: u64, len: u64, max_len: u64) -> bool {
+fn valid_user_address_range(ptr: u64, len: u64, max_len: u64) -> bool {
     if ptr == 0 || len == 0 || len > max_len {
         return false;
     }
@@ -495,15 +500,24 @@ fn valid_user_range(ptr: u64, len: u64, max_len: u64) -> bool {
     end <= USER_TOP && ptr < USER_TOP
 }
 
+fn validate_user_range(ptr: u64, len: u64, max_len: u64, writable: bool) -> bool {
+    valid_user_address_range(ptr, len, max_len)
+        && crate::vmm::user_range_accessible(ptr, len, writable)
+}
+
+pub fn validate_user_range_for_test(ptr: u64, len: u64, max_len: u64, _writable: bool) -> bool {
+    valid_user_address_range(ptr, len, max_len)
+}
+
 fn user_slice(ptr: *const u8, len: u64, max_len: u64) -> Option<&'static [u8]> {
-    if !valid_user_range(ptr as u64, len, max_len) {
+    if !validate_user_range(ptr as u64, len, max_len, false) {
         return None;
     }
     Some(unsafe { core::slice::from_raw_parts(ptr, len as usize) })
 }
 
 fn user_slice_mut(ptr: *mut u8, len: u64, max_len: u64) -> Option<&'static mut [u8]> {
-    if !valid_user_range(ptr as u64, len, max_len) {
+    if !validate_user_range(ptr as u64, len, max_len, true) {
         return None;
     }
     Some(unsafe { core::slice::from_raw_parts_mut(ptr, len as usize) })

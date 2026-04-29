@@ -447,6 +447,15 @@ fn push_usize_bytes(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
+fn merge_spans(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
+    match (a.0 < a.1, b.0 < b.1) {
+        (false, false) => (0, 0),
+        (true, false) => a,
+        (false, true) => b,
+        (true, true) => (a.0.min(b.0), a.1.max(b.1)),
+    }
+}
+
 fn should_show_welcome() -> bool {
     crate::fat32::read_file("/CONFIG/WELCOME.SEEN").is_none()
 }
@@ -540,6 +549,17 @@ struct FileDragState {
     source_window: usize,
     paths: Vec<String>,
     cut: bool,
+}
+
+struct DesktopIconDragState {
+    icon: usize,
+    start_mx: i32,
+    start_my: i32,
+    start_x: i32,
+    start_y: i32,
+    cur_x: i32,
+    cur_y: i32,
+    moved: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -637,6 +657,7 @@ impl AppWindow {
             AppWindow::FileManager(f) => f.handle_key(c),
             _ => {}
         }
+        self.window_mut().mark_dirty_all();
     }
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         match self {
@@ -646,16 +667,19 @@ impl AppWindow {
             AppWindow::Personalize(p) => p.handle_click(lx, ly),
             _ => {}
         }
+        self.window_mut().mark_dirty_all();
     }
     pub fn handle_secondary_click(&mut self, lx: i32, ly: i32) {
         if let AppWindow::FileManager(fm) = self {
             fm.handle_secondary_click(lx, ly);
         }
+        self.window_mut().mark_dirty_all();
     }
     pub fn handle_dbl_click(&mut self, lx: i32, ly: i32) {
         if let AppWindow::FileManager(fm) = self {
             fm.handle_dbl_click(lx, ly);
         }
+        self.window_mut().mark_dirty_all();
     }
     pub fn begin_file_drag(&mut self, lx: i32, ly: i32) -> Option<Vec<String>> {
         match self {
@@ -681,6 +705,7 @@ impl AppWindow {
             AppWindow::FileManager(f) => f.handle_scroll(delta),
             _ => {}
         }
+        self.window_mut().mark_dirty_all();
     }
     pub fn update(&mut self) {
         match self {
@@ -721,6 +746,7 @@ pub struct WindowManager {
     icon_selected: Option<usize>,
     desktop_multi_selected: Vec<usize>,
     pressed_icon: Option<usize>,
+    desktop_icon_drag: Option<DesktopIconDragState>,
     desktop_select_drag: Option<(i32, i32)>,
     start_menu_open: bool,
     notification_center_open: bool,
@@ -740,6 +766,7 @@ pub struct WindowManager {
     shadow: Vec<u32>,
     prev_shadow: Vec<u32>,
     damage_spans: Vec<(usize, usize)>,
+    reported_damage_spans: Vec<(usize, usize)>,
     damage_rows_last: usize,
     damage_pixels_last: usize,
     damage_frames: u64,
@@ -773,6 +800,7 @@ impl WindowManager {
         );
         let prev_shadow = alloc::vec![0u32; w * h];
         let damage_spans = alloc::vec![(0usize, w); h];
+        let reported_damage_spans = alloc::vec![(0usize, 0usize); h];
 
         let mut wm = WindowManager {
             windows: Vec::new(),
@@ -795,6 +823,7 @@ impl WindowManager {
             icon_selected: None,
             desktop_multi_selected: Vec::new(),
             pressed_icon: None,
+            desktop_icon_drag: None,
             desktop_select_drag: None,
             start_menu_open: false,
             notification_center_open: false,
@@ -813,6 +842,7 @@ impl WindowManager {
             shadow,
             prev_shadow,
             damage_spans,
+            reported_damage_spans,
             damage_rows_last: 0,
             damage_pixels_last: 0,
             damage_frames: 0,
@@ -972,6 +1002,7 @@ impl WindowManager {
             self.icon_selected = None;
             self.desktop_multi_selected.clear();
             self.pressed_icon = None;
+            self.desktop_icon_drag = None;
             self.desktop_select_drag = None;
         }
         if self.wallpaper_preset != settings.wallpaper {
@@ -992,6 +1023,7 @@ impl WindowManager {
         self.icon_selected = None;
         self.desktop_multi_selected.clear();
         self.pressed_icon = None;
+        self.desktop_icon_drag = None;
         self.desktop_select_drag = None;
         for window in self.windows.iter_mut() {
             if let AppWindow::FileManager(fm) = window {
@@ -1002,6 +1034,12 @@ impl WindowManager {
 
     fn launch_app(&mut self, name: &str, wx: i32, wy: i32) {
         let before = self.windows.len();
+        if let Some(permission) = crate::security::app_permission_for(canonical_app_title(name)) {
+            crate::notifications::push(
+                "App permissions",
+                &format!("{} requests {}", canonical_app_title(name), permission),
+            );
+        }
         match canonical_app_title(name) {
             "Terminal" => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
             "System Monitor" => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
@@ -1083,6 +1121,7 @@ impl WindowManager {
         self.resize = None;
         self.scroll_drag = None;
         self.file_drag = None;
+        self.desktop_icon_drag = None;
         self.desktop_select_drag = None;
         self.context_menu = None;
         self.start_menu_open = false;
@@ -1398,8 +1437,20 @@ impl WindowManager {
             .into_iter()
             .enumerate()
             .map(|(i, spec)| DesktopIcon {
-                x: 20 + (i as i32 % cols) * step_x,
-                y: 20 + (i as i32 / cols) * step_y,
+                x: self
+                    .desktop_icon_drag
+                    .as_ref()
+                    .filter(|drag| drag.icon == i)
+                    .map(|drag| drag.cur_x)
+                    .or_else(|| desktop_settings::icon_position(spec.label).map(|pos| pos.0))
+                    .unwrap_or(20 + (i as i32 % cols) * step_x),
+                y: self
+                    .desktop_icon_drag
+                    .as_ref()
+                    .filter(|drag| drag.icon == i)
+                    .map(|drag| drag.cur_y)
+                    .or_else(|| desktop_settings::icon_position(spec.label).map(|pos| pos.1))
+                    .unwrap_or(20 + (i as i32 / cols) * step_y),
                 label: spec.label,
                 app: spec.app,
             })
@@ -2458,6 +2509,19 @@ impl WindowManager {
             self.pressed_icon = if desktop_hit { icon_hit } else { None };
             if let Some(i) = self.pressed_icon {
                 self.focused = None;
+                let icons = self.desktop_icons();
+                if let Some(icon) = icons.get(i) {
+                    self.desktop_icon_drag = Some(DesktopIconDragState {
+                        icon: i,
+                        start_mx: mx_i,
+                        start_my: my_i,
+                        start_x: icon.x,
+                        start_y: icon.y,
+                        cur_x: icon.x,
+                        cur_y: icon.y,
+                        moved: false,
+                    });
+                }
                 if crate::keyboard::current_modifiers() & crate::keyboard::MOD_CTRL != 0 {
                     if let Some(pos) = self.desktop_multi_selected.iter().position(|&idx| idx == i)
                     {
@@ -2487,7 +2551,33 @@ impl WindowManager {
             crate::wm::request_repaint();
         }
 
+        if left {
+            if let Some(drag) = self.desktop_icon_drag.as_mut() {
+                let dx = mx_i - drag.start_mx;
+                let dy = my_i - drag.start_my;
+                if dx.abs() > 4 || dy.abs() > 4 {
+                    drag.moved = true;
+                }
+                if drag.moved {
+                    drag.cur_x = (drag.start_x + dx).clamp(4, sw as i32 - ICON_SIZE - 4);
+                    drag.cur_y =
+                        (drag.start_y + dy).clamp(4, taskbar_y - ICON_SIZE - ICON_LABEL_H - 4);
+                    crate::wm::request_repaint();
+                }
+            }
+        }
+
         if left_released {
+            let dragged_icon = self.desktop_icon_drag.take();
+            if let Some(drag) = dragged_icon.as_ref() {
+                if drag.moved {
+                    if let Some(icon) = self.desktop_icons().get(drag.icon) {
+                        let _ =
+                            desktop_settings::set_icon_position(icon.label, drag.cur_x, drag.cur_y);
+                    }
+                    crate::wm::request_repaint();
+                }
+            }
             if let Some((sx, sy)) = self.desktop_select_drag.take() {
                 let dx = (mx_i - sx).abs();
                 let dy = (my_i - sy).abs();
@@ -2511,12 +2601,17 @@ impl WindowManager {
                 crate::wm::request_repaint();
             }
             if let Some(icon_idx) = self.pressed_icon.take() {
+                let icon_was_dragged = dragged_icon
+                    .as_ref()
+                    .map(|drag| drag.moved && drag.icon == icon_idx)
+                    .unwrap_or(false);
                 if self.desktop_icon_hit(mx_i, my_i) == Some(icon_idx)
                     && my_i < taskbar_y
                     && self.front_to_back_hit(mx_i, my_i).is_none()
                     && self.context_menu.is_none()
                     && !self.start_menu_open
                     && self.desktop_multi_selected.len() <= 1
+                    && !icon_was_dragged
                 {
                     let icons = self.desktop_icons();
                     let icon = &icons[icon_idx];
@@ -2543,6 +2638,11 @@ impl WindowManager {
         self.maybe_save_session(uptime_ticks);
 
         // ── Render ────────────────────────────────────────────────────────────
+        for w in self.windows.iter_mut() {
+            w.update();
+        }
+        self.collect_app_dirty_spans(sw, sh);
+
         // Blit wallpaper before taking the exclusive &mut shadow borrow,
         // so the compiler sees two separate borrows of self.shadow / self.wallpaper.
         {
@@ -2562,10 +2662,6 @@ impl WindowManager {
         let current_workspace = self.current_workspace;
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
-
-            for w in self.windows.iter_mut() {
-                w.update();
-            }
 
             // ── Desktop icons — drawn BEFORE windows so windows can cover them ────
             let icon_data: [(u32, u32); 5] = [
@@ -3760,6 +3856,9 @@ impl WindowManager {
             self.damage_spans.resize(sh, (0, 0));
             self.full_damage_next = true;
         }
+        if self.reported_damage_spans.len() != sh {
+            self.reported_damage_spans.resize(sh, (0, 0));
+        }
 
         let mut rows = 0usize;
         let mut pixels = 0usize;
@@ -3787,6 +3886,8 @@ impl WindowManager {
                     (first, last)
                 }
             };
+            let reported = self.reported_damage_spans[row];
+            let span = merge_spans(span, reported);
             self.damage_spans[row] = span;
             if span.0 < span.1 {
                 rows += 1;
@@ -3806,6 +3907,45 @@ impl WindowManager {
                 "damage",
                 &format!("rows={} pixels={}", rows, pixels),
             );
+        }
+    }
+
+    fn collect_app_dirty_spans(&mut self, sw: usize, sh: usize) {
+        if self.reported_damage_spans.len() != sh {
+            self.reported_damage_spans.resize(sh, (0, 0));
+        }
+        for span in self.reported_damage_spans.iter_mut() {
+            *span = (0, 0);
+        }
+        let current_workspace = self.current_workspace;
+        for (idx, app) in self.windows.iter_mut().enumerate() {
+            if self
+                .window_workspaces
+                .get(idx)
+                .copied()
+                .unwrap_or(0)
+                .min(WORKSPACE_COUNT - 1)
+                != current_workspace
+                || app.window().minimized
+            {
+                continue;
+            }
+            let win_x = app.window().x;
+            let win_y = app.window().y + TITLE_H;
+            let rects = app.window_mut().take_dirty_regions();
+            for rect in rects {
+                let x0 = (win_x + rect.x).clamp(0, sw as i32) as usize;
+                let x1 = (win_x + rect.x + rect.w).clamp(0, sw as i32) as usize;
+                let y0 = (win_y + rect.y).clamp(0, sh as i32) as usize;
+                let y1 = (win_y + rect.y + rect.h).clamp(0, sh as i32) as usize;
+                if x0 >= x1 || y0 >= y1 {
+                    continue;
+                }
+                for row in y0..y1 {
+                    self.reported_damage_spans[row] =
+                        merge_spans(self.reported_damage_spans[row], (x0, x1));
+                }
+            }
         }
     }
 
@@ -3871,10 +4011,14 @@ impl WindowManager {
                 if let Some(target) = dialog.restart_target.as_ref() {
                     if target.starts_with('/') {
                         match crate::elf::spawn_elf_process(target) {
-                            Ok(_) => crate::notifications::push("App restarted", target),
+                            Ok(_) => {
+                                crate::crashdump::record_restart(target);
+                                crate::notifications::push("App restarted", target);
+                            }
                             Err(err) => crate::notifications::push("Restart failed", err.as_str()),
                         }
                     } else {
+                        crate::crashdump::record_restart(target);
                         self.launch_app(target, x + 18, y + 18);
                     }
                 } else {
@@ -5203,12 +5347,13 @@ fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32,
     s_fill(s, sw, x, y, preview_w, preview_h, 0x00_00_08_18);
     s_fill(s, sw, x, y, preview_w, 3, accent);
     draw_rect_border(s, sw, x, y, preview_w, preview_h, 0x00_00_66_BB);
+    draw_live_window_thumbnail(s, sw, x + 10, y + 16, 92, 40, win);
     let icon_bg = blend_color(0x00_00_08_18, accent, 90);
-    s_fill(s, sw, x + 10, y + 16, 32, 32, icon_bg);
+    s_fill(s, sw, x + 116, y + 16, 32, 32, icon_bg);
     draw_rect_border(
         s,
         sw,
-        x + 10,
+        x + 116,
         y + 16,
         32,
         32,
@@ -5217,28 +5362,28 @@ fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32,
     s_draw_str_small(
         s,
         sw,
-        x + 17,
+        x + 123,
         y + 28,
         window_glyph(win.title),
         accent,
         icon_bg,
-        x + 40,
+        x + 146,
     );
     s_draw_str_small(
         s,
         sw,
-        x + 52,
-        y + 16,
+        x + 10,
+        y + 7,
         win.title,
         WHITE,
         0x00_00_08_18,
-        x + preview_w - 10,
+        x + 108,
     );
     let state = if win.minimized { "minimized" } else { "open" };
     s_draw_str_small(
         s,
         sw,
-        x + 52,
+        x + 116,
         y + 32,
         state,
         0x00_66_AA_DD,
@@ -5250,7 +5395,7 @@ fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32,
         s,
         sw,
         x + 10,
-        y + 56,
+        y + 60,
         &bounds,
         0x00_44_88_BB,
         0x00_00_08_18,

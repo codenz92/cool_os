@@ -22,6 +22,7 @@ impl FileManagerApp {
         self.draw_status_bar(layout);
         self.draw_context_menu();
         self.draw_modal();
+        self.window.mark_dirty_all();
     }
 
     pub(super) fn draw_path_bar(&mut self, layout: Layout) {

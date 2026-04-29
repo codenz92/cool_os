@@ -31,5 +31,23 @@ jobs:
       - name: Framebuffer screendump assertion
         run: make smoke-framebuffer
 
+      - name: UI screenshot golden smoke
+        run: make smoke-ui-goldens
+
       - name: USB init smoke
         run: make smoke-usb-init
+
+      - name: Kernel unit-style smoke
+        run: make smoke-kernel-units
+
+      - name: Boot budget smoke
+        run: make smoke-boot-budget
+
+      - name: QEMU matrix low memory
+        run: make smoke-lowmem
+
+      - name: QEMU matrix SMP groundwork
+        run: make smoke-smp2
+
+      - name: QEMU matrix alternate VGA
+        run: make smoke-vga-cirrus

@@ -359,6 +359,14 @@ impl TerminalApp {
 
             Some("heap") => self.cmd_lines("HEAP DIAGNOSTICS", crate::allocator::heap_lines()),
 
+            Some("slab") => self.cmd_lines("SLAB DIAGNOSTICS", crate::slab::lines()),
+
+            Some("waitq") => self.cmd_lines("WAIT QUEUES", crate::wait_queue::lines()),
+
+            Some("writeback") => self.cmd_lines("WRITEBACK", crate::writeback::lines()),
+
+            Some("selftest") => self.cmd_lines("SELFTEST", crate::selftest::lines()),
+
             Some("font") => self.cmd_lines("FONT RENDERER", crate::font::lines()),
 
             Some("deferred") => self.cmd_lines("DEFERRED WORK", crate::deferred::lines()),
@@ -377,12 +385,14 @@ impl TerminalApp {
 
             Some("flush") => self.print_result(
                 "flush",
-                crate::fs_hardening::flush().map_err(|_| "flush failed"),
+                crate::writeback::barrier().map_err(|_| "flush failed"),
             ),
 
             Some("df") => self.cmd_df(),
 
             Some("shortcuts") => self.cmd_lines("SHORTCUTS", crate::shortcuts::summary_lines()),
+
+            Some("icons") => self.cmd_lines("DESKTOP ICONS", crate::desktop_settings::icon_lines()),
 
             Some("access") => self.cmd_access(words.next(), words.next()),
 
@@ -433,6 +443,8 @@ impl TerminalApp {
 
             Some("jobs") => self.cmd_lines("JOBS", crate::jobs::lines()),
 
+            Some("job") => self.cmd_job(words.next(), words.next()),
+
             Some("services") => self.cmd_services(words.next(), words.next()),
 
             Some("crash") => self.cmd_lines("CRASH DUMP", crate::crashdump::lines()),
@@ -474,6 +486,36 @@ impl TerminalApp {
                     self.print_str("copied text\n");
                 }
             }
+
+            Some("clipmimes") => {
+                self.cmd_lines("CLIPBOARD MIME TYPES", crate::clipboard::mime_lines())
+            }
+
+            Some("clipimg") => match (words.next(), words.next()) {
+                (Some(w), Some(h)) => {
+                    let width = parse_usize(w).unwrap_or(16).min(64);
+                    let height = parse_usize(h).unwrap_or(16).min(64);
+                    let mut pixels = Vec::new();
+                    pixels.resize(width.saturating_mul(height).saturating_mul(4), 0u8);
+                    for y in 0..height {
+                        for x in 0..width {
+                            let idx = (y * width + x) * 4;
+                            let hot = ((x / 4) + (y / 4)) % 2 == 0;
+                            pixels[idx] = if hot { 0x00 } else { 0x22 };
+                            pixels[idx + 1] = if hot { 0xbb } else { 0x44 };
+                            pixels[idx + 2] = if hot { 0xff } else { 0x88 };
+                            pixels[idx + 3] = 0xff;
+                        }
+                    }
+                    crate::clipboard::set_image(width as u32, height as u32, pixels, "image/rgba");
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("copied image payload\n");
+                }
+                _ => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: clipimg <w> <h>\n");
+                }
+            },
 
             Some("paste") => match crate::clipboard::get_text() {
                 Some(text) => {
@@ -659,6 +701,10 @@ impl TerminalApp {
             ("logs", "open combined log summary"),
             ("profiler", "boot/service/task timing"),
             ("heap", "heap diagnostics"),
+            ("slab", "slab allocator diagnostics"),
+            ("waitq", "kernel wait queue diagnostics"),
+            ("writeback", "async disk writeback state"),
+            ("selftest", "boot kernel unit-style checks"),
             ("font", "font renderer diagnostics"),
             ("deferred", "deferred work queue"),
             ("tasksnap", "persistent task snapshot"),
@@ -670,6 +716,7 @@ impl TerminalApp {
             ("flush", "flush filesystem journal"),
             ("df", "filesystem free space"),
             ("shortcuts", "configured shortcut keys"),
+            ("icons", "desktop icon positions"),
             ("access [key on/off]", "accessibility settings"),
             ("apps", "app lifecycle metadata"),
             ("pinned [apps...]", "view/set pinned apps"),
@@ -685,12 +732,15 @@ impl TerminalApp {
             ("pgroup <pid> <grp>", "set process group"),
             ("events", "event bus tail"),
             ("jobs", "background job history"),
+            ("job <op> <id>", "cancel/resume background job"),
             ("services <op>", "service supervisor"),
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
             ("notify <op>", "notification history/actions"),
             ("screenshot [path]", "save focused window PPM"),
             ("clip [text]", "shared clipboard"),
+            ("clipmimes", "clipboard MIME negotiation"),
+            ("clipimg <w> <h>", "copy RGBA image payload"),
             ("paste", "paste shared clipboard text"),
             ("echo <text>", "print text"),
             ("ipc", "pipe demo"),
@@ -715,7 +765,7 @@ impl TerminalApp {
     }
 
     fn cmd_ls(&mut self, path: &str) {
-        match crate::fat32::list_dir(path) {
+        match crate::vfs::vfs_list_dir(path) {
             Some(mut entries) => {
                 entries.sort_by(|a, b| {
                     if a.is_dir == b.is_dir {
@@ -751,7 +801,7 @@ impl TerminalApp {
     }
 
     fn cmd_cat(&mut self, path: &str) {
-        match crate::fat32::read_file(path) {
+        match crate::vfs::vfs_read_file(path) {
             Some(bytes) => match core::str::from_utf8(&bytes) {
                 Ok(text) => {
                     self.set_fg(FG_OUTPUT);
@@ -780,7 +830,7 @@ impl TerminalApp {
             self.print_str("touch: permission denied\n");
             return;
         }
-        match crate::fat32::create_file(path) {
+        match crate::vfs::vfs_create_file(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
                 self.print_str("created ");
@@ -804,7 +854,7 @@ impl TerminalApp {
             self.print_str("mkdir: permission denied\n");
             return;
         }
-        match crate::fat32::create_dir(path) {
+        match crate::vfs::vfs_create_dir(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
                 self.print_str("created ");
@@ -1119,6 +1169,20 @@ impl TerminalApp {
         }
     }
 
+    fn cmd_job(&mut self, op: Option<&str>, id: Option<&str>) {
+        let Some(id) = id.and_then(parse_u64) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: job <cancel|resume> <id>\n");
+            return;
+        };
+        let ok = match op {
+            Some("cancel") => crate::jobs::cancel(id),
+            Some("resume") => crate::jobs::resume(id),
+            _ => false,
+        };
+        self.print_bool("job", ok);
+    }
+
     fn cmd_notify(&mut self, op: Option<&str>, arg: Option<&str>) {
         match (op, arg) {
             (None, _) | (Some("history"), _) => self.cmd_lines(
@@ -1182,7 +1246,7 @@ impl TerminalApp {
 
     fn cmd_power(&mut self, op: Option<&str>) {
         match op {
-            Some("reboot") => crate::interrupts::reboot(),
+            Some("reboot") => crate::acpi::reboot(),
             Some("shutdown") => self.print_power_result(crate::acpi::shutdown()),
             Some("sleep") => self.print_power_result(crate::acpi::sleep()),
             _ => self.cmd_lines("POWER", crate::acpi::status_lines()),
@@ -1419,6 +1483,8 @@ impl TerminalApp {
                 self.window.buf[row_start + x] = Self::bg_at(py);
             }
         }
+        self.window
+            .mark_dirty(text_x as i32, text_y as i32, text_w as i32, text_h as i32);
     }
 
     fn draw_char_at(&mut self, col: usize, row: usize, c: char) {
@@ -1443,6 +1509,8 @@ impl TerminalApp {
                 }
             }
         }
+        self.window
+            .mark_dirty(px0 as i32, py0 as i32, CHAR_W as i32 + 1, CHAR_H as i32);
     }
 
     fn set_fg(&mut self, color: u32) {
@@ -1464,6 +1532,7 @@ impl TerminalApp {
             let py = idx / stride;
             *pixel = Self::bg_at(py);
         }
+        self.window.mark_dirty_all();
     }
 
     fn paint_exposed_background(&mut self, old_width: usize, old_content_h: usize) {
@@ -1490,6 +1559,7 @@ impl TerminalApp {
                 }
             }
         }
+        self.window.mark_dirty_all();
     }
 
     fn refresh_layout(&mut self) {

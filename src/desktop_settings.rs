@@ -1,9 +1,12 @@
-use alloc::string::String;
+extern crate alloc;
+
+use alloc::{string::String, vec::Vec};
 use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 const SETTINGS_DIR: &str = "/CONFIG";
 const SETTINGS_PATH: &str = "/CONFIG/DESK.CFG";
+const ICONS_PATH: &str = "/CONFIG/ICONS.CFG";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -171,6 +174,56 @@ pub fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     crate::fat32::write_file(SETTINGS_PATH, data.as_bytes())
 }
 
+#[derive(Clone)]
+struct IconPosition {
+    label: String,
+    x: i32,
+    y: i32,
+}
+
+pub fn icon_position(label: &str) -> Option<(i32, i32)> {
+    load_icon_positions()
+        .into_iter()
+        .find(|entry| entry.label.eq_ignore_ascii_case(label))
+        .map(|entry| (entry.x, entry.y))
+}
+
+pub fn set_icon_position(label: &str, x: i32, y: i32) -> Result<(), crate::fat32::FsError> {
+    let mut entries = load_icon_positions();
+    if let Some(entry) = entries
+        .iter_mut()
+        .find(|entry| entry.label.eq_ignore_ascii_case(label))
+    {
+        entry.x = x;
+        entry.y = y;
+    } else {
+        entries.push(IconPosition {
+            label: String::from(label),
+            x,
+            y,
+        });
+    }
+    save_icon_positions(&entries)
+}
+
+pub fn icon_lines() -> Vec<String> {
+    let entries = load_icon_positions();
+    if entries.is_empty() {
+        return alloc::vec![String::from("desktop icon positions: default grid")];
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let mut line = String::from(&entry.label);
+            line.push('=');
+            push_i32(&mut line, entry.x);
+            line.push(',');
+            push_i32(&mut line, entry.y);
+            line
+        })
+        .collect()
+}
+
 fn apply_setting(key: &str, value: &str) -> bool {
     match key {
         "show_icons" => {
@@ -213,6 +266,51 @@ fn recover_corrupt(bytes: &[u8]) {
     crate::klog::log("recovered corrupt /CONFIG/DESK.CFG");
 }
 
+fn load_icon_positions() -> Vec<IconPosition> {
+    let Some(bytes) = crate::fat32::read_file(ICONS_PATH) else {
+        return Vec::new();
+    };
+    let Ok(text) = str::from_utf8(&bytes) else {
+        let _ = crate::fat32::safe_write_file("/CONFIG/ICONS.BAD", &bytes);
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let Some((label, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some((x, y)) = value.split_once(',') else {
+            continue;
+        };
+        let Some(x) = parse_i32(x.trim()) else {
+            continue;
+        };
+        let Some(y) = parse_i32(y.trim()) else {
+            continue;
+        };
+        entries.push(IconPosition {
+            label: String::from(label.trim()),
+            x,
+            y,
+        });
+    }
+    entries
+}
+
+fn save_icon_positions(entries: &[IconPosition]) -> Result<(), crate::fat32::FsError> {
+    let _ = crate::fat32::create_dir(SETTINGS_DIR);
+    let mut data = String::new();
+    for entry in entries {
+        data.push_str(&entry.label);
+        data.push('=');
+        push_i32(&mut data, entry.x);
+        data.push(',');
+        push_i32(&mut data, entry.y);
+        data.push('\n');
+    }
+    crate::fat32::safe_write_file(ICONS_PATH, data.as_bytes())
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value {
         "1" | "true" | "on" | "yes" => Some(true),
@@ -233,4 +331,34 @@ fn parse_byte(value: &str) -> Option<u8> {
         out = out.checked_mul(10)?.checked_add(b - b'0')?;
     }
     Some(out)
+}
+
+fn parse_i32(value: &str) -> Option<i32> {
+    value.parse::<i32>().ok()
+}
+
+fn push_i32(out: &mut String, value: i32) {
+    if value < 0 {
+        out.push('-');
+        push_u32(out, value.unsigned_abs());
+    } else {
+        push_u32(out, value as u32);
+    }
+}
+
+fn push_u32(out: &mut String, mut value: u32) {
+    if value == 0 {
+        out.push('0');
+        return;
+    }
+    let mut digits = [0u8; 10];
+    let mut len = 0usize;
+    while value > 0 {
+        digits[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    for idx in (0..len).rev() {
+        out.push(digits[idx] as char);
+    }
 }

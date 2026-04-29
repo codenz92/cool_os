@@ -44,8 +44,10 @@ mod rtc;
 mod scheduler;
 mod search_index;
 mod security;
+mod selftest;
 mod services;
 mod shortcuts;
+mod slab;
 mod syscall;
 mod task_snapshot;
 mod usb;
@@ -53,7 +55,9 @@ mod userspace;
 mod vfs;
 mod vga_buffer;
 mod vmm;
+mod wait_queue;
 mod wm;
+mod writeback;
 
 use bootloader_api::{config::Mapping, entry_point, BootInfo, BootloaderConfig};
 use core::panic::PanicInfo;
@@ -164,6 +168,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     net::init();
     services::init();
     deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
+    deferred::enqueue(deferred::DeferredWork::FlushWriteback);
 
     // Build a fresh allocator starting after the frames consumed by the heap
     // (the heap allocator's `next` counter tells us how many frames it used).
@@ -174,6 +179,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Initialise the VMM with the physical-memory offset and the remaining
     // frame supply.  From here on, all page-table work goes through vmm::.
     vmm::init(phys_mem_offset, vmm_frame_allocator);
+    font::load_from_disk();
     boot_splash::show(
         "mapping virtual memory",
         9,
@@ -201,6 +207,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // limited boot stack with the 512-byte sector buffers.
         sched.spawn("fs-test", fs_test_task);
     });
+    selftest::run_boot_tests();
     boot_splash::show(
         "staging filesystem checks",
         12,
@@ -235,6 +242,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // block mouse and keyboard for tens of milliseconds per frame.
         services::supervise();
         deferred::drain_budget(2);
+        net::poll();
         usb::poll();
         wm::compose_if_needed();
         x86_64::instructions::hlt();

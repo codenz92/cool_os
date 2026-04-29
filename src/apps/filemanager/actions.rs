@@ -1232,7 +1232,12 @@ impl FileManagerApp {
         let mut pasted = 0usize;
         let mut last_err: Option<String> = None;
         let mut selected_name: Option<String> = None;
-        for target in clipboard.entries.iter() {
+        let total = clipboard.entries.len().max(1);
+        for (target_idx, target) in clipboard.entries.iter().enumerate() {
+            if crate::jobs::is_cancelled(job) {
+                last_err = Some(String::from("operation cancelled"));
+                break;
+            }
             if target.is_dir && Self::path_contains(&target.path, &self.path) {
                 last_err = Some(String::from("cannot paste folder into itself"));
                 continue;
@@ -1279,6 +1284,8 @@ impl FileManagerApp {
                 }
                 Err(err) => last_err = Some(String::from(err.as_str())),
             }
+            let progress = (((target_idx + 1) * 100) / total).min(99) as u8;
+            crate::jobs::progress(job, progress, &target.name);
         }
 
         if clipboard.cut && last_err.is_none() {
@@ -1349,8 +1356,8 @@ impl FileManagerApp {
         is_dir: bool,
     ) -> Result<(), crate::fat32::FsError> {
         if is_dir {
-            crate::fat32::create_dir(dst)?;
-            let children = crate::fat32::list_dir(src).ok_or(crate::fat32::FsError::NotFound)?;
+            crate::vfs::vfs_create_dir(dst)?;
+            let children = crate::vfs::vfs_list_dir(src).ok_or(crate::fat32::FsError::NotFound)?;
             for child in children {
                 let child_src = Self::join_path(src, &child.name);
                 let child_dst = Self::join_path(dst, &child.name);
@@ -1358,7 +1365,7 @@ impl FileManagerApp {
             }
             Ok(())
         } else {
-            crate::fat32::copy_file(src, dst)
+            crate::vfs::vfs_copy_file(src, dst)
         }
     }
 
@@ -1374,13 +1381,13 @@ impl FileManagerApp {
             return Err(crate::fat32::FsError::PermissionDenied);
         }
         if is_dir {
-            let children = crate::fat32::list_dir(path).ok_or(crate::fat32::FsError::NotFound)?;
+            let children = crate::vfs::vfs_list_dir(path).ok_or(crate::fat32::FsError::NotFound)?;
             for child in children {
                 let child_path = Self::join_path(path, &child.name);
                 self.delete_path_recursive(&child_path, child.is_dir)?;
             }
         }
-        crate::fat32::delete_file(path)
+        crate::vfs::vfs_delete(path)
     }
 
     pub(super) fn unique_copy_name(&self, parent: &str, name: &str) -> String {

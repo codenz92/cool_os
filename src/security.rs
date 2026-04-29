@@ -5,6 +5,14 @@ use alloc::{format, string::String, vec::Vec};
 pub struct User {
     pub name: &'static str,
     pub role: &'static str,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+#[allow(dead_code)]
+pub struct Group {
+    pub name: &'static str,
+    pub gid: u32,
 }
 
 pub fn init() {
@@ -15,7 +23,23 @@ pub fn current_user() -> User {
     User {
         name: "user",
         role: "admin",
+        uid: 1000,
+        gid: 1000,
     }
+}
+
+#[allow(dead_code)]
+pub fn groups() -> &'static [Group] {
+    &[
+        Group {
+            name: "users",
+            gid: 1000,
+        },
+        Group {
+            name: "wheel",
+            gid: 10,
+        },
+    ]
 }
 
 pub fn is_protected_path(path: &str) -> bool {
@@ -50,12 +74,22 @@ pub fn app_permission_lines() -> Vec<String> {
         .collect()
 }
 
+pub fn app_permission_for(name: &str) -> Option<&'static str> {
+    crate::app_metadata::app_by_name(name).map(|app| app.permission)
+}
+
 pub fn lines() -> Vec<String> {
     let user = current_user();
     let mut lines = alloc::vec![
-        format!("current user={} role={}", user.name, user.role),
-        String::from("protected paths: /CONFIG /LOGS /DEV /APPS"),
-        String::from("capabilities: app metadata enforced by shell policy"),
+        format!(
+            "current user={} uid={} gid={} role={}",
+            user.name, user.uid, user.gid, user.role
+        ),
+        String::from("groups: users(1000), wheel(10)"),
+        String::from("protected paths: /CONFIG /LOGS /DEV /APPS enforced in VFS write wrappers"),
+        String::from(
+            "capabilities: app metadata surfaced before launch and enforced by shell policy"
+        ),
     ];
     lines.extend(app_permission_lines());
     lines

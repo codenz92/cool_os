@@ -7,7 +7,18 @@ use spin::Mutex;
 const CRASH_PATH: &str = "/LOGS/CRASH.TXT";
 const MAX_TASK_REPORTS: usize = 24;
 
-static TASK_REPORTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+#[derive(Clone)]
+struct TaskCrashReport {
+    pid: usize,
+    app: String,
+    reason: String,
+    tick: u64,
+    registers: String,
+    stack: String,
+    restarts: u32,
+}
+
+static TASK_REPORTS: Mutex<Vec<TaskCrashReport>> = Mutex::new(Vec::new());
 
 pub fn record_panic(info: &PanicInfo) {
     let _ = crate::fat32::create_dir("/LOGS");
@@ -26,16 +37,36 @@ pub fn record_panic(info: &PanicInfo) {
 }
 
 pub fn record_task_report(pid: usize, reason: &str) {
-    let report = format!(
-        "task pid={} reason={} tick={}",
-        pid,
-        reason,
-        crate::interrupts::ticks()
-    );
+    let app = crate::scheduler::task_name(pid).unwrap_or("task");
     let mut reports = TASK_REPORTS.lock();
-    reports.push(report);
+    let restarts = reports
+        .iter()
+        .rev()
+        .find(|report| report.app.eq_ignore_ascii_case(app))
+        .map(|report| report.restarts)
+        .unwrap_or(0);
+    reports.push(TaskCrashReport {
+        pid,
+        app: String::from(app),
+        reason: String::from(reason),
+        tick: crate::interrupts::ticks(),
+        registers: String::from("rip/rsp unavailable; user fault frame capture pending"),
+        stack: String::from("stack trace unavailable; frame-pointer unwinder pending"),
+        restarts,
+    });
     if reports.len() > MAX_TASK_REPORTS {
         reports.remove(0);
+    }
+}
+
+pub fn record_restart(app: &str) {
+    let mut reports = TASK_REPORTS.lock();
+    if let Some(report) = reports
+        .iter_mut()
+        .rev()
+        .find(|report| report.app.eq_ignore_ascii_case(app))
+    {
+        report.restarts = report.restarts.saturating_add(1);
     }
 }
 
@@ -49,8 +80,14 @@ pub fn lines() -> Vec<String> {
             return lines;
         }
     }
-    for line in TASK_REPORTS.lock().iter().rev().take(10) {
-        lines.push(String::from(line));
+    let reports = TASK_REPORTS.lock();
+    for report in reports.iter().rev().take(10) {
+        lines.push(format!(
+            "app={} pid={} tick={} restarts={} reason={}",
+            report.app, report.pid, report.tick, report.restarts, report.reason
+        ));
+        lines.push(format!("  registers: {}", report.registers));
+        lines.push(format!("  stack: {}", report.stack));
     }
     if !lines.is_empty() {
         return lines;

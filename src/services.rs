@@ -42,6 +42,7 @@ pub fn init() {
         service("notification-center", 5, "always"),
         service("network-stack", 6, "manual"),
         service("power-manager", 7, "manual"),
+        service("writeback", 8, "always"),
     ];
     services.sort_by(|a, b| a.order.cmp(&b.order));
     *SERVICES.lock() = services;
@@ -96,6 +97,9 @@ pub fn supervise() {
                 }
                 "event-bus" | "notification-center" => {
                     crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog)
+                }
+                "writeback" => {
+                    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushWriteback)
                 }
                 _ => {}
             }

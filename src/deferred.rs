@@ -9,8 +9,10 @@ const MAX_QUEUE: usize = 32;
 pub enum DeferredWork {
     FlushKernelLog,
     FlushFilesystemJournal,
+    FlushWriteback,
     PersistTaskSnapshot,
     RefreshSearchIndex,
+    UpdateSearchIndex,
 }
 
 impl DeferredWork {
@@ -18,8 +20,10 @@ impl DeferredWork {
         match self {
             DeferredWork::FlushKernelLog => "flush-kernel-log",
             DeferredWork::FlushFilesystemJournal => "flush-fs-journal",
+            DeferredWork::FlushWriteback => "flush-writeback",
             DeferredWork::PersistTaskSnapshot => "persist-task-table",
             DeferredWork::RefreshSearchIndex => "refresh-search-index",
+            DeferredWork::UpdateSearchIndex => "update-search-index",
         }
     }
 }
@@ -82,10 +86,14 @@ fn run(work: DeferredWork) {
         DeferredWork::FlushFilesystemJournal => {
             let _ = crate::fs_hardening::flush();
         }
+        DeferredWork::FlushWriteback => {
+            crate::writeback::drain(4);
+        }
         DeferredWork::PersistTaskSnapshot => {
             let _ = crate::task_snapshot::persist();
         }
         DeferredWork::RefreshSearchIndex => crate::search_index::refresh(),
+        DeferredWork::UpdateSearchIndex => crate::search_index::drain_changes(),
     }
     crate::profiler::record("deferred", work.label(), "ran");
 }

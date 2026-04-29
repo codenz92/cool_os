@@ -21,11 +21,30 @@ const LABEL: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 const GOOD: u32 = 0x00_00_FF_AA;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsPage {
+    Desktop,
+    Accessibility,
+    Logs,
+    Network,
+    Storage,
+}
+
+const SETTINGS_PAGES: [(SettingsPage, &str); 5] = [
+    (SettingsPage::Desktop, "Desktop"),
+    (SettingsPage::Accessibility, "Access"),
+    (SettingsPage::Logs, "Logs"),
+    (SettingsPage::Network, "Net"),
+    (SettingsPage::Storage, "Storage"),
+];
+
 pub struct DisplaySettingsApp {
     pub window: Window,
     last_width: i32,
     last_height: i32,
     last_settings: DesktopSettings,
+    page: SettingsPage,
+    last_page: SettingsPage,
 }
 
 impl DisplaySettingsApp {
@@ -41,6 +60,8 @@ impl DisplaySettingsApp {
             last_width: DISPLAY_SETTINGS_W,
             last_height: DISPLAY_SETTINGS_H,
             last_settings: desktop_settings::snapshot(),
+            page: SettingsPage::Desktop,
+            last_page: SettingsPage::Desktop,
         };
         app.render();
         app
@@ -49,16 +70,28 @@ impl DisplaySettingsApp {
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         let settings = desktop_settings::snapshot();
 
-        if self.hit_toggle(lx, ly, 56) {
+        if let Some(page) = self.hit_page_tab(lx, ly) {
+            self.page = page;
+        } else if self.page == SettingsPage::Desktop && self.hit_toggle(lx, ly, 120) {
             desktop_settings::set_show_icons(!settings.show_icons);
-        } else if self.hit_toggle(lx, ly, 88) {
+        } else if self.page == SettingsPage::Desktop && self.hit_toggle(lx, ly, 152) {
             desktop_settings::set_compact_spacing(!settings.compact_spacing);
-        } else if let Some(mode) = self.hit_sort_button(lx, ly) {
-            desktop_settings::set_sort_mode(mode);
-        } else if self.hit_toggle(lx, ly, 292) {
+        } else if self.page == SettingsPage::Desktop {
+            if let Some(mode) = self.hit_sort_button(lx, ly) {
+                desktop_settings::set_sort_mode(mode);
+            } else {
+                return;
+            }
+        } else if self.page == SettingsPage::Accessibility && self.hit_toggle(lx, ly, 104) {
+            let access = crate::accessibility::snapshot();
+            crate::accessibility::set("keyboard_nav", !access.keyboard_nav);
+        } else if self.page == SettingsPage::Accessibility && self.hit_toggle(lx, ly, 136) {
+            let access = crate::accessibility::snapshot();
+            crate::accessibility::set("focus_rings", !access.focus_rings);
+        } else if self.page == SettingsPage::Accessibility && self.hit_toggle(lx, ly, 168) {
             let access = crate::accessibility::snapshot();
             crate::accessibility::set("large_text", !access.large_text);
-        } else if self.hit_toggle(lx, ly, 318) {
+        } else if self.page == SettingsPage::Accessibility && self.hit_toggle(lx, ly, 200) {
             let access = crate::accessibility::snapshot();
             crate::accessibility::set("reduced_motion", !access.reduced_motion);
         } else {
@@ -74,6 +107,7 @@ impl DisplaySettingsApp {
         if self.window.width != self.last_width
             || self.window.height != self.last_height
             || settings != self.last_settings
+            || self.page != self.last_page
         {
             self.render();
         }
@@ -85,6 +119,7 @@ impl DisplaySettingsApp {
         self.last_width = self.window.width;
         self.last_height = self.window.height;
         self.last_settings = settings;
+        self.last_page = self.page;
 
         let stride = self.window.width.max(0) as usize;
         let content_h = (self.window.height - TITLE_H).max(0) as usize;
@@ -94,19 +129,55 @@ impl DisplaySettingsApp {
 
         self.fill_rect(stride, 0, 0, stride, 36, PANEL_ALT);
         self.fill_rect(stride, 0, 35, stride, 1, BORDER);
-        self.put_str(stride, 18, 12, "DISPLAY CONTROL", LABEL);
-        self.put_str(stride, 18, 24, "desktop layout and shell behavior", MUTED);
+        self.put_str(stride, 18, 12, "SETTINGS", LABEL);
+        self.put_str(
+            stride,
+            18,
+            24,
+            "desktop, logs, network, storage, accessibility",
+            MUTED,
+        );
+        self.draw_page_tabs(stride);
 
-        let window_w = self.window.width.max(0) as usize;
-        let panel_w = window_w.saturating_sub(32);
-        self.draw_panel(stride, 16, 46, panel_w, 54);
-        self.draw_panel(stride, 16, 108, panel_w, 84);
-        self.draw_panel(stride, 16, 200, panel_w, 56);
-        self.draw_panel(stride, 16, 264, panel_w, content_h.saturating_sub(280));
+        match self.page {
+            SettingsPage::Desktop => self.render_desktop_page(stride, content_h, settings),
+            SettingsPage::Accessibility => self.render_accessibility_page(stride, access),
+            SettingsPage::Logs => self.render_lines_page(
+                stride,
+                "LOGS + PROFILER",
+                crate::klog::lines()
+                    .into_iter()
+                    .chain(crate::profiler::lines().into_iter())
+                    .take(12)
+                    .collect(),
+            ),
+            SettingsPage::Network => self.render_lines_page(
+                stride,
+                "NETWORK",
+                crate::net::status_lines()
+                    .into_iter()
+                    .chain(crate::net::protocol_lines().into_iter())
+                    .collect(),
+            ),
+            SettingsPage::Storage => {
+                let mut lines = crate::vfs::mount_lines();
+                lines.extend(crate::writeback::lines());
+                lines.extend(crate::fs_hardening::status_lines());
+                self.render_lines_page(stride, "STORAGE", lines);
+            }
+        }
+        self.window.mark_dirty_all();
+    }
 
-        self.put_str(stride, 28, 60, "CURRENT MODE", LABEL);
-        self.put_resolution_line(stride, 28, 76);
-        self.put_str(stride, 250, 76, "live shell controls", GOOD);
+    fn render_desktop_page(&mut self, stride: usize, content_h: usize, settings: DesktopSettings) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 78, panel_w, 54);
+        self.draw_panel(stride, 16, 140, panel_w, 84);
+        self.draw_panel(stride, 16, 232, panel_w, content_h.saturating_sub(248));
+
+        self.put_str(stride, 28, 92, "CURRENT MODE", LABEL);
+        self.put_resolution_line(stride, 28, 108);
+        self.put_str(stride, 250, 108, "live shell controls", GOOD);
 
         self.draw_toggle_row(
             stride,
@@ -125,15 +196,39 @@ impl DisplaySettingsApp {
             settings.compact_spacing,
         );
 
-        self.put_str(stride, 28, 212, "SORT ORDER", LABEL);
-        self.put_str(stride, 28, 226, "controls desktop icon layout", MUTED);
-        self.draw_sort_buttons(stride, 170, 208, settings.sort_mode);
+        self.put_str(stride, 28, 244, "SORT ORDER", LABEL);
+        self.put_str(stride, 28, 258, "controls desktop icon layout", MUTED);
+        self.draw_sort_buttons(stride, 170, 240, settings.sort_mode);
+    }
 
-        self.put_str(stride, 28, 278, "SYSTEM PANELS", LABEL);
+    fn render_accessibility_page(
+        &mut self,
+        stride: usize,
+        access: crate::accessibility::AccessibilitySettings,
+    ) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 82, panel_w, 156);
+        self.put_str(stride, 28, 94, "ACCESSIBILITY", LABEL);
         self.draw_toggle_row(
             stride,
             28,
-            292,
+            104,
+            panel_w.saturating_sub(24),
+            "Keyboard-only navigation",
+            access.keyboard_nav,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            136,
+            panel_w.saturating_sub(24),
+            "Focus rings",
+            access.focus_rings,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            168,
             panel_w.saturating_sub(24),
             "Large text across shell/apps",
             access.large_text,
@@ -141,18 +236,51 @@ impl DisplaySettingsApp {
         self.draw_toggle_row(
             stride,
             28,
-            318,
+            200,
             panel_w.saturating_sub(24),
             "Reduced motion / calmer UI",
             access.reduced_motion,
         );
-        self.put_str(
-            stride,
-            28,
-            344,
-            "Storage, network, power, packages: terminal + services",
-            MUTED,
-        );
+    }
+
+    fn render_lines_page(&mut self, stride: usize, title: &str, lines: alloc::vec::Vec<String>) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 82, panel_w, 276);
+        self.put_str(stride, 28, 96, title, LABEL);
+        let mut y = 116usize;
+        for line in lines.iter().take(15) {
+            self.put_str(stride, 28, y, line, WHITE);
+            y += 14;
+        }
+    }
+
+    fn draw_page_tabs(&mut self, stride: usize) {
+        for (idx, (page, label)) in SETTINGS_PAGES.iter().enumerate() {
+            let x = 18 + idx * 78;
+            let active = *page == self.page;
+            self.fill_rect(stride, x, 46, 72, 22, if active { ACCENT } else { PANEL });
+            self.draw_rect_border(stride, x, 46, 72, 22, if active { WHITE } else { BORDER });
+            self.put_str(
+                stride,
+                x + 8,
+                53,
+                label,
+                if active { 0x00_00_09_18 } else { LABEL },
+            );
+        }
+    }
+
+    fn hit_page_tab(&self, lx: i32, ly: i32) -> Option<SettingsPage> {
+        if !(46..68).contains(&ly) {
+            return None;
+        }
+        for (idx, (page, _)) in SETTINGS_PAGES.iter().enumerate() {
+            let x = 18 + idx as i32 * 78;
+            if lx >= x && lx < x + 72 {
+                return Some(*page);
+            }
+        }
+        None
     }
 
     fn put_resolution_line(&mut self, stride: usize, x: usize, y: usize) {
@@ -234,7 +362,7 @@ impl DisplaySettingsApp {
     }
 
     fn hit_sort_button(&self, lx: i32, ly: i32) -> Option<DesktopSortMode> {
-        if ly < 208 || ly >= 228 {
+        if ly < 240 || ly >= 260 {
             return None;
         }
         let button_w = 72i32;

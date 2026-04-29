@@ -14,6 +14,12 @@ pub enum ClipboardPayload {
         cut: bool,
         mime: &'static str,
     },
+    Image {
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+        mime: &'static str,
+    },
 }
 
 #[derive(Clone)]
@@ -55,6 +61,19 @@ pub fn set_paths(paths: Vec<String>, cut: bool) {
     );
 }
 
+pub fn set_image(width: u32, height: u32, bytes: Vec<u8>, mime: &'static str) {
+    *CLIPBOARD.lock() = Some(ClipboardState {
+        tick: crate::interrupts::ticks(),
+        payload: ClipboardPayload::Image {
+            width,
+            height,
+            bytes,
+            mime,
+        },
+    });
+    crate::notifications::push("Clipboard", "image copied to shared clipboard");
+}
+
 #[allow(dead_code)]
 pub fn get() -> Option<ClipboardState> {
     CLIPBOARD.lock().clone()
@@ -74,12 +93,36 @@ pub fn get_paths() -> Option<(Vec<String>, bool)> {
     }
 }
 
+#[allow(dead_code)]
+pub fn get_image() -> Option<(u32, u32, Vec<u8>, &'static str)> {
+    match CLIPBOARD.lock().as_ref().map(|state| &state.payload) {
+        Some(ClipboardPayload::Image {
+            width,
+            height,
+            bytes,
+            mime,
+        }) => Some((*width, *height, bytes.clone(), mime)),
+        _ => None,
+    }
+}
+
 pub fn mime_type() -> &'static str {
     match CLIPBOARD.lock().as_ref().map(|state| &state.payload) {
         Some(ClipboardPayload::Text { mime, .. }) => mime,
         Some(ClipboardPayload::Paths { mime, .. }) => mime,
+        Some(ClipboardPayload::Image { mime, .. }) => mime,
         None => "empty",
     }
+}
+
+pub fn mime_lines() -> Vec<String> {
+    alloc::vec![
+        String::from("text/plain"),
+        String::from("application/x-coolos-file-list"),
+        String::from("image/rgba"),
+        String::from("negotiation: apps query current MIME before paste/drop"),
+        summary(),
+    ]
 }
 
 pub fn summary() -> String {
@@ -106,6 +149,26 @@ pub fn summary() -> String {
             } else {
                 " copied path(s)"
             });
+            s
+        }
+        Some(ClipboardState {
+            payload:
+                ClipboardPayload::Image {
+                    width,
+                    height,
+                    bytes,
+                    mime,
+                },
+            ..
+        }) => {
+            let mut s = String::from(*mime);
+            s.push(' ');
+            push_usize(&mut s, *width as usize);
+            s.push('x');
+            push_usize(&mut s, *height as usize);
+            s.push(' ');
+            push_usize(&mut s, bytes.len());
+            s.push_str(" bytes");
             s
         }
         None => String::from("empty"),

@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-usb-init smoke-hotplug-usb-init build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-ui-goldens smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -119,6 +119,15 @@ smoke-framebuffer: build
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
 
+smoke-ui-goldens: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds 7 \
+		--screendump "$(CURDIR)/target/ui-golden-desktop.ppm" \
+		--expect-framebuffer-desktop \
+		--expect "[boot] desktop ready"
+
 smoke-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(USB_INIT_BIOS)" \
@@ -136,6 +145,45 @@ smoke-hotplug-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_hotplug_smoke.py \
 		--bios "$(USB_INIT_BIOS)" \
 		--fsimg "$(USB_INIT_FSIMG)"
+
+smoke-kernel-units: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds 6 \
+		--expect "[selftest] kernel unit checks ok=" \
+		--expect "[boot] desktop ready"
+
+smoke-boot-budget: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds 5 \
+		--expect "[boot] desktop ready"
+
+smoke-lowmem: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--memory 256M \
+		--seconds 7 \
+		--expect "[boot] desktop ready"
+
+smoke-smp2: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--smp 2 \
+		--seconds 7 \
+		--expect "[boot] desktop ready"
+
+smoke-vga-cirrus: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--vga cirrus \
+		--seconds 7 \
+		--expect "[boot] desktop ready"
 
 build:
 	cargo build --release --target $(TARGET) \

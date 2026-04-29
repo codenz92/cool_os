@@ -71,6 +71,7 @@ pub fn alloc_zeroed_frame() -> Option<PhysFrame> {
     let frame = alloc_frame()?;
     let ptr = phys_to_virt(frame.start_address()).as_mut_ptr::<u8>();
     unsafe { core::ptr::write_bytes(ptr, 0, 4096) };
+    crate::slab::record_alloc("frames", 4096);
     Some(frame)
 }
 
@@ -173,4 +174,58 @@ pub unsafe fn switch_to_boot() {
 /// Return the current PML4 physical frame.
 pub fn current_pml4() -> PhysFrame {
     Cr3::read().0
+}
+
+pub fn user_range_accessible(ptr: u64, len: u64, writable: bool) -> bool {
+    if ptr == 0 || len == 0 {
+        return false;
+    }
+    let Some(last) = ptr.checked_add(len - 1) else {
+        return false;
+    };
+    let mut page_addr = ptr & !0xfffu64;
+    loop {
+        if !user_page_accessible(VirtAddr::new(page_addr), writable) {
+            return false;
+        }
+        if page_addr >= (last & !0xfffu64) {
+            break;
+        }
+        page_addr = page_addr.saturating_add(4096);
+    }
+    true
+}
+
+fn user_page_accessible(virt: VirtAddr, writable: bool) -> bool {
+    let page: Page<Size4KiB> = Page::containing_address(virt);
+    let pml4 = unsafe { table_at(current_pml4().start_address()) };
+    let l4 = &pml4[page.p4_index()];
+    if !entry_allows(l4.flags(), writable) {
+        return false;
+    }
+    let l3_table = unsafe { table_at(l4.addr()) };
+    let l3 = &l3_table[page.p3_index()];
+    if !entry_allows(l3.flags(), writable) {
+        return false;
+    }
+    if l3.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return true;
+    }
+    let l2_table = unsafe { table_at(l3.addr()) };
+    let l2 = &l2_table[page.p2_index()];
+    if !entry_allows(l2.flags(), writable) {
+        return false;
+    }
+    if l2.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return true;
+    }
+    let l1_table = unsafe { table_at(l2.addr()) };
+    let l1 = &l1_table[page.p1_index()];
+    entry_allows(l1.flags(), writable)
+}
+
+fn entry_allows(flags: PageTableFlags, writable: bool) -> bool {
+    flags.contains(PageTableFlags::PRESENT)
+        && flags.contains(PageTableFlags::USER_ACCESSIBLE)
+        && (!writable || flags.contains(PageTableFlags::WRITABLE))
 }

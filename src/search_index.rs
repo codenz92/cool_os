@@ -15,6 +15,7 @@ pub struct SearchEntry {
 }
 
 static INDEX: Mutex<Vec<SearchEntry>> = Mutex::new(Vec::new());
+static DIRTY_PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn refresh() {
     let job = crate::jobs::start("Search index", "scanning FAT32 filenames and text snippets");
@@ -25,6 +26,44 @@ pub fn refresh() {
     crate::jobs::complete(job, "index ready");
     crate::event_bus::emit("search", "refresh", "desktop search index rebuilt");
     crate::klog::log_owned(format!("search index: {} item(s)", count));
+}
+
+pub fn record_change(path: &str) {
+    if !crate::allocator::heap_ready() {
+        return;
+    }
+    let path = crate::vfs::normalize_path(path);
+    let mut dirty = DIRTY_PATHS.lock();
+    if !dirty.iter().any(|entry| entry.eq_ignore_ascii_case(&path)) {
+        if dirty.len() >= 64 {
+            dirty.remove(0);
+        }
+        dirty.push(path);
+    }
+    crate::deferred::enqueue(crate::deferred::DeferredWork::UpdateSearchIndex);
+}
+
+pub fn drain_changes() {
+    let dirty = {
+        let mut dirty = DIRTY_PATHS.lock();
+        if dirty.is_empty() {
+            return;
+        }
+        core::mem::take(&mut *dirty)
+    };
+    if dirty.len() > 24 {
+        refresh();
+        return;
+    }
+    let mut index = INDEX.lock();
+    for path in dirty {
+        remove_path_prefix(&mut index, &path);
+        if let Some(entry) = entry_for_path(&path) {
+            index.push(entry);
+        }
+    }
+    index.sort_by(|a, b| a.path.cmp(&b.path));
+    crate::event_bus::emit("search", "incremental", "desktop search index updated");
 }
 
 pub fn search(query: &str, limit: usize) -> Vec<SearchEntry> {
@@ -67,7 +106,7 @@ fn scan_dir(path: &str, depth: usize, out: &mut Vec<SearchEntry>) {
     if depth > MAX_DEPTH || out.len() >= MAX_INDEXED {
         return;
     }
-    let Some(mut entries) = crate::fat32::list_dir(path) else {
+    let Some(mut entries) = crate::vfs::vfs_list_dir(path) else {
         return;
     };
     entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -95,7 +134,7 @@ fn scan_dir(path: &str, depth: usize, out: &mut Vec<SearchEntry>) {
 }
 
 fn file_snippet(path: &str) -> String {
-    let Some(bytes) = crate::fat32::read_file(path) else {
+    let Some(bytes) = crate::vfs::vfs_read_file(path) else {
         return String::new();
     };
     let Ok(text) = core::str::from_utf8(&bytes) else {
@@ -110,6 +149,44 @@ fn file_snippet(path: &str) -> String {
         }
     }
     out
+}
+
+fn entry_for_path(path: &str) -> Option<SearchEntry> {
+    if crate::vfs::vfs_list_dir(path).is_some() {
+        return Some(SearchEntry {
+            path: String::from(path),
+            name: file_name(path),
+            kind: String::from("dir"),
+            snippet: String::new(),
+        });
+    }
+    if crate::vfs::vfs_read_file(path).is_some() {
+        return Some(SearchEntry {
+            path: String::from(path),
+            name: file_name(path),
+            kind: String::from("file"),
+            snippet: file_snippet(path),
+        });
+    }
+    None
+}
+
+fn remove_path_prefix(index: &mut Vec<SearchEntry>, path: &str) {
+    let mut prefix = String::from(path);
+    if !prefix.ends_with('/') {
+        prefix.push('/');
+    }
+    index.retain(|entry| {
+        !entry.path.eq_ignore_ascii_case(path) && !starts_with_ignore_ascii(&entry.path, &prefix)
+    });
+}
+
+fn starts_with_ignore_ascii(value: &str, prefix: &str) -> bool {
+    value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+fn file_name(path: &str) -> String {
+    String::from(path.rsplit('/').next().unwrap_or(path))
 }
 
 fn score_entry(entry: &SearchEntry, query: &str) -> Option<usize> {

@@ -232,6 +232,10 @@ pub fn app_by_command(command: &str) -> Option<&'static AppMetadata> {
         .find(|app| app.command.eq_ignore_ascii_case(command))
 }
 
+pub fn app_by_name(name: &str) -> Option<&'static AppMetadata> {
+    APPS.iter().find(|app| app.name.eq_ignore_ascii_case(name))
+}
+
 pub fn association_for(path: &str, is_dir: bool) -> Association {
     if is_dir {
         return Association::Directory;

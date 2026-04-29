@@ -341,6 +341,7 @@ impl TextViewerApp {
             0x00_11_22_33,
             ACCENT,
         );
+        self.window.mark_dirty_all();
     }
 
     fn fill_background(&mut self, stride: usize) {

@@ -12,6 +12,36 @@ use x86_64::structures::paging::PhysFrame;
 const MAX_FDS: usize = 16;
 const PIPE_SIZE: usize = 512;
 
+#[derive(Clone, Copy)]
+pub struct MountInfo {
+    pub prefix: &'static str,
+    pub fs_type: &'static str,
+    pub flags: &'static str,
+}
+
+const MOUNTS: [MountInfo; 4] = [
+    MountInfo {
+        prefix: "/",
+        fs_type: "fat32",
+        flags: "rw,relatime,normalized-paths",
+    },
+    MountInfo {
+        prefix: "/DEV",
+        fs_type: "devfs",
+        flags: "ro,generated",
+    },
+    MountInfo {
+        prefix: "/APPS",
+        fs_type: "appfs",
+        flags: "rw,manifest-validated",
+    },
+    MountInfo {
+        prefix: "/LOGS",
+        fs_type: "fat32",
+        flags: "rw,persistent",
+    },
+];
+
 struct OpenFile {
     data: Vec<u8>,
     offset: usize,
@@ -260,12 +290,113 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 pub fn mount_lines() -> Vec<String> {
-    alloc::vec![
-        String::from("/ type=fat32 flags=rw,relatime,normalized-paths"),
-        String::from("/DEV type=devfs flags=ro,generated"),
-        String::from("/APPS type=appfs flags=rw,manifest-validated"),
-        format!("fd tables={} max_fd={}", VFS.lock().task_fds.len(), MAX_FDS),
-    ]
+    let mut lines: Vec<String> = MOUNTS
+        .iter()
+        .map(|mount| {
+            format!(
+                "{} type={} flags={}",
+                mount.prefix, mount.fs_type, mount.flags
+            )
+        })
+        .collect();
+    lines.push(format!(
+        "fd tables={} max_fd={}",
+        VFS.lock().task_fds.len(),
+        MAX_FDS
+    ));
+    lines
+}
+
+#[allow(dead_code)]
+pub fn resolve_mount(path: &str) -> MountInfo {
+    let path = normalize_path(path);
+    let mut best = MOUNTS[0];
+    for mount in MOUNTS.iter() {
+        if path == mount.prefix
+            || (mount.prefix != "/"
+                && path.starts_with(mount.prefix)
+                && mount.prefix.len() > best.prefix.len())
+        {
+            best = *mount;
+        }
+    }
+    best
+}
+
+pub fn vfs_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
+    let path = normalize_path(path);
+    if !crate::security::can_read_path(&path) {
+        return None;
+    }
+    crate::fat32::list_dir(&path)
+}
+
+pub fn vfs_read_file(path: &str) -> Option<Vec<u8>> {
+    let path = normalize_path(path);
+    if !crate::security::can_read_path(&path) {
+        return None;
+    }
+    crate::fat32::read_file(&path)
+}
+
+pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::create_file(&path)
+}
+
+pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::create_dir(&path)
+}
+
+#[allow(dead_code)]
+pub fn vfs_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::write_file(&path, data)
+}
+
+#[allow(dead_code)]
+pub fn vfs_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::safe_write_file(&path, data)
+}
+
+pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::delete_file(&path)
+}
+
+#[allow(dead_code)]
+pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::rename(&path, new_name)
+}
+
+pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
+    let src = normalize_path(src);
+    let dst = normalize_path(dst);
+    if !crate::security::can_read_path(&src) || !crate::security::can_write_path(&dst) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    crate::fat32::copy_file(&src, &dst)
 }
 
 pub fn init_task(task_id: usize) {
@@ -294,6 +425,7 @@ pub fn drop_task(task_id: usize) {
     };
 
     for task_id in wake_tasks {
+        crate::wait_queue::wake("pipe-read", task_id);
         crate::scheduler::unblock(task_id);
     }
 }
@@ -337,7 +469,7 @@ pub fn vfs_open(path: &str) -> usize {
     if !crate::security::can_read_path(&path) {
         return usize::MAX;
     }
-    let data = match crate::fat32::read_file(&path) {
+    let data = match vfs_read_file(&path) {
         Some(data) => data,
         None => return usize::MAX,
     };
@@ -467,6 +599,7 @@ pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
     };
 
     if let Some(task_id) = wake_task {
+        crate::wait_queue::wake("pipe-read", task_id);
         crate::scheduler::unblock(task_id);
     }
     n
@@ -508,6 +641,7 @@ pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
             PipeReadResult::Data(n) => return n,
             PipeReadResult::Eof => return 0,
             PipeReadResult::WouldBlock => {
+                crate::wait_queue::wait("pipe-read", crate::scheduler::current_task_id());
                 crate::scheduler::block_current();
                 while crate::scheduler::current_task_blocked() {
                     unsafe {
@@ -534,6 +668,7 @@ pub fn vfs_close(fd: usize) {
     };
 
     if let Some(task_id) = wake_task {
+        crate::wait_queue::wake("pipe-read", task_id);
         crate::scheduler::unblock(task_id);
     }
 }

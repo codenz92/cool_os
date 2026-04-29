@@ -223,6 +223,7 @@ impl ColorPickerApp {
             MUTED,
         );
         let _ = content_h;
+        self.window.mark_dirty_all();
     }
 
     fn fill_background(&mut self, stride: usize) {

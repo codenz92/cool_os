@@ -132,6 +132,7 @@ impl Scheduler {
         // Allocate and zero-initialise the stack buffer.
         let mut stack: Vec<u8> = Vec::new();
         stack.resize(STACK_SIZE, 0u8);
+        crate::slab::record_alloc("task-stack", STACK_SIZE);
 
         // Round the top of the buffer down to a 16-byte boundary so that the
         // stack pointer is properly aligned for the System V AMD64 ABI.
@@ -266,12 +267,37 @@ impl Scheduler {
         }
 
         let now = crate::interrupts::ticks();
-        for task in self.tasks.iter_mut() {
+        for (idx, task) in self.tasks.iter_mut().enumerate() {
             if task.status == TaskStatus::Blocked
                 && task.wake_tick.map(|wake| now >= wake).unwrap_or(false)
             {
                 task.wake_tick = None;
                 task.status = TaskStatus::Ready;
+            }
+            if let Some(signal) = task.pending_signal.take() {
+                match signal {
+                    crate::process_model::Signal::Term | crate::process_model::Signal::Int => {
+                        if idx != 0
+                            && task.status != TaskStatus::Exited
+                            && task.status != TaskStatus::Reaped
+                        {
+                            task.status = TaskStatus::Exited;
+                            task.exit_code =
+                                Some(if signal == crate::process_model::Signal::Term {
+                                    143
+                                } else {
+                                    130
+                                });
+                            task.wake_tick = None;
+                        }
+                    }
+                    crate::process_model::Signal::User1 => {
+                        task.wake_tick = None;
+                        if task.status == TaskStatus::Blocked {
+                            task.status = TaskStatus::Ready;
+                        }
+                    }
+                }
             }
         }
 
@@ -378,12 +404,25 @@ pub fn current_task_id() -> usize {
     SCHEDULER.lock().current
 }
 
+pub fn task_name(task_id: usize) -> Option<&'static str> {
+    SCHEDULER.lock().tasks.get(task_id).map(|task| task.name)
+}
+
 pub fn current_task_blocked() -> bool {
     let sched = SCHEDULER.lock();
     sched
         .tasks
         .get(sched.current)
         .map(|task| task.status == TaskStatus::Blocked)
+        .unwrap_or(false)
+}
+
+pub fn current_has_pending_signal() -> bool {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .get(sched.current)
+        .map(|task| task.pending_signal.is_some())
         .unwrap_or(false)
 }
 
@@ -510,13 +549,6 @@ pub fn send_signal(
     if task_id == 0 {
         return Err(SignalError::CannotSignalIdle);
     }
-    if signal == crate::process_model::Signal::Term {
-        return kill_task(task_id, 143).map_err(|err| match err {
-            KillError::InvalidTask => SignalError::InvalidTask,
-            KillError::AlreadyReaped => SignalError::AlreadyReaped,
-            _ => SignalError::InvalidTask,
-        });
-    }
     {
         let mut sched = SCHEDULER.lock();
         let task = sched
@@ -560,6 +592,7 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
                 let code = task.exit_code.unwrap_or(0);
                 task.status = TaskStatus::Reaped;
                 task.stack.clear();
+                crate::slab::record_free("task-stack", STACK_SIZE);
                 task.stack_ptr = 0;
                 task.syscall_stack_top = 0;
                 task.pml4 = None;
@@ -588,6 +621,7 @@ pub fn reap_all_exited(parent: usize) -> usize {
             }
             task.status = TaskStatus::Reaped;
             task.stack.clear();
+            crate::slab::record_free("task-stack", STACK_SIZE);
             task.stack_ptr = 0;
             task.syscall_stack_top = 0;
             task.pml4 = None;

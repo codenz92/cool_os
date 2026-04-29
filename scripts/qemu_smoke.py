@@ -14,6 +14,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bios", required=True, help="Path to bios.img")
     parser.add_argument("--fsimg", required=True, help="Path to fs.img")
     parser.add_argument("--seconds", type=float, default=6.0, help="How long to let QEMU run")
+    parser.add_argument("--memory", default="512M", help="QEMU memory size, e.g. 256M")
+    parser.add_argument("--smp", default="1", help="QEMU SMP CPU count")
+    parser.add_argument("--vga", default="std", help="QEMU VGA adapter")
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and mouse")
     parser.add_argument(
         "--expect",
@@ -38,9 +41,11 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         f"-drive",
         f"file={args.fsimg},if=ide,format=raw,index=1,snapshot=on",
         "-m",
-        "512M",
+        args.memory,
+        "-smp",
+        args.smp,
         "-vga",
-        "std",
+        args.vga,
         "-display",
         "none",
         "-debugcon",

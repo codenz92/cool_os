@@ -58,6 +58,14 @@ impl ScrollState {
 
 // ── Window ────────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
+pub struct DirtyRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
 pub struct Window {
     pub x: i32,
     pub y: i32,
@@ -75,6 +83,8 @@ pub struct Window {
     saved_y: i32,
     saved_width: i32,
     saved_height: i32,
+    dirty_regions: Vec<DirtyRect>,
+    dirty_all: bool,
 }
 
 impl Window {
@@ -94,6 +104,8 @@ impl Window {
             saved_y: y,
             saved_width: width,
             saved_height: height,
+            dirty_regions: Vec::new(),
+            dirty_all: true,
         }
     }
 
@@ -169,6 +181,7 @@ impl Window {
         self.width = new_w;
         self.height = new_h;
         self.buf = new_buf;
+        self.mark_dirty_all();
     }
 
     /// Resize the window, clamping to sensible minimums, and reallocate the back-buffer.
@@ -191,6 +204,9 @@ impl Window {
             self.saved_height = self.height;
         }
         self.minimized = false;
+        if self.x != x || self.y != y {
+            self.mark_dirty_all();
+        }
         self.x = x;
         self.y = y;
         self.resize_to(width, height);
@@ -205,6 +221,7 @@ impl Window {
             self.saved_y = self.y;
             self.saved_width = self.width;
             self.saved_height = self.height;
+            self.mark_dirty_all();
         }
     }
 
@@ -215,6 +232,7 @@ impl Window {
             self.y = self.saved_y;
             self.resize_buffer(self.saved_width, self.saved_height);
             self.scroll.clamp((self.saved_height - TITLE_H).max(0));
+            self.mark_dirty_all();
         }
     }
 
@@ -225,6 +243,7 @@ impl Window {
             self.y = self.saved_y;
             self.resize_buffer(self.saved_width, self.saved_height);
             self.scroll.clamp((self.saved_height - TITLE_H).max(0));
+            self.mark_dirty_all();
         } else {
             self.saved_x = self.x;
             self.saved_y = self.y;
@@ -234,6 +253,54 @@ impl Window {
             self.y = 0;
             self.resize_buffer(sw, sh);
             self.scroll.clamp((sh - TITLE_H).max(0));
+            self.mark_dirty_all();
         }
+    }
+
+    pub fn mark_dirty(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        if self.dirty_all {
+            return;
+        }
+        let content_w = self.width.max(0);
+        let content_h = (self.height - TITLE_H).max(0);
+        let x0 = x.clamp(0, content_w);
+        let y0 = y.clamp(0, content_h);
+        let x1 = (x + w).clamp(0, content_w);
+        let y1 = (y + h).clamp(0, content_h);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        if self.dirty_regions.len() >= 32 {
+            self.mark_dirty_all();
+            return;
+        }
+        self.dirty_regions.push(DirtyRect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        });
+    }
+
+    pub fn mark_dirty_all(&mut self) {
+        self.dirty_regions.clear();
+        self.dirty_all = true;
+    }
+
+    pub fn take_dirty_regions(&mut self) -> Vec<DirtyRect> {
+        let content_h = (self.height - TITLE_H).max(0);
+        if self.dirty_all {
+            self.dirty_all = false;
+            return alloc::vec![DirtyRect {
+                x: 0,
+                y: 0,
+                w: self.width.max(0),
+                h: content_h,
+            }];
+        }
+        core::mem::take(&mut self.dirty_regions)
     }
 }

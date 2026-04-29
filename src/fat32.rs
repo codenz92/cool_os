@@ -649,7 +649,11 @@ pub fn create_file(path: &str) -> Result<(), FsError> {
     let (bpb, parent_cluster, fat_name) = prepare_create(path)?;
     let mut entries = fat_name.lfn_entries;
     entries.push(encode_dir_entry(fat_name.short, ATTR_ARCHIVE, 0, 0));
-    append_dir_entries(&bpb, parent_cluster, &entries)
+    let result = append_dir_entries(&bpb, parent_cluster, &entries);
+    if result.is_ok() {
+        record_mutation("create-file", path);
+    }
+    result
 }
 
 pub fn create_dir(path: &str) -> Result<(), FsError> {
@@ -675,6 +679,7 @@ pub fn create_dir(path: &str) -> Result<(), FsError> {
         return Err(err);
     }
 
+    record_mutation("create-dir", path);
     Ok(())
 }
 
@@ -709,6 +714,13 @@ pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
         for &(lba, offset) in &location.lfn_locations {
             mark_dir_slot_deleted(lba, offset)?;
         }
+        record_mutation("rename", path);
+        let mut renamed_path = parent_path.clone();
+        if !renamed_path.ends_with('/') {
+            renamed_path.push('/');
+        }
+        renamed_path.push_str(new_name);
+        crate::search_index::record_change(&renamed_path);
         return Ok(());
     }
 
@@ -721,13 +733,30 @@ pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
             write_dir_slot(lba, offset, entry)?;
         }
         write_dir_slot(location.lba, location.offset, &short_entry)?;
+        record_mutation("rename", path);
+        let mut renamed_path = parent_path.clone();
+        if !renamed_path.ends_with('/') {
+            renamed_path.push('/');
+        }
+        renamed_path.push_str(new_name);
+        crate::search_index::record_change(&renamed_path);
         return Ok(());
     }
 
     let mut entries = fat_name.lfn_entries;
     entries.push(short_entry);
     append_dir_entries(&bpb, parent_cluster, &entries)?;
-    mark_entry_location_deleted(&location)
+    let result = mark_entry_location_deleted(&location);
+    if result.is_ok() {
+        record_mutation("rename", path);
+        let mut renamed_path = parent_path;
+        if !renamed_path.ends_with('/') {
+            renamed_path.push('/');
+        }
+        renamed_path.push_str(new_name);
+        crate::search_index::record_change(&renamed_path);
+    }
+    result
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
@@ -776,6 +805,7 @@ pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
         free_cluster_chain(&bpb, old_first_cluster)?;
     }
 
+    record_mutation("write-file", path);
     Ok(())
 }
 
@@ -802,7 +832,11 @@ pub fn delete_file(path: &str) -> Result<(), FsError> {
             free_cluster_chain(&bpb, first_cluster)?;
         }
     }
-    mark_entry_location_deleted(&location)
+    let result = mark_entry_location_deleted(&location);
+    if result.is_ok() {
+        record_mutation("delete", path);
+    }
+    result
 }
 
 pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
@@ -834,6 +868,11 @@ pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
         }
     }
     rename(&tmp, &name)
+}
+
+fn record_mutation(kind: &str, path: &str) {
+    crate::search_index::record_change(path);
+    crate::writeback::enqueue(kind, path);
 }
 
 // ── Path + lookup helpers ─────────────────────────────────────────────────────

@@ -85,6 +85,7 @@ impl PersonalizeApp {
                 settings.wallpaper == *preset,
             );
         }
+        self.window.mark_dirty_all();
     }
 
     fn draw_preset_row(

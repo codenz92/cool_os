@@ -9,6 +9,7 @@ static XSDT_ADDR: AtomicU64 = AtomicU64::new(0);
 static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
 static FADT_ADDR: AtomicU64 = AtomicU64::new(0);
 static PM1A_CNT_BLK: AtomicU64 = AtomicU64::new(0);
+static RESET_REG_SPACE: AtomicU64 = AtomicU64::new(0);
 static RESET_REG_ADDR: AtomicU64 = AtomicU64::new(0);
 static RESET_VALUE: AtomicU64 = AtomicU64::new(0);
 
@@ -42,8 +43,9 @@ pub fn status_lines() -> Vec<String> {
         if fadt != 0 {
             lines.push(format!("FADT at {:#x}", fadt));
             lines.push(format!(
-                "PM1a_CNT={:#x} reset_reg={:#x} reset_value={:#x}",
+                "PM1a_CNT={:#x} reset_space={} reset_reg={:#x} reset_value={:#x}",
                 PM1A_CNT_BLK.load(Ordering::Relaxed),
+                RESET_REG_SPACE.load(Ordering::Relaxed),
                 RESET_REG_ADDR.load(Ordering::Relaxed),
                 RESET_VALUE.load(Ordering::Relaxed)
             ));
@@ -55,8 +57,35 @@ pub fn status_lines() -> Vec<String> {
         "shutdown: FADT parsed; S5 AML decode still guarded",
     ));
     lines.push(String::from("sleep: S-state groundwork only"));
-    lines.push(String::from("reboot: legacy controller reset available"));
+    lines.push(String::from(
+        "battery: desktop/QEMU AC-line assumed; EC battery probe pending",
+    ));
+    lines.push(String::from(
+        "reboot: ACPI reset register preferred, legacy fallback available",
+    ));
     lines
+}
+
+pub fn reboot() -> ! {
+    let addr = RESET_REG_ADDR.load(Ordering::Relaxed);
+    let value = RESET_VALUE.load(Ordering::Relaxed) as u8;
+    let space = RESET_REG_SPACE.load(Ordering::Relaxed) as u8;
+    if addr != 0 && value != 0 {
+        crate::klog::log("acpi: reboot via FADT reset register");
+        match space {
+            1 => unsafe {
+                x86_64::instructions::port::Port::<u8>::new(addr as u16).write(value);
+            },
+            0 => unsafe {
+                (addr as *mut u8).write_volatile(value);
+            },
+            _ => {}
+        }
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+    crate::interrupts::reboot();
 }
 
 pub fn shutdown() -> Result<(), &'static str> {
@@ -166,6 +195,7 @@ unsafe fn parse_fadt(ptr: *const u8) {
         ptr.add(126).read_volatile(),
         ptr.add(127).read_volatile(),
     ]);
+    RESET_REG_SPACE.store(ptr.add(116).read_volatile() as u64, Ordering::Relaxed);
     RESET_REG_ADDR.store(reset_addr, Ordering::Relaxed);
     RESET_VALUE.store(ptr.add(128).read_volatile() as u64, Ordering::Relaxed);
 }

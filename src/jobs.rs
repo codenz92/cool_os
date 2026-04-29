@@ -9,6 +9,9 @@ const MAX_JOBS: usize = 32;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
     Running,
+    #[allow(dead_code)]
+    Paused,
+    Cancelled,
     Complete,
     Failed,
 }
@@ -17,6 +20,8 @@ impl JobState {
     pub const fn label(self) -> &'static str {
         match self {
             JobState::Running => "running",
+            JobState::Paused => "paused",
+            JobState::Cancelled => "cancelled",
             JobState::Complete => "complete",
             JobState::Failed => "failed",
         }
@@ -57,6 +62,26 @@ pub fn start(title: &str, detail: &str) -> u64 {
 
 pub fn complete(id: u64, detail: &str) {
     update(id, 100, JobState::Complete, detail);
+}
+
+pub fn progress(id: u64, progress: u8, detail: &str) {
+    update(id, progress, JobState::Running, detail);
+}
+
+pub fn cancel(id: u64) -> bool {
+    set_state(id, JobState::Cancelled, "cancel requested")
+}
+
+pub fn resume(id: u64) -> bool {
+    set_state(id, JobState::Running, "resume requested")
+}
+
+pub fn is_cancelled(id: u64) -> bool {
+    JOBS.lock()
+        .iter()
+        .find(|job| job.id == id)
+        .map(|job| job.state == JobState::Cancelled)
+        .unwrap_or(false)
 }
 
 pub fn fail(id: u64, detail: &str) {
@@ -102,4 +127,17 @@ fn update(id: u64, progress: u8, state: JobState, detail: &str) {
         crate::event_bus::emit("jobs", state.label(), &job.title);
     }
     crate::wm::request_repaint();
+}
+
+fn set_state(id: u64, state: JobState, detail: &str) -> bool {
+    let mut jobs = JOBS.lock();
+    let Some(job) = jobs.iter_mut().find(|job| job.id == id) else {
+        return false;
+    };
+    job.state = state;
+    job.detail.clear();
+    job.detail.push_str(detail);
+    crate::event_bus::emit("jobs", state.label(), &job.title);
+    crate::wm::request_repaint();
+    true
 }

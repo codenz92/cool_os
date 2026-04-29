@@ -233,6 +233,7 @@ impl SysMonApp {
                 row += 10;
             }
         }
+        self.window.mark_dirty_all();
     }
 
     fn fill_background(&mut self, stride: usize) {
