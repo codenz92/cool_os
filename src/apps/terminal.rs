@@ -348,6 +348,23 @@ impl TerminalApp {
 
             Some("log") => self.cmd_log(),
 
+            Some("logs") => self.cmd_lines("LOG VIEW", crate::klog::lines()),
+
+            Some("profiler") => {
+                let mut lines = crate::profiler::lines();
+                lines.extend(crate::boot_watchdog::lines());
+                lines.extend(crate::deferred::lines());
+                self.cmd_lines("BOOT/SESSION PROFILER", lines);
+            }
+
+            Some("heap") => self.cmd_lines("HEAP DIAGNOSTICS", crate::allocator::heap_lines()),
+
+            Some("font") => self.cmd_lines("FONT RENDERER", crate::font::lines()),
+
+            Some("deferred") => self.cmd_lines("DEFERRED WORK", crate::deferred::lines()),
+
+            Some("tasksnap") => self.cmd_lines("TASK SNAPSHOT", crate::task_snapshot::lines()),
+
             Some("fsck") => self.cmd_fsck(),
 
             Some("fsrepair") => self.cmd_lines("FS REPAIR", crate::fs_hardening::repair()),
@@ -423,6 +440,16 @@ impl TerminalApp {
             Some("abi") => self.cmd_lines("ABI", crate::abi::lines()),
 
             Some("notify") => self.cmd_notify(words.next(), words.next()),
+
+            Some("screenshot") => {
+                let path = words.next().unwrap_or("/LOGS/WINDOW.PPM");
+                crate::wm::request_focused_screenshot(path);
+                self.set_fg(FG_ACCENT);
+                self.print_str("queued screenshot ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
 
             Some("clip") => {
                 let mut text = String::new();
@@ -629,6 +656,12 @@ impl TerminalApp {
             ("http <host> [path]", "build basic HTTP request"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
+            ("logs", "open combined log summary"),
+            ("profiler", "boot/service/task timing"),
+            ("heap", "heap diagnostics"),
+            ("font", "font renderer diagnostics"),
+            ("deferred", "deferred work queue"),
+            ("tasksnap", "persistent task snapshot"),
             ("fsck", "filesystem check summary"),
             ("fsrepair", "repair standard FS dirs"),
             ("mounts", "mount/cache/journal status"),
@@ -656,6 +689,7 @@ impl TerminalApp {
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
             ("notify <op>", "notification history/actions"),
+            ("screenshot [path]", "save focused window PPM"),
             ("clip [text]", "shared clipboard"),
             ("paste", "paste shared clipboard text"),
             ("echo <text>", "print text"),

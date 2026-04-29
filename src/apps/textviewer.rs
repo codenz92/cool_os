@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 
 use crate::framebuffer::{LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
-use font8x8::UnicodeFonts;
 
 pub const VIEWER_W: i32 = 640;
 pub const VIEWER_H: i32 = 480;
@@ -116,6 +115,90 @@ impl TextViewerApp {
         };
         app.heading = String::from("Crash dump viewer");
         app.subheading = String::from("/LOGS/CRASH.TXT and per-task reports");
+        app.scroll = 0;
+        app.render();
+        app
+    }
+
+    pub fn log_viewer(x: i32, y: i32) -> Self {
+        let mut lines = Vec::new();
+        push_section(&mut lines, "kernel", crate::klog::lines());
+        push_section(
+            &mut lines,
+            "boot/session profiler",
+            crate::profiler::lines(),
+        );
+        push_section(&mut lines, "services", crate::services::lines());
+        push_section(
+            &mut lines,
+            "filesystem",
+            crate::fs_hardening::journal_lines(),
+        );
+        push_section(&mut lines, "apps", crate::app_lifecycle::lines());
+        Self::from_lines(
+            x,
+            y,
+            "Log Viewer",
+            "kernel, boot, services, filesystem, and app logs",
+            lines,
+        )
+    }
+
+    pub fn profiler_viewer(x: i32, y: i32) -> Self {
+        let mut lines = Vec::new();
+        push_section(&mut lines, "slow phases", crate::profiler::slow_lines());
+        push_section(&mut lines, "boot watchdog", crate::boot_watchdog::lines());
+        push_section(&mut lines, "profiler events", crate::profiler::lines());
+        push_section(&mut lines, "deferred work", crate::deferred::lines());
+        push_section(&mut lines, "task snapshot", crate::task_snapshot::lines());
+        Self::from_lines(
+            x,
+            y,
+            "Boot Profiler",
+            "boot phases, task exits, services, and deferred work",
+            lines,
+        )
+    }
+
+    pub fn welcome(x: i32, y: i32) -> Self {
+        let lines = alloc::vec![
+            String::from("Welcome to coolOS"),
+            String::from(""),
+            String::from("Shortcuts"),
+            String::from("  Ctrl+Space       launcher/search palette"),
+            String::from("  Alt+Tab          app switcher"),
+            String::from("  Win+1..4         switch workspaces"),
+            String::from("  F2               rename selected item where supported"),
+            String::from("  Delete           delete selected file-manager item"),
+            String::from(""),
+            String::from("Useful apps"),
+            String::from("  Terminal         commands and diagnostics"),
+            String::from("  File Manager     tabs, split view, search, drag/drop"),
+            String::from("  Log Viewer       kernel/service/filesystem logs"),
+            String::from("  Boot Profiler    startup timing and deferred work"),
+            String::from("  Crash Viewer     panic and per-task crash reports"),
+            String::from(""),
+            String::from("Useful commands"),
+            String::from("  help, profiler, logs, heap, services, jobs, fsck, mounts"),
+        ];
+        Self::from_lines(
+            x,
+            y,
+            "Welcome",
+            "first-run help, shortcuts, and diagnostics",
+            lines,
+        )
+    }
+
+    fn from_lines(x: i32, y: i32, heading: &str, subheading: &str, lines: Vec<String>) -> Self {
+        let mut app = Self::new(x, y);
+        app.lines = if lines.is_empty() {
+            alloc::vec![String::from("(empty)")]
+        } else {
+            lines
+        };
+        app.heading = String::from(heading);
+        app.subheading = String::from(subheading);
         app.scroll = 0;
         app.render();
         app
@@ -300,13 +383,16 @@ impl TextViewerApp {
     }
 
     fn put_str(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {
-        for (ci, c) in s.chars().enumerate() {
-            let gx = px + ci * CHAR_W;
-            if gx + CHAR_W > stride {
-                break;
-            }
-            put_char_transparent(&mut self.window.buf, stride, gx, py, c, color);
-        }
+        crate::font::draw_str(
+            &mut self.window.buf,
+            stride,
+            px,
+            py,
+            s,
+            color,
+            None,
+            crate::font::UI_FONT,
+        );
     }
 }
 
@@ -327,21 +413,23 @@ fn push_number(out: &mut String, mut n: usize) {
     }
 }
 
-fn put_char_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    for (gy, &byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            if byte & (1 << bit) == 0 {
-                continue;
-            }
-            let px = px0 + bit;
-            let py = py0 + gy;
-            let idx = py * stride + px;
-            if idx < buf.len() {
-                buf[idx] = fg;
-            }
+fn push_section(out: &mut Vec<String>, title: &str, lines: Vec<String>) {
+    out.push(String::new());
+    let mut heading = String::from(" == ");
+    heading.push_str(title);
+    heading.push_str(" ==");
+    out.push(heading);
+    if lines.is_empty() {
+        out.push(String::from("  (none)"));
+    } else {
+        for line in lines {
+            let mut prefixed = String::from("  ");
+            prefixed.push_str(&line);
+            out.push(prefixed);
         }
     }
+}
+
+fn put_char_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
+    crate::font::draw_char(buf, stride, px0, py0, c, fg, None, crate::font::UI_FONT);
 }

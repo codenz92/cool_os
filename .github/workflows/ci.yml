@@ -28,5 +28,8 @@ jobs:
       - name: Framebuffer UI smoke
         run: make smoke-ui
 
+      - name: Framebuffer screendump assertion
+        run: make smoke-framebuffer
+
       - name: USB init smoke
         run: make smoke-usb-init

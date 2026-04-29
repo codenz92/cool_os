@@ -97,6 +97,30 @@ pub const APPS: &[AppMetadata] = &[
         permission: "diagnostics",
         associations: &["DMP"],
     },
+    AppMetadata {
+        id: "app.logs",
+        name: "Log Viewer",
+        glyph: "LV",
+        command: "logs",
+        permission: "diagnostics",
+        associations: &["LOG"],
+    },
+    AppMetadata {
+        id: "app.profiler",
+        name: "Boot Profiler",
+        glyph: "BP",
+        command: "profiler",
+        permission: "diagnostics",
+        associations: &[],
+    },
+    AppMetadata {
+        id: "app.welcome",
+        name: "Welcome",
+        glyph: "W?",
+        command: "welcome",
+        permission: "desktop",
+        associations: &[],
+    },
 ];
 
 pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
@@ -139,6 +163,21 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         label: "Crash Viewer",
         detail: "open crash reports",
         kind: LauncherKind::App("Crash Viewer"),
+    },
+    LauncherEntry {
+        label: "Log Viewer",
+        detail: "kernel/service/filesystem logs",
+        kind: LauncherKind::App("Log Viewer"),
+    },
+    LauncherEntry {
+        label: "Boot Profiler",
+        detail: "boot phases and service timing",
+        kind: LauncherKind::App("Boot Profiler"),
+    },
+    LauncherEntry {
+        label: "Welcome",
+        detail: "shortcut cheatsheet",
+        kind: LauncherKind::App("Welcome"),
     },
     LauncherEntry {
         label: "hello.txt",

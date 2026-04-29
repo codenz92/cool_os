@@ -19,7 +19,7 @@ pub fn init() {
 }
 
 pub fn journal_operation(op: &str, path: &str) {
-    if path.eq_ignore_ascii_case(JOURNAL_PATH) {
+    if path.eq_ignore_ascii_case(JOURNAL_PATH) || path.eq_ignore_ascii_case("/LOGS") {
         return;
     }
     let line = format!("{}  {}  {}", crate::interrupts::ticks(), op, path);
@@ -31,7 +31,7 @@ pub fn journal_operation(op: &str, path: &str) {
             journal.remove(0);
         }
     }
-    let _ = flush_journal();
+    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushFilesystemJournal);
 }
 
 pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
@@ -56,6 +56,7 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
         String::from("mount / type=fat32 flags=rw,safe-write,journal-lite,write-cache"),
+        String::from("fat32 writes: serialized by global metadata write lock"),
         format!(
             "write cache: metadata journal dirty={}",
             if DIRTY.load(Ordering::Relaxed) {
@@ -123,6 +124,5 @@ pub fn replay_journal() {
 }
 
 pub fn flush() -> Result<(), crate::fat32::FsError> {
-    journal_operation("flush", "/");
     flush_journal()
 }

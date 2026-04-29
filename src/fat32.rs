@@ -6,6 +6,7 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
 const DIR_ENTRY_SIZE: usize = 32;
@@ -16,6 +17,8 @@ const FAT_ENTRY_MASK: u32 = 0x0FFF_FFFF;
 const FAT_FREE: u32 = 0x0000_0000;
 const FAT_EOC: u32 = 0x0FFF_FFFF;
 const LFN_CHAR_OFFSETS: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsError {
@@ -641,6 +644,8 @@ pub fn read_file(path: &str) -> Option<Vec<u8>> {
 }
 
 pub fn create_file(path: &str) -> Result<(), FsError> {
+    let _guard = WRITE_LOCK.lock();
+    crate::fs_hardening::journal_operation("create-file", path);
     let (bpb, parent_cluster, fat_name) = prepare_create(path)?;
     let mut entries = fat_name.lfn_entries;
     entries.push(encode_dir_entry(fat_name.short, ATTR_ARCHIVE, 0, 0));
@@ -648,6 +653,8 @@ pub fn create_file(path: &str) -> Result<(), FsError> {
 }
 
 pub fn create_dir(path: &str) -> Result<(), FsError> {
+    let _guard = WRITE_LOCK.lock();
+    crate::fs_hardening::journal_operation("create-dir", path);
     let (bpb, parent_cluster, fat_name) = prepare_create(path)?;
     let new_cluster = alloc_cluster(&bpb)?;
 
@@ -672,6 +679,8 @@ pub fn create_dir(path: &str) -> Result<(), FsError> {
 }
 
 pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
+    let _guard = WRITE_LOCK.lock();
+    crate::fs_hardening::journal_operation("rename", path);
     let (parent_path, old_name) = split_parent_and_name(path)?;
     if old_name.eq_ignore_ascii_case(new_name) {
         return Ok(());
@@ -722,6 +731,8 @@ pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    let _guard = WRITE_LOCK.lock();
+    crate::fs_hardening::journal_operation("write-file", path);
     let (parent_path, name) = split_parent_and_name(path)?;
     let bpb = Bpb::load().ok_or(FsError::Io)?;
     let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;
@@ -769,6 +780,8 @@ pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn delete_file(path: &str) -> Result<(), FsError> {
+    let _guard = WRITE_LOCK.lock();
+    crate::fs_hardening::journal_operation("delete", path);
     let (parent_path, name) = split_parent_and_name(path)?;
     let bpb = Bpb::load().ok_or(FsError::Io)?;
     let parent_cluster = resolve_dir_cluster(&bpb, &parent_path)?;

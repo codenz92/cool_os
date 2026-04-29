@@ -23,6 +23,7 @@ impl FileManagerApp {
                 _ => false,
             },
             Some(ModalState::Confirm(_)) => self.handle_confirm_dialog_key(c),
+            Some(ModalState::Conflict(_)) => self.handle_conflict_dialog_key(c),
             Some(ModalState::Properties(_)) => self.handle_properties_key(c),
             None => false,
         };
@@ -37,6 +38,7 @@ impl FileManagerApp {
             Some(ModalState::Name(_)) => self.handle_name_dialog_click(lx, ly),
             Some(ModalState::TextEditor(_)) => self.handle_text_editor_click(lx, ly),
             Some(ModalState::Confirm(_)) => self.handle_confirm_dialog_click(lx, ly),
+            Some(ModalState::Conflict(_)) => self.handle_conflict_dialog_click(lx, ly),
             Some(ModalState::Properties(_)) => self.handle_properties_click(lx, ly),
             None => false,
         };
@@ -54,6 +56,7 @@ impl FileManagerApp {
             ModalState::Name(state) => self.draw_name_dialog(&state),
             ModalState::TextEditor(state) => self.draw_text_editor(&state),
             ModalState::Confirm(state) => self.draw_confirm_dialog(&state),
+            ModalState::Conflict(state) => self.draw_conflict_dialog(&state),
             ModalState::Properties(state) => self.draw_properties_dialog(&state),
         }
     }
@@ -221,6 +224,42 @@ impl FileManagerApp {
         self.draw_dialog_button(cancel, &state.cancel_label);
     }
 
+    pub(super) fn draw_conflict_dialog(&mut self, state: &ConflictDialogState) {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, CONFLICT_W, CONFLICT_H);
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 14) as usize,
+            "File Conflict",
+            FM_TEXT,
+        );
+        let mut message = String::from("Destination already contains ");
+        message.push_str(&state.name);
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 42) as usize,
+            &Self::clip_text(&message, ((rect.w - 28).max(0) as usize) / CW),
+            FM_TEXT_DIM,
+        );
+        self.put_str(
+            (rect.x + 14) as usize,
+            (rect.y + 64) as usize,
+            "Choose how to continue. Apply All uses Rename for all conflicts.",
+            FM_TEXT_MUTED,
+        );
+        let replace = self.conflict_button_rect(rect, 0);
+        let skip = self.conflict_button_rect(rect, 1);
+        let rename = self.conflict_button_rect(rect, 2);
+        let apply_all = self.conflict_button_rect(rect, 3);
+        self.draw_dialog_button(replace, "Replace");
+        self.draw_dialog_button(skip, "Skip");
+        self.draw_dialog_button(rename, "Rename");
+        self.draw_dialog_button(apply_all, "Apply All");
+    }
+
     pub(super) fn draw_properties_dialog(&mut self, state: &PropertiesState) {
         let layout = self.layout();
         let rect = Self::centered_rect(layout, PROPERTIES_W, PROPERTIES_H);
@@ -370,6 +409,16 @@ impl FileManagerApp {
             x: rect.x + rect.w - 82,
             y: rect.y + rect.h - 38,
             w: 68,
+            h: 24,
+        }
+    }
+
+    pub(super) fn conflict_button_rect(&self, rect: Rect, idx: usize) -> Rect {
+        let w = if idx == 3 { 86 } else { 76 };
+        Rect {
+            x: rect.x + 14 + idx as i32 * 96,
+            y: rect.y + rect.h - 38,
+            w,
             h: 24,
         }
     }
@@ -550,6 +599,28 @@ impl FileManagerApp {
         }
     }
 
+    pub(super) fn handle_conflict_dialog_key(&mut self, c: char) -> bool {
+        match c {
+            'r' | 'R' | '\n' | '\r' => {
+                self.accept_conflict_dialog(ConflictPolicy::Rename);
+                true
+            }
+            's' | 'S' => {
+                self.accept_conflict_dialog(ConflictPolicy::Skip);
+                true
+            }
+            'p' | 'P' => {
+                self.accept_conflict_dialog(ConflictPolicy::Replace);
+                true
+            }
+            '\u{001B}' => {
+                self.modal = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn handle_properties_key(&mut self, c: char) -> bool {
         match c {
             '\n' | '\r' | '\u{001B}' | ' ' => {
@@ -574,6 +645,28 @@ impl FileManagerApp {
         true
     }
 
+    pub(super) fn handle_conflict_dialog_click(&mut self, lx: i32, ly: i32) -> bool {
+        let layout = self.layout();
+        let rect = Self::centered_rect(layout, CONFLICT_W, CONFLICT_H);
+        if self.conflict_button_rect(rect, 0).hit(lx, ly) {
+            self.accept_conflict_dialog(ConflictPolicy::Replace);
+            return true;
+        }
+        if self.conflict_button_rect(rect, 1).hit(lx, ly) {
+            self.accept_conflict_dialog(ConflictPolicy::Skip);
+            return true;
+        }
+        if self.conflict_button_rect(rect, 2).hit(lx, ly) {
+            self.accept_conflict_dialog(ConflictPolicy::Rename);
+            return true;
+        }
+        if self.conflict_button_rect(rect, 3).hit(lx, ly) {
+            self.accept_conflict_dialog(ConflictPolicy::Rename);
+            return true;
+        }
+        true
+    }
+
     pub(super) fn handle_properties_click(&mut self, lx: i32, ly: i32) -> bool {
         let layout = self.layout();
         let rect = Self::centered_rect(layout, PROPERTIES_W, PROPERTIES_H);
@@ -592,6 +685,14 @@ impl FileManagerApp {
             ConfirmAction::Trash(targets) => self.move_targets_to_trash(&targets),
             ConfirmAction::Delete(targets) => self.delete_entries(&targets),
         }
+    }
+
+    pub(super) fn accept_conflict_dialog(&mut self, policy: ConflictPolicy) {
+        let Some(ModalState::Conflict(state)) = self.modal.take() else {
+            return;
+        };
+        self.clipboard = Some(state.clipboard);
+        self.paste_clipboard_with_policy(Some(policy));
     }
 
     pub(super) fn save_name_dialog(&mut self) {

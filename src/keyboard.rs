@@ -52,6 +52,7 @@ pub enum Key {
     Escape,
     Tab,
     Space,
+    F2,
     F4,
     F5,
 }
@@ -80,6 +81,7 @@ impl KeyInput {
             Key::Escape => Some('\u{001B}'),
             Key::Tab => Some('\t'),
             Key::Space => Some(' '),
+            Key::F2 => Some('\u{F708}'),
             Key::F4 | Key::F5 => None,
         }
     }
@@ -217,6 +219,7 @@ fn raw_key_to_special(code: KeyCode) -> Option<Key> {
         KeyCode::Escape => Some(Key::Escape),
         KeyCode::Tab => Some(Key::Tab),
         KeyCode::Spacebar => Some(Key::Space),
+        KeyCode::F2 => Some(Key::F2),
         KeyCode::F4 => Some(Key::F4),
         KeyCode::F5 => Some(Key::F5),
         _ => None,
@@ -265,6 +268,7 @@ fn encode_input(input: KeyInput) -> u32 {
         | Key::Escape
         | Key::Tab
         | Key::Space
+        | Key::F2
         | Key::F4
         | Key::F5 => (EVENT_KIND_KEY, special_key_id(input.key) as u32),
     };
@@ -304,6 +308,7 @@ fn special_key_id(key: Key) -> u8 {
         Key::Space => 14,
         Key::F4 => 15,
         Key::F5 => 16,
+        Key::F2 => 17,
     }
 }
 
@@ -325,6 +330,7 @@ fn special_key_from_id(id: u8) -> Option<Key> {
         14 => Some(Key::Space),
         15 => Some(Key::F4),
         16 => Some(Key::F5),
+        17 => Some(Key::F2),
         _ => None,
     }
 }

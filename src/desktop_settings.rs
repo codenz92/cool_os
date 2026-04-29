@@ -91,17 +91,29 @@ pub fn load_from_disk() {
     }
 
     let Some(bytes) = crate::fat32::read_file(SETTINGS_PATH) else {
+        let _ = save_to_disk();
         return;
     };
     let Ok(text) = str::from_utf8(&bytes) else {
+        recover_corrupt(&bytes);
         return;
     };
 
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
+            invalid += 1;
             continue;
         };
-        apply_setting(key.trim(), value.trim());
+        if apply_setting(key.trim(), value.trim()) {
+            valid += 1;
+        } else {
+            invalid += 1;
+        }
+    }
+    if valid == 0 && invalid > 0 {
+        recover_corrupt(&bytes);
     }
 }
 
@@ -159,30 +171,46 @@ pub fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     crate::fat32::write_file(SETTINGS_PATH, data.as_bytes())
 }
 
-fn apply_setting(key: &str, value: &str) {
+fn apply_setting(key: &str, value: &str) -> bool {
     match key {
         "show_icons" => {
             if let Some(value) = parse_bool(value) {
                 SHOW_ICONS.store(value, Ordering::Relaxed);
+                return true;
             }
         }
         "compact_spacing" => {
             if let Some(value) = parse_bool(value) {
                 COMPACT_SPACING.store(value, Ordering::Relaxed);
+                return true;
             }
         }
         "sort_mode" => {
             if let Some(value) = parse_byte(value) {
                 SORT_MODE.store(DesktopSortMode::from_byte(value) as u8, Ordering::Relaxed);
+                return true;
             }
         }
         "wallpaper" => {
             if let Some(value) = parse_byte(value) {
                 WALLPAPER.store(WallpaperPreset::from_byte(value) as u8, Ordering::Relaxed);
+                return true;
             }
         }
         _ => {}
     }
+    false
+}
+
+fn recover_corrupt(bytes: &[u8]) {
+    let _ = crate::fat32::create_dir(SETTINGS_DIR);
+    let _ = crate::fat32::safe_write_file("/CONFIG/DESK.BAD", bytes);
+    SHOW_ICONS.store(true, Ordering::Relaxed);
+    COMPACT_SPACING.store(false, Ordering::Relaxed);
+    SORT_MODE.store(DesktopSortMode::Default as u8, Ordering::Relaxed);
+    WALLPAPER.store(WallpaperPreset::Phosphor as u8, Ordering::Relaxed);
+    let _ = save_to_disk();
+    crate::klog::log("recovered corrupt /CONFIG/DESK.CFG");
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

@@ -13,15 +13,18 @@ mod app_metadata;
 mod apps;
 mod ata;
 mod boot_splash;
+mod boot_watchdog;
 mod branding;
 mod clipboard;
 mod crashdump;
+mod deferred;
 mod desktop_settings;
 mod device_registry;
 mod drivers;
 mod elf;
 mod event_bus;
 mod fat32;
+mod font;
 mod framebuffer;
 mod fs_hardening;
 mod gdt;
@@ -36,6 +39,7 @@ mod notifications;
 mod packages;
 mod pci;
 mod process_model;
+mod profiler;
 mod rtc;
 mod scheduler;
 mod search_index;
@@ -43,6 +47,7 @@ mod security;
 mod services;
 mod shortcuts;
 mod syscall;
+mod task_snapshot;
 mod usb;
 mod userspace;
 mod vfs;
@@ -143,6 +148,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     allocator::init_heap(&mut mapper, &mut heap_frame_allocator).expect("heap init failed");
     boot_splash::show("allocating heap", 7, boot_splash::BOOT_PROGRESS_TOTAL);
     klog::init();
+    profiler::record_boot_stage("allocating heap", 7);
     fs_hardening::init();
     event_bus::emit("boot", "heap", "kernel heap online");
     security::init();
@@ -157,7 +163,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
     net::init();
     services::init();
-    search_index::refresh();
+    deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
 
     // Build a fresh allocator starting after the frames consumed by the heap
     // (the heap allocator's `next` counter tells us how many frames it used).
@@ -219,6 +225,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
     wm::compose_if_needed();
     println!("[boot] desktop ready");
+    profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_watchdog::complete();
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()
@@ -226,6 +234,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // an entire frame (≈2.8 M MMIO writes at 1280×720×3 bpp) would
         // block mouse and keyboard for tens of milliseconds per frame.
         services::supervise();
+        deferred::drain_budget(2);
         usb::poll();
         wm::compose_if_needed();
         x86_64::instructions::hlt();

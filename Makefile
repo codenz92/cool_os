@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-usb-init smoke-hotplug-usb-init build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-usb-init smoke-hotplug-usb-init build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -108,6 +108,15 @@ smoke-ui: build
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
 		--expect "[ring3 pid=2] sentinel ok" \
+		--expect "[boot] desktop ready"
+
+smoke-framebuffer: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds 7 \
+		--screendump "$(CURDIR)/target/framebuffer-smoke.ppm" \
+		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init

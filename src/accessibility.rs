@@ -30,22 +30,42 @@ pub fn load_from_disk() {
         return;
     };
     let Ok(text) = str::from_utf8(&bytes) else {
+        recover_corrupt(&bytes);
         return;
     };
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
+            invalid += 1;
             continue;
         };
         let Some(value) = parse_bool(value.trim()) else {
+            invalid += 1;
             continue;
         };
         match key.trim() {
-            "keyboard_nav" => KEYBOARD_NAV.store(value, Ordering::Relaxed),
-            "focus_rings" => FOCUS_RINGS.store(value, Ordering::Relaxed),
-            "large_text" => LARGE_TEXT.store(value, Ordering::Relaxed),
-            "reduced_motion" => REDUCED_MOTION.store(value, Ordering::Relaxed),
-            _ => {}
+            "keyboard_nav" => {
+                KEYBOARD_NAV.store(value, Ordering::Relaxed);
+                valid += 1;
+            }
+            "focus_rings" => {
+                FOCUS_RINGS.store(value, Ordering::Relaxed);
+                valid += 1;
+            }
+            "large_text" => {
+                LARGE_TEXT.store(value, Ordering::Relaxed);
+                valid += 1;
+            }
+            "reduced_motion" => {
+                REDUCED_MOTION.store(value, Ordering::Relaxed);
+                valid += 1;
+            }
+            _ => invalid += 1,
         }
+    }
+    if valid == 0 && invalid > 0 {
+        recover_corrupt(&bytes);
     }
 }
 
@@ -103,6 +123,17 @@ fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     push_setting(&mut out, "large_text", s.large_text);
     push_setting(&mut out, "reduced_motion", s.reduced_motion);
     crate::fat32::safe_write_file(CONFIG_PATH, out.as_bytes())
+}
+
+fn recover_corrupt(bytes: &[u8]) {
+    let _ = crate::fat32::create_dir(CONFIG_DIR);
+    let _ = crate::fat32::safe_write_file("/CONFIG/ACCESS.BAD", bytes);
+    KEYBOARD_NAV.store(true, Ordering::Relaxed);
+    FOCUS_RINGS.store(true, Ordering::Relaxed);
+    LARGE_TEXT.store(false, Ordering::Relaxed);
+    REDUCED_MOTION.store(false, Ordering::Relaxed);
+    let _ = save_to_disk();
+    crate::klog::log("recovered corrupt /CONFIG/ACCESS.CFG");
 }
 
 fn push_setting(out: &mut String, key: &str, value: bool) {

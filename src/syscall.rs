@@ -35,6 +35,9 @@ use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 // ── Syscall output ring buffer ────────────────────────────────────────────────
 
 const OUTPUT_SIZE: usize = 1024;
+const USER_TOP: u64 = 0x0000_8000_0000_0000;
+const MAX_USER_STRING: u64 = 4096;
+const MAX_USER_BUFFER: u64 = 1024 * 1024;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
 static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
 static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -222,7 +225,12 @@ extern "C" fn syscall_dispatch(
 }
 
 fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(buf, len as usize) };
+    if len == 0 {
+        return 0;
+    }
+    let Some(bytes) = user_slice(buf, len, MAX_USER_BUFFER) else {
+        return u64::MAX;
+    };
 
     if fd == 1 || fd == 2 {
         for &b in bytes {
@@ -243,6 +251,9 @@ fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
 }
 
 fn sys_pipe(fds_ptr: *mut u64) -> u64 {
+    if !valid_user_range(fds_ptr as u64, 16, 16) {
+        return u64::MAX;
+    }
     match crate::vfs::vfs_pipe() {
         Some((read_fd, write_fd)) => unsafe {
             *fds_ptr.add(0) = read_fd as u64;
@@ -265,7 +276,7 @@ fn sys_getpid() -> u64 {
 fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
-    if addr == 0 || len == 0 {
+    if addr == 0 || len == 0 || !valid_user_range(addr, len, MAX_USER_BUFFER * 64) {
         return u64::MAX;
     }
 
@@ -297,7 +308,9 @@ fn sys_exit(_code: u64) {
 /// Open a file by path.  `path_ptr` is a user-space pointer to a UTF-8 string
 /// of length `path_len` (no nul terminator required).
 fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let Some(bytes) = user_slice(path_ptr, path_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
     match core::str::from_utf8(bytes) {
         Ok(path) => {
             let fd = crate::vfs::vfs_open(path);
@@ -313,7 +326,12 @@ fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
 
 /// Read up to `len` bytes from `fd` into the user buffer at `buf_ptr`.
 fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
+    if len == 0 {
+        return 0;
+    }
+    let Some(buf) = user_slice_mut(buf_ptr, len, MAX_USER_BUFFER) else {
+        return u64::MAX;
+    };
     let n = crate::vfs::vfs_read_blocking(fd as usize, buf, len as usize);
     if n == usize::MAX {
         u64::MAX
@@ -327,6 +345,9 @@ fn sys_close(fd: u64) {
 }
 
 fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
+    if !status_ptr.is_null() && !valid_user_range(status_ptr as u64, 8, 8) {
+        return u64::MAX;
+    }
     let parent = crate::scheduler::current_task_id();
     match crate::scheduler::waitpid(parent, pid as usize) {
         Ok(code) => unsafe {
@@ -340,7 +361,9 @@ fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
 }
 
 fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let Some(bytes) = user_slice(path_ptr, path_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
     let path = match core::str::from_utf8(bytes) {
         Ok(path) => path,
         Err(_) => return u64::MAX,
@@ -364,7 +387,9 @@ fn sys_sleep_ms(ms: u64) {
 }
 
 fn sys_dns_resolve(host_ptr: *const u8, host_len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(host_ptr, host_len as usize) };
+    let Some(bytes) = user_slice(host_ptr, host_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
     let host = match core::str::from_utf8(bytes) {
         Ok(host) => host,
         Err(_) => return u64::MAX,
@@ -375,7 +400,9 @@ fn sys_dns_resolve(host_ptr: *const u8, host_len: u64) -> u64 {
 }
 
 fn sys_http_get(host_ptr: *const u8, host_len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(host_ptr, host_len as usize) };
+    let Some(bytes) = user_slice(host_ptr, host_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
     let host = match core::str::from_utf8(bytes) {
         Ok(host) => host,
         Err(_) => return u64::MAX,
@@ -392,7 +419,9 @@ fn sys_http_get(host_ptr: *const u8, host_len: u64) -> u64 {
 }
 
 fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64 {
-    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let Some(bytes) = user_slice(path_ptr, path_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
     let path = match core::str::from_utf8(bytes) {
         Ok(path) => path,
         Err(_) => return u64::MAX,
@@ -454,6 +483,30 @@ fn sys_shmem_map(id: u64) -> u64 {
 
 fn sys_yield() {
     // No-op: the preemptive timer will preempt voluntarily yielding tasks.
+}
+
+fn valid_user_range(ptr: u64, len: u64, max_len: u64) -> bool {
+    if ptr == 0 || len == 0 || len > max_len {
+        return false;
+    }
+    let Some(end) = ptr.checked_add(len) else {
+        return false;
+    };
+    end <= USER_TOP && ptr < USER_TOP
+}
+
+fn user_slice(ptr: *const u8, len: u64, max_len: u64) -> Option<&'static [u8]> {
+    if !valid_user_range(ptr as u64, len, max_len) {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts(ptr, len as usize) })
+}
+
+fn user_slice_mut(ptr: *mut u8, len: u64, max_len: u64) -> Option<&'static mut [u8]> {
+    if !valid_user_range(ptr as u64, len, max_len) {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts_mut(ptr, len as usize) })
 }
 
 // ── jump_to_userspace ─────────────────────────────────────────────────────────

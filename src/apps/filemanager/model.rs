@@ -33,6 +33,8 @@ const PROPERTIES_W: i32 = 380;
 const PROPERTIES_H: i32 = 248;
 const CONFIRM_W: i32 = 360;
 const CONFIRM_H: i32 = 154;
+const CONFLICT_W: i32 = 420;
+const CONFLICT_H: i32 = 174;
 const TRASH_PATH: &str = "/Trash";
 const QUICK_ACCESS_FOLDERS: [&str; 6] = [
     "Documents",
@@ -223,6 +225,19 @@ enum ConfirmAction {
     Delete(Vec<FileTarget>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConflictPolicy {
+    Replace,
+    Skip,
+    Rename,
+}
+
+#[derive(Clone)]
+struct ConflictDialogState {
+    clipboard: ClipboardState,
+    name: String,
+}
+
 #[derive(Clone)]
 struct PropertiesState {
     target: Option<FileTarget>,
@@ -240,6 +255,7 @@ enum ModalState {
     Name(NameDialogState),
     TextEditor(TextEditorState),
     Confirm(ConfirmDialogState),
+    Conflict(ConflictDialogState),
     Properties(PropertiesState),
 }
 

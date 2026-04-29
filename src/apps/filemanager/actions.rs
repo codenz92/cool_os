@@ -208,6 +208,10 @@ impl FileManagerApp {
                 self.open_selected();
                 false
             }
+            '\u{F708}' => {
+                self.rename_focused();
+                false
+            }
             '\n' | '\r' => {
                 self.open_selected();
                 false
@@ -258,6 +262,27 @@ impl FileManagerApp {
             }
             _ => false,
         }
+    }
+
+    pub fn rename_focused(&mut self) -> bool {
+        let Some(idx) = self.focused else {
+            return false;
+        };
+        if !self.entry_can_rename(idx) {
+            self.status_note = Some(String::from("selected item cannot be renamed"));
+            return false;
+        }
+        let Some(entry) = self.entries.get(idx) else {
+            return false;
+        };
+        let name = entry.name.clone();
+        self.modal = Some(ModalState::Name(NameDialogState {
+            mode: NameDialogMode::Rename(idx),
+            input: name.clone(),
+            cursor: name.len(),
+            error: None,
+        }));
+        true
     }
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
@@ -1169,6 +1194,10 @@ impl FileManagerApp {
     }
 
     pub(super) fn paste_clipboard(&mut self) {
+        self.paste_clipboard_with_policy(None);
+    }
+
+    pub(super) fn paste_clipboard_with_policy(&mut self, conflict_policy: Option<ConflictPolicy>) {
         let clipboard = if let Some(clipboard) = self.clipboard.clone() {
             clipboard
         } else if let Some((paths, cut)) = crate::clipboard::get_paths() {
@@ -1208,8 +1237,33 @@ impl FileManagerApp {
                 last_err = Some(String::from("cannot paste folder into itself"));
                 continue;
             }
-            let dest_name = self.unique_child_name(&self.path, &target.name);
+            let exists = self.child_name_exists(&self.path, &target.name);
+            if exists && conflict_policy.is_none() {
+                self.modal = Some(ModalState::Conflict(ConflictDialogState {
+                    clipboard: clipboard.clone(),
+                    name: target.name.clone(),
+                }));
+                crate::jobs::fail(job, "file conflict");
+                self.status_note = Some(String::from("file conflict needs a choice"));
+                self.render();
+                return;
+            }
+            if exists && conflict_policy == Some(ConflictPolicy::Skip) {
+                continue;
+            }
+            let dest_name = if exists && conflict_policy == Some(ConflictPolicy::Rename) {
+                self.unique_child_name(&self.path, &target.name)
+            } else {
+                target.name.clone()
+            };
             let dest_path = Self::join_path(&self.path, &dest_name);
+            if exists && conflict_policy == Some(ConflictPolicy::Replace) {
+                let existing_is_dir = crate::fat32::list_dir(&dest_path).is_some();
+                if let Err(err) = self.delete_path_recursive(&dest_path, existing_is_dir) {
+                    last_err = Some(String::from(err.as_str()));
+                    continue;
+                }
+            }
             match self.copy_path_recursive(&target.path, &dest_path, target.is_dir) {
                 Ok(()) => {
                     if clipboard.cut {

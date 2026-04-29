@@ -359,6 +359,9 @@ fn canonical_app_title(name: &str) -> &str {
         "Display Settings" => "Display Settings",
         "Personalize" => "Personalize",
         "Crash Viewer" => "Crash Viewer",
+        "Log Viewer" => "Log Viewer",
+        "Boot Profiler" => "Boot Profiler",
+        "Welcome" => "Welcome",
         "File Mgr" | "File Manager" => "File Manager",
         _ => name,
     }
@@ -373,6 +376,9 @@ fn window_accent(title: &str) -> u32 {
         "Display Settings" => 0x00_66_CC_FF,
         "Personalize" => 0x00_CC_66_FF,
         "Crash Viewer" => 0x00_FF_66_66,
+        "Log Viewer" => 0x00_55_FF_BB,
+        "Boot Profiler" => 0x00_FF_DD_55,
+        "Welcome" => 0x00_88_CC_FF,
         "File Manager" => 0x00_55_DD_FF,
         _ => ACCENT,
     }
@@ -387,6 +393,9 @@ fn window_glyph(title: &str) -> &'static str {
         "Display Settings" => "DS",
         "Personalize" => "P*",
         "Crash Viewer" => "CV",
+        "Log Viewer" => "LV",
+        "Boot Profiler" => "BP",
+        "Welcome" => "W?",
         "File Manager" => "FM",
         _ => "[]",
     }
@@ -419,6 +428,36 @@ fn push_u16(out: &mut String, value: u16) {
     for &div in &[1000u16, 100, 10, 1] {
         out.push((b'0' + ((value / div) % 10) as u8) as char);
     }
+}
+
+fn push_usize_bytes(out: &mut Vec<u8>, mut value: usize) {
+    if value == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    while value > 0 {
+        digits[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    for idx in (0..len).rev() {
+        out.push(digits[idx]);
+    }
+}
+
+fn should_show_welcome() -> bool {
+    crate::fat32::read_file("/CONFIG/WELCOME.SEEN").is_none()
+}
+
+fn mark_welcome_seen() {
+    let _ = crate::fat32::create_dir("/CONFIG");
+    match crate::fat32::create_file("/CONFIG/WELCOME.SEEN") {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return,
+    }
+    let _ = crate::fat32::write_file("/CONFIG/WELCOME.SEEN", b"1\n");
 }
 
 fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
@@ -542,9 +581,18 @@ struct TaskbarMenu {
     y: i32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellDialogKind {
+    Error,
+    Crash,
+}
+
+#[derive(Clone)]
 struct ShellDialog {
     title: String,
     body: String,
+    kind: ShellDialogKind,
+    restart_target: Option<String>,
 }
 
 // ── AppWindow ─────────────────────────────────────────────────────────────────
@@ -673,6 +721,7 @@ pub struct WindowManager {
     icon_selected: Option<usize>,
     desktop_multi_selected: Vec<usize>,
     pressed_icon: Option<usize>,
+    desktop_select_drag: Option<(i32, i32)>,
     start_menu_open: bool,
     notification_center_open: bool,
     launcher: Option<LauncherState>,
@@ -689,6 +738,12 @@ pub struct WindowManager {
     task_switcher_query: String,
     /// Shadow buffer — screen_width × screen_height u32 pixels.
     shadow: Vec<u32>,
+    prev_shadow: Vec<u32>,
+    damage_spans: Vec<(usize, usize)>,
+    damage_rows_last: usize,
+    damage_pixels_last: usize,
+    damage_frames: u64,
+    full_damage_next: bool,
     shadow_width: usize,
     shadow_height: usize,
     blit_scratch: Vec<u8>,
@@ -716,6 +771,8 @@ impl WindowManager {
             22,
             crate::boot_splash::BOOT_PROGRESS_TOTAL,
         );
+        let prev_shadow = alloc::vec![0u32; w * h];
+        let damage_spans = alloc::vec![(0usize, w); h];
 
         let mut wm = WindowManager {
             windows: Vec::new(),
@@ -738,6 +795,7 @@ impl WindowManager {
             icon_selected: None,
             desktop_multi_selected: Vec::new(),
             pressed_icon: None,
+            desktop_select_drag: None,
             start_menu_open: false,
             notification_center_open: false,
             launcher: None,
@@ -753,6 +811,12 @@ impl WindowManager {
             task_switcher_until_tick: 0,
             task_switcher_query: String::new(),
             shadow,
+            prev_shadow,
+            damage_spans,
+            damage_rows_last: 0,
+            damage_pixels_last: 0,
+            damage_frames: 0,
+            full_damage_next: true,
             shadow_width: w,
             shadow_height: h,
             blit_scratch: alloc::vec![0u8; w * 3],
@@ -762,6 +826,10 @@ impl WindowManager {
         wm.restore_session();
         if wm.windows.is_empty() {
             wm.launch_startup_apps();
+        }
+        if should_show_welcome() {
+            wm.launch_app("Welcome", 72, 72);
+            mark_welcome_seen();
         }
         if wm.windows.is_empty() {
             wm.add_window(AppWindow::Terminal(TerminalApp::new(24, 24)));
@@ -904,12 +972,14 @@ impl WindowManager {
             self.icon_selected = None;
             self.desktop_multi_selected.clear();
             self.pressed_icon = None;
+            self.desktop_select_drag = None;
         }
         if self.wallpaper_preset != settings.wallpaper {
             let taskbar_y = self.shadow_height.saturating_sub(TASKBAR_H as usize);
             self.wallpaper =
                 build_wallpaper(self.shadow_width, taskbar_y, settings.wallpaper, false);
             self.wallpaper_preset = settings.wallpaper;
+            self.full_damage_next = true;
         }
     }
 
@@ -918,9 +988,11 @@ impl WindowManager {
         let taskbar_y = self.shadow_height.saturating_sub(TASKBAR_H as usize);
         self.wallpaper =
             build_wallpaper(self.shadow_width, taskbar_y, self.wallpaper_preset, false);
+        self.full_damage_next = true;
         self.icon_selected = None;
         self.desktop_multi_selected.clear();
         self.pressed_icon = None;
+        self.desktop_select_drag = None;
         for window in self.windows.iter_mut() {
             if let AppWindow::FileManager(fm) = window {
                 fm.refresh_current_dir();
@@ -943,6 +1015,13 @@ impl WindowManager {
             "Crash Viewer" => {
                 self.add_window(AppWindow::TextViewer(TextViewerApp::crash_viewer(wx, wy)))
             }
+            "Log Viewer" => {
+                self.add_window(AppWindow::TextViewer(TextViewerApp::log_viewer(wx, wy)))
+            }
+            "Boot Profiler" => self.add_window(AppWindow::TextViewer(
+                TextViewerApp::profiler_viewer(wx, wy),
+            )),
+            "Welcome" => self.add_window(AppWindow::TextViewer(TextViewerApp::welcome(wx, wy))),
             _ => {}
         }
         if self.windows.len() > before {
@@ -1004,6 +1083,7 @@ impl WindowManager {
         self.resize = None;
         self.scroll_drag = None;
         self.file_drag = None;
+        self.desktop_select_drag = None;
         self.context_menu = None;
         self.start_menu_open = false;
         self.taskbar_menu = None;
@@ -1142,7 +1222,7 @@ impl WindowManager {
                     self.print_to_terminal("exec failed: ");
                     self.print_to_terminal(body);
                     self.print_to_terminal("\n");
-                    self.show_error_dialog("Exec failed", body);
+                    self.show_crash_dialog("App launch failed", body, Some(path));
                 }
             }
             crate::app_metadata::Association::AppShortcut(app) => self.launch_app(app, wx, wy),
@@ -1176,6 +1256,21 @@ impl WindowManager {
         self.dialog = Some(ShellDialog {
             title: String::from(title),
             body: String::from(body),
+            kind: ShellDialogKind::Error,
+            restart_target: None,
+        });
+        crate::notifications::push(title, body);
+        self.launcher = None;
+        self.context_menu = None;
+        self.taskbar_menu = None;
+    }
+
+    fn show_crash_dialog(&mut self, title: &str, body: &str, restart_target: Option<&str>) {
+        self.dialog = Some(ShellDialog {
+            title: String::from(title),
+            body: String::from(body),
+            kind: ShellDialogKind::Crash,
+            restart_target: restart_target.map(String::from),
         });
         crate::notifications::push(title, body);
         self.launcher = None;
@@ -1258,7 +1353,7 @@ impl WindowManager {
                         term.print_str(body);
                         term.print_char('\n');
                     }
-                    self.show_error_dialog("Exec failed", body);
+                    self.show_crash_dialog("App launch failed", body, Some(&path));
                 }
             }
             FileManagerOpenRequest::App(app) => {
@@ -1852,6 +1947,18 @@ impl WindowManager {
                 self.refresh_desktop_state();
                 true
             }
+            Key::F2
+                if !input.has_ctrl()
+                    && !input.has_alt()
+                    && self.focused.is_none()
+                    && self.icon_selected.is_some() =>
+            {
+                self.show_error_dialog(
+                    "Rename shortcut",
+                    "Desktop shortcut names are loaded from /APPS package metadata.",
+                );
+                true
+            }
             Key::Escape if input.has_ctrl() => {
                 self.start_menu_open = !self.start_menu_open;
                 self.context_menu = None;
@@ -1987,6 +2094,13 @@ impl WindowManager {
             }
         }
 
+        if let Some(path) = crate::wm::take_screenshot_request() {
+            match self.save_focused_screenshot(&path) {
+                Ok(()) => crate::notifications::push("Screenshot saved", &path),
+                Err(err) => crate::notifications::push("Screenshot failed", err),
+            }
+        }
+
         let sw = self.shadow_width;
         let sh = self.shadow_height;
         let taskbar_y = sh as i32 - TASKBAR_H;
@@ -2007,7 +2121,7 @@ impl WindowManager {
         // ── Input ─────────────────────────────────────────────────────────────
 
         if left_pressed && self.dialog.is_some() {
-            self.dialog = None;
+            self.handle_dialog_click(mx_i, my_i, sw as i32, taskbar_y);
             left_press_consumed = true;
             crate::wm::request_repaint();
         }
@@ -2343,6 +2457,7 @@ impl WindowManager {
                 && !self.start_menu_open;
             self.pressed_icon = if desktop_hit { icon_hit } else { None };
             if let Some(i) = self.pressed_icon {
+                self.focused = None;
                 if crate::keyboard::current_modifiers() & crate::keyboard::MOD_CTRL != 0 {
                     if let Some(pos) = self.desktop_multi_selected.iter().position(|&idx| idx == i)
                     {
@@ -2358,10 +2473,43 @@ impl WindowManager {
                 }
                 self.context_menu = None;
                 crate::wm::request_repaint();
+            } else if desktop_hit {
+                self.focused = None;
+                self.desktop_select_drag = Some((mx_i, my_i));
+                self.icon_selected = None;
+                self.desktop_multi_selected.clear();
+                self.context_menu = None;
+                crate::wm::request_repaint();
             }
         }
 
+        if left && self.desktop_select_drag.is_some() {
+            crate::wm::request_repaint();
+        }
+
         if left_released {
+            if let Some((sx, sy)) = self.desktop_select_drag.take() {
+                let dx = (mx_i - sx).abs();
+                let dy = (my_i - sy).abs();
+                self.desktop_multi_selected.clear();
+                if dx > 4 || dy > 4 {
+                    let x0 = sx.min(mx_i);
+                    let x1 = sx.max(mx_i);
+                    let y0 = sy.min(my_i);
+                    let y1 = sy.max(my_i);
+                    for (idx, icon) in self.desktop_icons().iter().enumerate() {
+                        let cx = icon.x + ICON_SIZE / 2;
+                        let cy = icon.y + ICON_SIZE / 2;
+                        if cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 {
+                            self.desktop_multi_selected.push(idx);
+                        }
+                    }
+                    self.icon_selected = self.desktop_multi_selected.last().copied();
+                } else {
+                    self.icon_selected = None;
+                }
+                crate::wm::request_repaint();
+            }
             if let Some(icon_idx) = self.pressed_icon.take() {
                 if self.desktop_icon_hit(mx_i, my_i) == Some(icon_idx)
                     && my_i < taskbar_y
@@ -2604,6 +2752,17 @@ impl WindowManager {
                     0, // transparent bg — draws over wallpaper
                     label_x + label_w + 4,
                 );
+            }
+
+            if let Some((sx, sy)) = self.desktop_select_drag {
+                let x0 = sx.min(mx_i);
+                let x1 = sx.max(mx_i);
+                let y0 = sy.min(my_i);
+                let y1 = sy.max(my_i);
+                if x1 - x0 > 3 && y1 - y0 > 3 {
+                    s_fill_alpha(s, sw, x0, y0, x1 - x0, y1 - y0, 0x28_00_BB_FF);
+                    draw_rect_border(s, sw, x0, y0, x1 - x0, y1 - y0, ACCENT);
+                }
             }
 
             // ── Windows — drawn AFTER icons so they appear in front ───────────────
@@ -3517,7 +3676,9 @@ impl WindowManager {
             }
         } // end shadow borrow — rendering done
 
-        // ── Blit shadow → hardware framebuffer ───────────────────────────────
+        self.compute_damage_spans(sw, sh);
+
+        // ── Blit damaged shadow spans → hardware framebuffer ─────────────────
         let hw_base = crate::framebuffer::base();
         let hw_stride = crate::framebuffer::stride();
         let hw_bpp = crate::framebuffer::bpp();
@@ -3527,16 +3688,20 @@ impl WindowManager {
             match hw_bpp {
                 4 => {
                     for row in 0..sh {
-                        let src = &self.shadow[row * sw..row * sw + sw];
+                        let (x0, x1) = self.damage_spans[row];
+                        if x0 >= x1 {
+                            continue;
+                        }
+                        let src = &self.shadow[row * sw + x0..row * sw + x1];
                         let row_base = hw_base + (row * hw_stride * 4) as u64;
                         let dst = row_base as *mut u32;
                         if !is_rgb {
                             unsafe {
-                                core::ptr::copy_nonoverlapping(src.as_ptr(), dst, sw);
+                                core::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(x0), x1 - x0);
                             }
                         } else {
-                            for col in 0..sw {
-                                let c = src[col];
+                            for col in x0..x1 {
+                                let c = self.shadow[row * sw + col];
                                 let hw = ((c & 0xFF) << 16) | (c & 0x00FF00) | (c >> 16 & 0xFF);
                                 unsafe {
                                     dst.add(col).write_volatile(hw);
@@ -3552,18 +3717,20 @@ impl WindowManager {
                     }
                     let scratch = &mut self.blit_scratch[..row_bytes];
                     for row in 0..sh {
-                        let src = &self.shadow[row * sw..row * sw + sw];
-                        let row_base = hw_base + (row * hw_stride * 3) as u64;
+                        let (x0, x1) = self.damage_spans[row];
+                        if x0 >= x1 {
+                            continue;
+                        }
+                        let src = &self.shadow[row * sw + x0..row * sw + x1];
+                        let row_base = hw_base + (row * hw_stride * 3 + x0 * 3) as u64;
                         if !is_rgb {
-                            for col in 0..sw {
-                                let c = src[col];
+                            for (col, c) in src.iter().copied().enumerate() {
                                 scratch[col * 3] = c as u8;
                                 scratch[col * 3 + 1] = (c >> 8) as u8;
                                 scratch[col * 3 + 2] = (c >> 16) as u8;
                             }
                         } else {
-                            for col in 0..sw {
-                                let c = src[col];
+                            for (col, c) in src.iter().copied().enumerate() {
                                 scratch[col * 3] = (c >> 16) as u8;
                                 scratch[col * 3 + 1] = (c >> 8) as u8;
                                 scratch[col * 3 + 2] = c as u8;
@@ -3573,7 +3740,7 @@ impl WindowManager {
                             core::ptr::copy_nonoverlapping(
                                 scratch.as_ptr(),
                                 row_base as *mut u8,
-                                row_bytes,
+                                (x1 - x0) * 3,
                             );
                         }
                     }
@@ -3581,6 +3748,148 @@ impl WindowManager {
                 _ => {}
             }
         }
+    }
+
+    fn compute_damage_spans(&mut self, sw: usize, sh: usize) {
+        let total = sw.saturating_mul(sh);
+        if self.prev_shadow.len() != total {
+            self.prev_shadow.resize(total, 0);
+            self.full_damage_next = true;
+        }
+        if self.damage_spans.len() != sh {
+            self.damage_spans.resize(sh, (0, 0));
+            self.full_damage_next = true;
+        }
+
+        let mut rows = 0usize;
+        let mut pixels = 0usize;
+        for row in 0..sh {
+            let start_idx = row * sw;
+            let end_idx = start_idx + sw;
+            let span = if self.full_damage_next {
+                (0, sw)
+            } else {
+                let cur = &self.shadow[start_idx..end_idx];
+                let prev = &self.prev_shadow[start_idx..end_idx];
+                let mut first = sw;
+                let mut last = 0usize;
+                for col in 0..sw {
+                    if cur[col] != prev[col] {
+                        if first == sw {
+                            first = col;
+                        }
+                        last = col + 1;
+                    }
+                }
+                if first == sw {
+                    (0, 0)
+                } else {
+                    (first, last)
+                }
+            };
+            self.damage_spans[row] = span;
+            if span.0 < span.1 {
+                rows += 1;
+                pixels += span.1 - span.0;
+                self.prev_shadow[start_idx..end_idx]
+                    .copy_from_slice(&self.shadow[start_idx..end_idx]);
+            }
+        }
+
+        self.full_damage_next = false;
+        self.damage_rows_last = rows;
+        self.damage_pixels_last = pixels;
+        self.damage_frames = self.damage_frames.saturating_add(1);
+        if rows > 0 && self.damage_frames % 60 == 0 {
+            crate::profiler::record(
+                "compositor",
+                "damage",
+                &format!("rows={} pixels={}", rows, pixels),
+            );
+        }
+    }
+
+    fn save_focused_screenshot(&self, path: &str) -> Result<(), &'static str> {
+        let Some(win_idx) = self.focused else {
+            return Err("no focused window");
+        };
+        let Some(app) = self.windows.get(win_idx) else {
+            return Err("focused window missing");
+        };
+        let win = app.window();
+        let width = win.width.max(1) as usize;
+        let height = (win.height - TITLE_H).max(1) as usize;
+        if win.buf.len() < width.saturating_mul(height) {
+            return Err("window buffer incomplete");
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"P6\n");
+        push_usize_bytes(&mut bytes, width);
+        bytes.push(b' ');
+        push_usize_bytes(&mut bytes, height);
+        bytes.extend_from_slice(b"\n255\n");
+        for pixel in win.buf.iter().take(width * height) {
+            bytes.push(((pixel >> 16) & 0xFF) as u8);
+            bytes.push(((pixel >> 8) & 0xFF) as u8);
+            bytes.push((pixel & 0xFF) as u8);
+        }
+
+        let _ = crate::fat32::create_dir("/LOGS");
+        match crate::fat32::create_file(path) {
+            Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+            Err(err) => return Err(err.as_str()),
+        }
+        crate::fat32::write_file(path, &bytes).map_err(|err| err.as_str())
+    }
+
+    fn handle_dialog_click(&mut self, px: i32, py: i32, sw: i32, taskbar_y: i32) {
+        let Some(dialog) = self.dialog.clone() else {
+            return;
+        };
+        let (x, y, w, h) = shell_dialog_rect(sw, taskbar_y, &dialog);
+        let button_y = y + h - 34;
+        let button_h = 22;
+
+        if dialog.kind == ShellDialogKind::Crash
+            && py >= button_y
+            && py < button_y + button_h
+            && px >= x + 18
+            && px < x + w - 18
+        {
+            let view_x = x + 18;
+            let restart_x = view_x + 104;
+            let copy_x = restart_x + 104;
+            if px >= view_x && px < view_x + 94 {
+                self.dialog = None;
+                let off = self.windows.len() as i32 * 16;
+                self.launch_app("Crash Viewer", x + off / 2, y + off / 2);
+                return;
+            }
+            if px >= restart_x && px < restart_x + 94 {
+                self.dialog = None;
+                if let Some(target) = dialog.restart_target.as_ref() {
+                    if target.starts_with('/') {
+                        match crate::elf::spawn_elf_process(target) {
+                            Ok(_) => crate::notifications::push("App restarted", target),
+                            Err(err) => crate::notifications::push("Restart failed", err.as_str()),
+                        }
+                    } else {
+                        self.launch_app(target, x + 18, y + 18);
+                    }
+                } else {
+                    crate::notifications::push("Restart unavailable", "no app target recorded");
+                }
+                return;
+            }
+            if px >= copy_x && px < copy_x + 94 {
+                crate::clipboard::set_text(&dialog.body);
+                crate::notifications::push("Crash details copied", "details copied to clipboard");
+                return;
+            }
+        }
+
+        self.dialog = None;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -4804,10 +5113,7 @@ fn draw_live_window_thumbnail(
 }
 
 fn draw_shell_dialog(s: &mut [u32], sw: usize, taskbar_y: i32, dialog: &ShellDialog) {
-    let w = 420i32;
-    let h = 132i32;
-    let x = ((sw as i32 - w) / 2).max(8);
-    let y = ((taskbar_y - h) / 2).max(8);
+    let (x, y, w, h) = shell_dialog_rect(sw as i32, taskbar_y, dialog);
     let bg = 0x00_07_0D_1C;
     s_fill_alpha(s, sw, 0, 0, sw as i32, taskbar_y, 0x44_00_00_00);
     s_fill_alpha(s, sw, x + 6, y + 6, w, h, 0x55_00_00_00);
@@ -4829,11 +5135,58 @@ fn draw_shell_dialog(s: &mut [u32], sw: usize, taskbar_y: i32, dialog: &ShellDia
         s,
         sw,
         x + 18,
-        y + h - 26,
-        "click anywhere to dismiss",
+        y + if dialog.kind == ShellDialogKind::Crash {
+            h - 56
+        } else {
+            h - 26
+        },
+        if dialog.kind == ShellDialogKind::Crash {
+            "app failure captured"
+        } else {
+            "click anywhere to dismiss"
+        },
         0x00_66_99_BB,
         bg,
         x + w - 18,
+    );
+    if dialog.kind == ShellDialogKind::Crash {
+        let button_y = y + h - 34;
+        draw_dialog_button(s, sw, x + 18, button_y, "View Dump", 0x00_FF_88_88);
+        draw_dialog_button(s, sw, x + 122, button_y, "Restart", 0x00_FF_DD_55);
+        draw_dialog_button(s, sw, x + 226, button_y, "Copy", 0x00_55_FF_BB);
+        draw_dialog_button(s, sw, x + w - 112, button_y, "Dismiss", 0x00_66_AA_DD);
+    }
+}
+
+fn shell_dialog_rect(sw: i32, taskbar_y: i32, dialog: &ShellDialog) -> (i32, i32, i32, i32) {
+    let w = 460i32;
+    let h = if dialog.kind == ShellDialogKind::Crash {
+        168i32
+    } else {
+        132i32
+    };
+    let x = ((sw - w) / 2).max(8);
+    let y = ((taskbar_y - h) / 2).max(8);
+    (x, y, w, h)
+}
+
+fn draw_dialog_button(s: &mut [u32], sw: usize, x: i32, y: i32, label: &str, accent: u32) {
+    let w = 94i32;
+    let h = 22i32;
+    let bg = 0x00_00_0C_20;
+    s_fill(s, sw, x, y, w, h, bg);
+    s_fill(s, sw, x, y, w, 2, accent);
+    draw_rect_border(s, sw, x, y, w, h, blend_color(accent, 0x00_00_08_18, 90));
+    let text_w = label.chars().count() as i32 * 8;
+    s_draw_str_small(
+        s,
+        sw,
+        x + ((w - text_w) / 2).max(4),
+        y + 7,
+        label,
+        0x00_DD_FF_FF,
+        bg,
+        x + w - 4,
     );
 }
 

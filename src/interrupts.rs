@@ -1,4 +1,5 @@
 use crate::println;
+extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
@@ -155,6 +156,10 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
+    if is_user {
+        stop_faulting_user_task("user page fault", 139);
+    }
+
     panic!(
         "PAGE FAULT\naddr={:#x} err={:?}\n{:#?}",
         fault_addr.as_u64(),
@@ -164,11 +169,35 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(sf: InterruptStackFrame, err: u64) {
+    if is_user_frame(&sf) {
+        stop_faulting_user_task("user general protection fault", 139);
+    }
     panic!("GENERAL PROTECTION FAULT err={:#x}\n{:#?}", err, sf);
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(sf: InterruptStackFrame) {
+    if is_user_frame(&sf) {
+        stop_faulting_user_task("user invalid opcode", 132);
+    }
     panic!("INVALID OPCODE\n{:#?}", sf);
+}
+
+fn is_user_frame(sf: &InterruptStackFrame) -> bool {
+    sf.code_segment & 0b11 == 0b11
+}
+
+fn stop_faulting_user_task(reason: &'static str, code: u64) -> ! {
+    let task_id = crate::scheduler::fault_current(code, reason);
+    crate::notifications::push_transient("App crashed", reason);
+    crate::klog::log_owned(alloc::format!(
+        "faulted user task pid={} {}",
+        task_id,
+        reason
+    ));
+    crate::wm::request_repaint();
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
 }
 
 // ── Timer interrupt — naked context-switch handler ────────────────────────────
@@ -239,7 +268,8 @@ unsafe extern "C" fn timer_naked() {
 /// if no context switch is needed).
 #[inline(never)]
 extern "C" fn timer_inner(current_rsp: usize) -> usize {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let tick = TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    crate::boot_watchdog::tick_from_irq(tick);
     crate::scheduler::BACKGROUND_COUNTER.fetch_add(1, Ordering::Relaxed);
     crate::wm::request_repaint();
     unsafe {

@@ -415,20 +415,27 @@ pub fn unblock(task_id: usize) {
 }
 
 pub fn exit_current(code: u64) {
-    let task_id = {
-        let sched = SCHEDULER.lock();
-        sched.current
+    let (task_id, name) = {
+        let mut sched = SCHEDULER.lock();
+        let task_id = sched.current;
+        let name = sched
+            .tasks
+            .get(task_id)
+            .map(|task| task.name)
+            .unwrap_or("task");
+        if let Some(task) = sched.tasks.get_mut(task_id) {
+            task.status = TaskStatus::Exited;
+            task.exit_code = Some(code);
+        }
+        (task_id, name)
     };
 
     crate::vfs::drop_task(task_id);
+    crate::profiler::record_task(task_id, name, "exited");
     crate::crashdump::record_task_report(task_id, "task exited");
     crate::notifications::push_transient("Task exited", &format!("pid {} exit {}", task_id, code));
-
-    let mut sched = SCHEDULER.lock();
-    if let Some(task) = sched.tasks.get_mut(task_id) {
-        task.status = TaskStatus::Exited;
-        task.exit_code = Some(code);
-    }
+    crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
+    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
 }
 
 pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
@@ -457,16 +464,43 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         }
     }
 
-    {
+    let name = {
         let mut sched = SCHEDULER.lock();
         let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
+        let name = task.name;
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
-    }
+        name
+    };
     crate::vfs::drop_task(task_id);
+    crate::profiler::record_task(task_id, name, "killed");
     crate::crashdump::record_task_report(task_id, "task killed");
     crate::notifications::push_transient("Task killed", &format!("pid {} exit {}", task_id, code));
+    crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
+    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
     Ok(())
+}
+
+pub fn fault_current(code: u64, reason: &'static str) -> usize {
+    let (task_id, name) = {
+        let mut sched = SCHEDULER.lock();
+        let task_id = sched.current;
+        let name = sched
+            .tasks
+            .get(task_id)
+            .map(|task| task.name)
+            .unwrap_or("task");
+        if let Some(task) = sched.tasks.get_mut(task_id) {
+            task.status = TaskStatus::Exited;
+            task.exit_code = Some(code);
+        }
+        (task_id, name)
+    };
+    crate::vfs::drop_task(task_id);
+    crate::profiler::record_task(task_id, name, reason);
+    crate::crashdump::record_task_report(task_id, reason);
+    crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
+    task_id
 }
 
 pub fn send_signal(
@@ -515,42 +549,54 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
     if task_id == 0 {
         return Err(WaitError::InvalidTask);
     }
-    let mut sched = SCHEDULER.lock();
-    let task = sched.tasks.get_mut(task_id).ok_or(WaitError::InvalidTask)?;
-    if task.parent != Some(parent) && parent != 0 {
-        return Err(WaitError::NotChild);
+    let result = {
+        let mut sched = SCHEDULER.lock();
+        let task = sched.tasks.get_mut(task_id).ok_or(WaitError::InvalidTask)?;
+        if task.parent != Some(parent) && parent != 0 {
+            return Err(WaitError::NotChild);
+        }
+        match task.status {
+            TaskStatus::Exited => {
+                let code = task.exit_code.unwrap_or(0);
+                task.status = TaskStatus::Reaped;
+                task.stack.clear();
+                task.stack_ptr = 0;
+                task.syscall_stack_top = 0;
+                task.pml4 = None;
+                Ok(code)
+            }
+            TaskStatus::Reaped => Err(WaitError::AlreadyReaped),
+            _ => Err(WaitError::NotExited),
+        }
+    };
+    if result.is_ok() {
+        crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     }
-    match task.status {
-        TaskStatus::Exited => {
-            let code = task.exit_code.unwrap_or(0);
+    result
+}
+
+pub fn reap_all_exited(parent: usize) -> usize {
+    let count = {
+        let mut sched = SCHEDULER.lock();
+        let mut count = 0usize;
+        for (idx, task) in sched.tasks.iter_mut().enumerate() {
+            if idx == 0 || task.status != TaskStatus::Exited {
+                continue;
+            }
+            if task.parent != Some(parent) && parent != 0 {
+                continue;
+            }
             task.status = TaskStatus::Reaped;
             task.stack.clear();
             task.stack_ptr = 0;
             task.syscall_stack_top = 0;
             task.pml4 = None;
-            Ok(code)
+            count += 1;
         }
-        TaskStatus::Reaped => Err(WaitError::AlreadyReaped),
-        _ => Err(WaitError::NotExited),
-    }
-}
-
-pub fn reap_all_exited(parent: usize) -> usize {
-    let mut sched = SCHEDULER.lock();
-    let mut count = 0usize;
-    for (idx, task) in sched.tasks.iter_mut().enumerate() {
-        if idx == 0 || task.status != TaskStatus::Exited {
-            continue;
-        }
-        if task.parent != Some(parent) && parent != 0 {
-            continue;
-        }
-        task.status = TaskStatus::Reaped;
-        task.stack.clear();
-        task.stack_ptr = 0;
-        task.syscall_stack_top = 0;
-        task.pml4 = None;
-        count += 1;
+        count
+    };
+    if count > 0 {
+        crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     }
     count
 }

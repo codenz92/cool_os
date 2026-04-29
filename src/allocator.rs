@@ -1,3 +1,6 @@
+extern crate alloc;
+
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use linked_list_allocator::LockedHeap;
 use x86_64::{
     structures::paging::{
@@ -8,6 +11,9 @@ use x86_64::{
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
+static HEAP_READY: AtomicBool = AtomicBool::new(false);
+static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+static DIAG_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 
 pub const HEAP_START: usize = 0x_4444_4444_0000;
 pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
@@ -35,9 +41,46 @@ pub fn init_heap(
     unsafe {
         ALLOCATOR.lock().init(HEAP_START, HEAP_SIZE);
     }
+    HEAP_READY.store(true, Ordering::Release);
     Ok(())
 }
 
 pub fn heap_used() -> usize {
-    ALLOCATOR.lock().used()
+    let used = ALLOCATOR.lock().used();
+    DIAG_SAMPLES.fetch_add(1, Ordering::Relaxed);
+    let mut high = HIGH_WATER.load(Ordering::Relaxed);
+    while used > high {
+        match HIGH_WATER.compare_exchange_weak(high, used, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => high = next,
+        }
+    }
+    used
+}
+
+pub fn heap_free() -> usize {
+    HEAP_SIZE.saturating_sub(heap_used())
+}
+
+pub fn heap_ready() -> bool {
+    HEAP_READY.load(Ordering::Acquire)
+}
+
+pub fn heap_lines() -> alloc::vec::Vec<alloc::string::String> {
+    let used = heap_used();
+    let free = heap_free();
+    alloc::vec![
+        alloc::format!("heap_total={} bytes", HEAP_SIZE),
+        alloc::format!("heap_used={} bytes", used),
+        alloc::format!("heap_free={} bytes", free),
+        alloc::format!(
+            "heap_high_water={} bytes",
+            HIGH_WATER.load(Ordering::Relaxed)
+        ),
+        alloc::format!(
+            "allocator_diag_samples={}",
+            DIAG_SAMPLES.load(Ordering::Relaxed)
+        ),
+        alloc::format!("fragmentation_probe=free/used/high-water via linked-list allocator"),
+    ]
 }

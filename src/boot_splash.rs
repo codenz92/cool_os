@@ -31,6 +31,8 @@ const BAR_FILL: u32 = 0x00_00_BB_FF;
 const BAR_FILL_GLOW: u32 = 0x00_44_D8_FF;
 
 pub fn show(stage: &str, completed: usize, total: usize) {
+    crate::boot_watchdog::record(stage, completed);
+    crate::profiler::record_boot_stage(stage, completed);
     if !DRAWN.swap(true, Ordering::Relaxed) {
         draw_static();
     }
