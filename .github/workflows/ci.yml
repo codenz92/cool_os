@@ -5,8 +5,21 @@ on:
   pull_request:
 
 jobs:
-  smoke:
+  format:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Rust toolchain
+        run: rustup show
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+  boot-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -19,11 +32,29 @@ jobs:
       - name: Rust toolchain
         run: rustup show
 
-      - name: Format check
-        run: cargo fmt --all --check
-
       - name: Headless boot smoke
         run: make smoke
+
+      - name: Kernel unit-style smoke
+        run: make smoke-kernel-units
+
+      - name: Boot budget smoke
+        run: make smoke-boot-budget
+
+  ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Rust toolchain
+        run: rustup show
 
       - name: Framebuffer UI smoke
         run: make smoke-ui
@@ -34,20 +65,48 @@ jobs:
       - name: UI screenshot golden smoke
         run: make smoke-ui-goldens
 
+      - name: Start menu screenshot smoke
+        run: make smoke-start-menu
+
+  usb-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Rust toolchain
+        run: rustup show
+
       - name: USB init smoke
         run: make smoke-usb-init
 
-      - name: Kernel unit-style smoke
-        run: make smoke-kernel-units
+  qemu-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - smoke-lowmem
+          - smoke-smp2
+          - smoke-vga-cirrus
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Boot budget smoke
-        run: make smoke-boot-budget
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
 
-      - name: QEMU matrix low memory
-        run: make smoke-lowmem
+      - name: Rust toolchain
+        run: rustup show
 
-      - name: QEMU matrix SMP groundwork
-        run: make smoke-smp2
-
-      - name: QEMU matrix alternate VGA
-        run: make smoke-vga-cirrus
+      - name: QEMU matrix ${{ matrix.target }}
+        run: make ${{ matrix.target }}

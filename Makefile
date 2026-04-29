@@ -1,4 +1,4 @@
-.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-ui-goldens smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-usb run-usb-init run-headless run-headless-usb run-headless-usb-init smoke smoke-ui smoke-framebuffer smoke-ui-goldens smoke-start-menu smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -131,6 +131,17 @@ smoke-ui-goldens: build
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--screendump "$(CURDIR)/target/ui-golden-desktop.ppm" \
 		--expect-framebuffer-desktop \
+		--expect "[boot] desktop ready"
+
+smoke-start-menu: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-esc" \
+		--post-hmp-delay 0.8 \
+		--screendump "$(CURDIR)/target/start-menu-smoke.ppm" \
+		--expect-framebuffer-start-menu \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init

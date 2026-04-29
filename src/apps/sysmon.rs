@@ -98,6 +98,7 @@ impl SysMonApp {
         let usb_active = usb_lines
             .iter()
             .any(|line| line.contains("active init ready"));
+        let compositor = crate::wm::compositor::compositor_stats();
 
         self.put_str_centered_px(stride, 14, "SYSTEM DASHBOARD", LABEL);
         self.put_str_centered_px(
@@ -187,7 +188,7 @@ impl SysMonApp {
             0x00_66_BB_FF,
         );
 
-        self.put_str_px(stride, 28, 198, "USB RUNTIME", LABEL);
+        self.put_str_px(stride, 28, 198, "USB + COMPOSITOR", LABEL);
         self.draw_status_pill(
             stride,
             28,
@@ -221,7 +222,19 @@ impl SysMonApp {
             if usb_mouse { USB_GOOD } else { MUTED },
         );
 
-        let mut row = 234usize;
+        let mut comp_line = NumberLine::new();
+        comp_line.push_str("fps ");
+        comp_line.push_u64(compositor.fps);
+        comp_line.push_str(" frame ");
+        comp_line.push_u64(compositor.frame_ticks_last);
+        comp_line.push_str("t damage ");
+        comp_line.push_u64(compositor.damage_rows);
+        comp_line.push_str("r/");
+        comp_line.push_u64(compositor.damage_pixels);
+        comp_line.push_str("px");
+        self.put_str_px(stride, 28, 232, comp_line.as_str(), LIGHT_CYAN);
+
+        let mut row = 244usize;
         if usb_lines.is_empty() {
             self.put_str_px(stride, 28, row, "USB: no probe data", LIGHT_GRAY);
         } else {

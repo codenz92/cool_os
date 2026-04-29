@@ -357,6 +357,10 @@ impl TerminalApp {
                 self.cmd_lines("BOOT/SESSION PROFILER", lines);
             }
 
+            Some("compositor") => {
+                self.cmd_lines("COMPOSITOR", crate::wm::compositor::compositor_lines())
+            }
+
             Some("heap") => self.cmd_lines("HEAP DIAGNOSTICS", crate::allocator::heap_lines()),
 
             Some("slab") => self.cmd_lines("SLAB DIAGNOSTICS", crate::slab::lines()),
@@ -708,6 +712,7 @@ impl TerminalApp {
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
             ("profiler", "boot/service/task timing"),
+            ("compositor", "FPS, frame, and damage telemetry"),
             ("heap", "heap diagnostics"),
             ("slab", "slab allocator diagnostics"),
             ("waitq", "kernel wait queue diagnostics"),

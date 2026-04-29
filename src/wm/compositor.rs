@@ -4,6 +4,7 @@
 /// Visual theme: Retro-Futuristic CRT Phosphor Blue
 extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
+use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
@@ -40,6 +41,49 @@ const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 const START_MENU_SECTION_H: i32 = 11;
+
+static COMPOSITOR_FPS: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FRAME_TICKS_LAST: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FRAME_TICKS_PEAK: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_DAMAGE_ROWS: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_DAMAGE_PIXELS: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+pub struct CompositorStats {
+    pub fps: u64,
+    pub frame_ticks_last: u64,
+    pub frame_ticks_peak: u64,
+    pub damage_rows: u64,
+    pub damage_pixels: u64,
+    pub frames: u64,
+}
+
+pub fn compositor_stats() -> CompositorStats {
+    CompositorStats {
+        fps: COMPOSITOR_FPS.load(Ordering::Relaxed),
+        frame_ticks_last: COMPOSITOR_FRAME_TICKS_LAST.load(Ordering::Relaxed),
+        frame_ticks_peak: COMPOSITOR_FRAME_TICKS_PEAK.load(Ordering::Relaxed),
+        damage_rows: COMPOSITOR_DAMAGE_ROWS.load(Ordering::Relaxed),
+        damage_pixels: COMPOSITOR_DAMAGE_PIXELS.load(Ordering::Relaxed),
+        frames: COMPOSITOR_FRAMES.load(Ordering::Relaxed),
+    }
+}
+
+pub fn compositor_lines() -> Vec<String> {
+    let stats = compositor_stats();
+    alloc::vec![
+        format!("fps={} frames={}", stats.fps, stats.frames),
+        format!(
+            "frame_ticks last={} peak={}",
+            stats.frame_ticks_last, stats.frame_ticks_peak
+        ),
+        format!(
+            "damage rows={} pixels={}",
+            stats.damage_rows, stats.damage_pixels
+        ),
+    ]
+}
 
 // ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
 
@@ -784,6 +828,9 @@ pub struct WindowManager {
     last_click_y: i32,
     task_switcher_until_tick: u64,
     task_switcher_query: String,
+    fps_window_start_tick: u64,
+    fps_window_frames: u64,
+    frame_ticks_peak: u64,
     /// Shadow buffer — screen_width × screen_height u32 pixels.
     shadow: Vec<u32>,
     prev_shadow: Vec<u32>,
@@ -864,6 +911,9 @@ impl WindowManager {
             last_click_y: 0,
             task_switcher_until_tick: 0,
             task_switcher_query: String::new(),
+            fps_window_start_tick: 0,
+            fps_window_frames: 0,
+            frame_ticks_peak: 0,
             shadow,
             prev_shadow,
             damage_spans,
@@ -2331,6 +2381,7 @@ impl WindowManager {
 
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
+        let frame_start_tick = crate::interrupts::ticks();
         // Drain buffered keystrokes.
         while let Some(input) = crate::keyboard::pop_input() {
             self.handle_key_input(input);
@@ -4159,6 +4210,33 @@ impl WindowManager {
                 _ => {}
             }
         }
+        self.update_compositor_telemetry(frame_start_tick);
+    }
+
+    fn update_compositor_telemetry(&mut self, frame_start_tick: u64) {
+        let now = crate::interrupts::ticks();
+        let frame_ticks = now.wrapping_sub(frame_start_tick);
+        self.frame_ticks_peak = self.frame_ticks_peak.max(frame_ticks);
+        self.fps_window_frames = self.fps_window_frames.saturating_add(1);
+        if self.fps_window_start_tick == 0 {
+            self.fps_window_start_tick = now;
+        }
+        let elapsed = now.wrapping_sub(self.fps_window_start_tick);
+        if elapsed >= crate::interrupts::TIMER_HZ as u64 {
+            let fps = self
+                .fps_window_frames
+                .saturating_mul(crate::interrupts::TIMER_HZ as u64)
+                / elapsed.max(1);
+            COMPOSITOR_FPS.store(fps, Ordering::Relaxed);
+            COMPOSITOR_FRAME_TICKS_PEAK.store(self.frame_ticks_peak, Ordering::Relaxed);
+            self.fps_window_frames = 0;
+            self.fps_window_start_tick = now;
+            self.frame_ticks_peak = 0;
+        }
+        COMPOSITOR_FRAME_TICKS_LAST.store(frame_ticks, Ordering::Relaxed);
+        COMPOSITOR_DAMAGE_ROWS.store(self.damage_rows_last as u64, Ordering::Relaxed);
+        COMPOSITOR_DAMAGE_PIXELS.store(self.damage_pixels_last as u64, Ordering::Relaxed);
+        COMPOSITOR_FRAMES.store(self.damage_frames, Ordering::Relaxed);
     }
 
     fn compute_damage_spans(&mut self, sw: usize, sh: usize) {

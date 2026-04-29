@@ -30,6 +30,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Assert the screendump contains the desktop taskbar instead of the splash screen",
     )
+    parser.add_argument(
+        "--expect-framebuffer-start-menu",
+        action="store_true",
+        help="Assert the screendump contains the open Start menu panel",
+    )
+    parser.add_argument(
+        "--hmp",
+        action="append",
+        default=[],
+        help="QEMU HMP monitor command to run before screendump; may be passed multiple times",
+    )
+    parser.add_argument(
+        "--post-hmp-delay",
+        type=float,
+        default=0.5,
+        help="Seconds to wait after HMP commands before screendump",
+    )
     return parser.parse_args()
 
 
@@ -67,7 +84,7 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
     return cmd
 
 
-def request_screendump(monitor_socket: str, out_path: str) -> None:
+def run_monitor_command(monitor_socket: str, command: str) -> None:
     deadline = time.time() + 3.0
     last_error: OSError | None = None
     while time.time() < deadline:
@@ -79,7 +96,7 @@ def request_screendump(monitor_socket: str, out_path: str) -> None:
                     sock.recv(4096)
                 except TimeoutError:
                     pass
-                sock.sendall(f"screendump {out_path}\n".encode())
+                sock.sendall(f"{command}\n".encode())
                 time.sleep(0.2)
                 return
         except OSError as exc:
@@ -88,7 +105,11 @@ def request_screendump(monitor_socket: str, out_path: str) -> None:
     raise RuntimeError(f"unable to connect to QEMU monitor: {last_error}")
 
 
-def assert_desktop_framebuffer(path: str) -> None:
+def request_screendump(monitor_socket: str, out_path: str) -> None:
+    run_monitor_command(monitor_socket, f"screendump {out_path}")
+
+
+def read_ppm(path: str) -> tuple[int, int, bytes]:
     with open(path, "rb") as fh:
         if fh.readline().strip() != b"P6":
             raise AssertionError("screendump is not P6 PPM")
@@ -103,7 +124,11 @@ def assert_desktop_framebuffer(path: str) -> None:
 
     if len(pixels) < width * height * 3:
         raise AssertionError("truncated framebuffer screendump")
+    return width, height, pixels
 
+
+def assert_desktop_framebuffer(path: str) -> None:
+    width, height, pixels = read_ppm(path)
     cyan_bottom = 0
     y0 = max(0, height - 80)
     for y in range(y0, height):
@@ -117,10 +142,51 @@ def assert_desktop_framebuffer(path: str) -> None:
         raise AssertionError("desktop taskbar cyan edge not found in framebuffer")
 
 
+def assert_start_menu_framebuffer(path: str) -> None:
+    width, height, pixels = read_ppm(path)
+    scan_w = min(width, 760)
+    y_start = max(0, height // 4)
+    y_end = max(y_start, height - 90)
+    best_run = 0
+    best_y = 0
+
+    for y in range(y_start, y_end):
+        row = y * width * 3
+        run = 0
+        for x in range(scan_w):
+            r, g, b = pixels[row + x * 3 : row + x * 3 + 3]
+            is_cyan = r < 80 and g > 100 and b > 150
+            if is_cyan:
+                run += 1
+                if run > best_run:
+                    best_run = run
+                    best_y = y
+            else:
+                run = 0
+
+    min_run = min(240, max(120, width // 5))
+    if best_run < min_run:
+        raise AssertionError(
+            f"start menu cyan top edge not found; best horizontal run {best_run} at y={best_y}"
+        )
+
+    dark_panel_pixels = 0
+    panel_x1 = min(scan_w, max(120, best_run))
+    for y in range(best_y + 8, min(height - 45, best_y + 180)):
+        row = y * width * 3
+        for x in range(0, panel_x1):
+            r, g, b = pixels[row + x * 3 : row + x * 3 + 3]
+            if r < 20 and g < 40 and b < 70:
+                dark_panel_pixels += 1
+
+    if dark_panel_pixels < panel_x1 * 20:
+        raise AssertionError("start menu dark panel body not found below cyan edge")
+
+
 def main() -> int:
     args = parse_args()
     monitor_socket = None
-    if args.screendump:
+    if args.screendump or args.hmp:
         monitor_socket = os.path.join(tempfile.gettempdir(), f"cool-os-qemu-{os.getpid()}.sock")
         try:
             os.unlink(monitor_socket)
@@ -141,6 +207,10 @@ def main() -> int:
         output, _ = proc.communicate(timeout=args.seconds)
         exited_early = True
     except subprocess.TimeoutExpired:
+        if args.hmp and monitor_socket:
+            for command in args.hmp:
+                run_monitor_command(monitor_socket, command)
+            time.sleep(max(0.0, args.post_hmp_delay))
         if args.screendump and monitor_socket:
             request_screendump(monitor_socket, args.screendump)
         proc.terminate()
@@ -175,6 +245,12 @@ def main() -> int:
                 assert_desktop_framebuffer(args.screendump)
             except AssertionError as exc:
                 print(f"framebuffer assertion failed: {exc}", file=sys.stderr)
+                return 1
+        if args.expect_framebuffer_start_menu:
+            try:
+                assert_start_menu_framebuffer(args.screendump)
+            except AssertionError as exc:
+                print(f"start menu framebuffer assertion failed: {exc}", file=sys.stderr)
                 return 1
 
     print(f"smoke ok after {args.seconds:.1f}s", flush=True)
