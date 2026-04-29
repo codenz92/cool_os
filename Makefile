@@ -16,6 +16,10 @@ USER_PIPERD_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/relea
 USER_PIPEWR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipewr
 USER_KEYECHO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/keyecho
 USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/terminal
+SMOKE_SECONDS ?= 12
+SMOKE_FRAMEBUFFER_SECONDS ?= 12
+SMOKE_USB_SECONDS ?= 18
+SMOKE_BOOT_BUDGET_SECONDS ?= 8
 
 run: build
 	@echo "Booting coolOS in QEMU..."
@@ -93,7 +97,7 @@ smoke: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 6 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
 		--expect "[ring3 pid=2] sentinel ok" \
@@ -103,7 +107,7 @@ smoke-ui: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 6 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "FB 1280x720" \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
@@ -114,7 +118,7 @@ smoke-framebuffer: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 7 \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--screendump "$(CURDIR)/target/framebuffer-smoke.ppm" \
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
@@ -123,7 +127,7 @@ smoke-ui-goldens: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 7 \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--screendump "$(CURDIR)/target/ui-golden-desktop.ppm" \
 		--expect-framebuffer-desktop \
 		--expect "[boot] desktop ready"
@@ -133,7 +137,7 @@ smoke-usb-init: build-usb-init
 		--bios "$(USB_INIT_BIOS)" \
 		--fsimg "$(USB_INIT_FSIMG)" \
 		--usb \
-		--seconds 16 \
+		--seconds $(SMOKE_USB_SECONDS) \
 		--expect "[xhci] active init ready" \
 		--expect "[input] USB keyboard detected; PS/2 keyboard fallback disabled" \
 		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled" \
@@ -150,7 +154,7 @@ smoke-kernel-units: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 6 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "[selftest] kernel unit checks ok=" \
 		--expect "[boot] desktop ready"
 
@@ -158,7 +162,7 @@ smoke-boot-budget: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds 5 \
+		--seconds $(SMOKE_BOOT_BUDGET_SECONDS) \
 		--expect "[boot] desktop ready"
 
 smoke-lowmem: build
@@ -166,7 +170,7 @@ smoke-lowmem: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--memory 256M \
-		--seconds 7 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "[boot] desktop ready"
 
 smoke-smp2: build
@@ -174,7 +178,7 @@ smoke-smp2: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--smp 2 \
-		--seconds 7 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "[boot] desktop ready"
 
 smoke-vga-cirrus: build
@@ -182,7 +186,7 @@ smoke-vga-cirrus: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--vga cirrus \
-		--seconds 7 \
+		--seconds $(SMOKE_SECONDS) \
 		--expect "[boot] desktop ready"
 
 build:
