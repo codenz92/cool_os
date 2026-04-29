@@ -147,9 +147,22 @@ fn app_manifest_path(command: &str) -> String {
 }
 
 fn manifest_for(app: &crate::app_metadata::AppMetadata) -> String {
+    let mut associations = String::new();
+    for (idx, assoc) in app.associations.iter().enumerate() {
+        if idx > 0 {
+            associations.push(',');
+        }
+        associations.push_str(assoc);
+    }
     format!(
-        "id={}\nname={}\ncommand={}\nicon={}\npermission={}\n",
-        app.id, app.name, app.command, app.glyph, app.permission
+        "id={}\nname={}\ncommand={}\nicon={}\ncategory={}\npermission={}\nassociations={}\n",
+        app.id,
+        app.name,
+        app.command,
+        app.glyph,
+        app.category.label(),
+        app.permission,
+        associations
     )
 }
 

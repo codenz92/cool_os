@@ -587,12 +587,30 @@ enum LauncherMatchKind {
     Inline(String),
 }
 
+#[derive(Clone, Copy)]
+enum LauncherAction {
+    Open,
+    RunAsAdmin,
+    OpenLocation,
+    Pin,
+    Uninstall,
+    Copy,
+}
+
 #[derive(Clone)]
 struct LauncherMatch {
     label: String,
     detail: String,
     kind: LauncherMatchKind,
     score: usize,
+}
+
+#[derive(Clone)]
+struct StartMenuEntry {
+    section: &'static str,
+    label: String,
+    detail: String,
+    kind: LauncherMatchKind,
 }
 
 struct TaskbarMenu {
@@ -1063,6 +1081,7 @@ impl WindowManager {
             _ => {}
         }
         if self.windows.len() > before {
+            crate::app_lifecycle::record_app(canonical_app_title(name));
             self.apply_remembered_geometry(self.windows.len() - 1);
         }
     }
@@ -1131,6 +1150,7 @@ impl WindowManager {
     }
 
     fn launch_file_manager_at(&mut self, dir: &str, wx: i32, wy: i32) {
+        crate::app_lifecycle::record_app("File Manager");
         let app = if dir == "/" {
             FileManagerApp::new(wx, wy)
         } else {
@@ -1173,7 +1193,7 @@ impl WindowManager {
             return false;
         }
 
-        let mut activate = false;
+        let mut action: Option<LauncherAction> = None;
         let mut close = false;
         if let Some(state) = self.launcher.as_mut() {
             match input.key {
@@ -1191,7 +1211,26 @@ impl WindowManager {
                         state.selected = (state.selected + 1).min(count - 1);
                     }
                 }
-                Key::Enter => activate = true,
+                Key::Tab if !input.has_ctrl() && !input.has_alt() => {
+                    let count = launcher_matches(&state.query).len();
+                    if count > 0 {
+                        state.selected = (state.selected + 4).min(count - 1);
+                    }
+                }
+                Key::Enter if input.has_ctrl() => action = Some(LauncherAction::RunAsAdmin),
+                Key::Enter => action = Some(LauncherAction::Open),
+                Key::Character('p') | Key::Character('P') if input.has_ctrl() => {
+                    action = Some(LauncherAction::Pin)
+                }
+                Key::Character('l') | Key::Character('L') if input.has_ctrl() => {
+                    action = Some(LauncherAction::OpenLocation)
+                }
+                Key::Character('u') | Key::Character('U') if input.has_ctrl() => {
+                    action = Some(LauncherAction::Uninstall)
+                }
+                Key::Character('c') | Key::Character('C') if input.has_ctrl() => {
+                    action = Some(LauncherAction::Copy)
+                }
                 Key::Space if !input.has_ctrl() && !input.has_alt() => {
                     state.query.push(' ');
                     state.selected = 0;
@@ -1210,13 +1249,13 @@ impl WindowManager {
             self.launcher = None;
             return true;
         }
-        if activate {
-            self.activate_launcher_selection();
+        if let Some(action) = action {
+            self.activate_launcher_selection(action);
         }
         true
     }
 
-    fn activate_launcher_selection(&mut self) {
+    fn activate_launcher_selection(&mut self, action: LauncherAction) {
         let Some(state) = self.launcher.as_ref() else {
             return;
         };
@@ -1225,27 +1264,155 @@ impl WindowManager {
             return;
         }
         let entry = matches[state.selected.min(matches.len() - 1)].clone();
+        let query = state.query.clone();
         self.launcher = None;
+        if !query.trim().is_empty() {
+            crate::app_lifecycle::record_search(&query);
+        }
         let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
         let off = self.windows.len() as i32 * 16;
         let wx = (16 + off).min(self.shadow_width as i32 - 220);
         let wy = (16 + off).min(taskbar_y - 120);
 
-        match entry.kind {
-            LauncherMatchKind::App(app) => self.launch_app(&app, wx, wy),
-            LauncherMatchKind::Path(path) => {
-                self.open_associated_path(&path, wx, wy);
+        self.activate_launcher_match(&entry, action, wx, wy);
+    }
+
+    fn activate_launcher_match(
+        &mut self,
+        entry: &LauncherMatch,
+        action: LauncherAction,
+        wx: i32,
+        wy: i32,
+    ) {
+        match action {
+            LauncherAction::Open => self.activate_launcher_kind(&entry.kind, wx, wy),
+            LauncherAction::RunAsAdmin => {
+                crate::notifications::push("Launcher", "run-as-admin requested");
+                self.activate_launcher_kind(&entry.kind, wx, wy);
             }
-            LauncherMatchKind::Command(command) => {
-                self.run_terminal_command(&command);
-            }
-            LauncherMatchKind::Inline(action) => {
-                if action == "refresh-index" {
-                    crate::search_index::refresh();
-                    crate::notifications::push("Search", "desktop index refreshed");
+            LauncherAction::OpenLocation => self.open_launcher_location(entry, wx, wy),
+            LauncherAction::Pin => {
+                let pin = launcher_pin_label(entry);
+                if crate::app_lifecycle::is_pinned(&pin) {
+                    crate::notifications::push("Start menu", "item is already pinned");
+                } else {
+                    crate::app_lifecycle::pin_item(&pin);
+                    crate::notifications::push("Start menu", "item pinned");
                 }
             }
+            LauncherAction::Uninstall => {
+                if let LauncherMatchKind::App(app) = &entry.kind {
+                    match crate::packages::uninstall(app) {
+                        Ok(()) => crate::notifications::push("Packages", "app uninstalled"),
+                        Err(err) => self.show_error_dialog("Uninstall failed", err),
+                    }
+                } else {
+                    self.show_error_dialog("Uninstall failed", "selected item is not an app");
+                }
+            }
+            LauncherAction::Copy => {
+                crate::clipboard::set_text(&launcher_copy_text(entry));
+                crate::notifications::push("Clipboard", "launcher item copied");
+            }
         }
+    }
+
+    fn activate_launcher_kind(&mut self, kind: &LauncherMatchKind, wx: i32, wy: i32) {
+        match kind {
+            LauncherMatchKind::App(app) => self.launch_app(app, wx, wy),
+            LauncherMatchKind::Path(path) => {
+                self.open_associated_path(path, wx, wy);
+            }
+            LauncherMatchKind::Command(command) => {
+                self.run_terminal_command(command);
+            }
+            LauncherMatchKind::Inline(action) => self.run_inline_launcher_action(action, wx, wy),
+        }
+    }
+
+    fn open_launcher_location(&mut self, entry: &LauncherMatch, wx: i32, wy: i32) {
+        match &entry.kind {
+            LauncherMatchKind::Path(path) => self.launch_file_manager_at(parent_path(path), wx, wy),
+            LauncherMatchKind::App(app) => {
+                if let Some(meta) = crate::app_metadata::app_by_name(app) {
+                    let mut path = String::from("/APPS/");
+                    path.push_str(meta.command);
+                    self.launch_file_manager_at(&path, wx, wy);
+                } else {
+                    self.launch_file_manager_at("/APPS", wx, wy);
+                }
+            }
+            LauncherMatchKind::Command(_) => self.launch_app("Terminal", wx, wy),
+            LauncherMatchKind::Inline(_) => self.launch_file_manager_at("/CONFIG", wx, wy),
+        }
+    }
+
+    fn run_inline_launcher_action(&mut self, action: &str, wx: i32, wy: i32) {
+        if action == "refresh-index" {
+            crate::search_index::refresh();
+            crate::notifications::push("Search", "desktop index refreshed");
+        } else if action == "restore-session" {
+            self.restore_session();
+            crate::notifications::push("Session", "restore requested");
+        } else if action == "restart-desktop" {
+            self.refresh_desktop_state();
+            crate::notifications::push("Desktop", "shell state refreshed");
+        } else if action == "lock" {
+            crate::notifications::push("Session", "lock screen placeholder active");
+        } else if action == "logout" {
+            self.minimize_all_windows();
+            crate::notifications::push("Session", "apps minimized for logout placeholder");
+        } else if action == "sleep" {
+            match crate::acpi::sleep() {
+                Ok(()) => crate::notifications::push("Power", "sleep requested"),
+                Err(err) => self.show_error_dialog("Sleep unavailable", err),
+            }
+        } else if action == "shutdown" {
+            match crate::acpi::shutdown() {
+                Ok(()) => crate::notifications::push("Power", "shutdown requested"),
+                Err(err) => self.show_error_dialog("Shutdown unavailable", err),
+            }
+        } else if action == "reboot" {
+            crate::notifications::push("Power", "reboot requested");
+            crate::acpi::reboot();
+        } else if let Some(page) = action.strip_prefix("settings:") {
+            self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::with_page(
+                wx, wy, page,
+            )));
+            crate::app_lifecycle::record_app("Display Settings");
+        } else if let Some(category) = action.strip_prefix("category:") {
+            self.launcher = Some(LauncherState {
+                query: {
+                    let mut query = String::from("@");
+                    query.push_str(category);
+                    query
+                },
+                selected: 0,
+            });
+        } else if let Some(query) = action.strip_prefix("search:") {
+            self.launcher = Some(LauncherState {
+                query: String::from(query),
+                selected: 0,
+            });
+        }
+    }
+
+    fn activate_start_item(&mut self, item: &str, wx: i32, wy: i32) {
+        let kind = start_item_kind(item);
+        self.activate_launcher_kind(&kind, wx, wy);
+    }
+
+    fn quick_launch_pinned(&mut self, slot: usize) -> bool {
+        let pinned = crate::app_lifecycle::pinned_apps();
+        let Some(item) = pinned.get(slot) else {
+            return false;
+        };
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let off = self.windows.len() as i32 * 16;
+        let wx = (16 + off).min(self.shadow_width as i32 - 220);
+        let wy = (16 + off).min(taskbar_y - 120);
+        self.activate_start_item(item, wx, wy);
+        true
     }
 
     fn open_associated_path(&mut self, path: &str, wx: i32, wy: i32) {
@@ -1742,6 +1909,23 @@ impl WindowManager {
         }
     }
 
+    fn minimize_all_windows(&mut self) {
+        let current_workspace = self.current_workspace;
+        for (idx, w) in self.windows.iter_mut().enumerate() {
+            if self
+                .window_workspaces
+                .get(idx)
+                .copied()
+                .unwrap_or(0)
+                .min(WORKSPACE_COUNT - 1)
+                == current_workspace
+            {
+                w.window_mut().minimize();
+            }
+        }
+        self.focused = None;
+    }
+
     fn show_task_switcher(&mut self) {
         self.task_switcher_until_tick =
             crate::interrupts::ticks() + crate::interrupts::ticks_for_millis(TASK_SWITCHER_MS);
@@ -2044,6 +2228,13 @@ impl WindowManager {
                 self.launch_app("Terminal", wx, wy);
                 self.start_menu_open = false;
                 true
+            }
+            Key::Character(c) if input.has_ctrl() && !input.has_alt() => {
+                if let Some(slot) = ctrl_number_slot(c) {
+                    self.quick_launch_pinned(slot)
+                } else {
+                    false
+                }
             }
             _ => false,
         }
@@ -2430,9 +2621,10 @@ impl WindowManager {
 
         // Start menu item click.
         if left_pressed && self.start_menu_open {
-            let menu_w = 460i32;
-            let menu_h = 320i32;
-            let left_w = 240i32;
+            let prefs = crate::app_lifecycle::start_menu_prefs();
+            let menu_w = prefs.width.clamp(460, sw as i32 - 8);
+            let menu_h = prefs.height.clamp(320, taskbar_y - 4);
+            let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
             let bottom_h = 36i32;
             let left_hdr_h = 32i32;
             let menu_x = 0i32;
@@ -2446,18 +2638,44 @@ impl WindowManager {
                 // Left column — app list rows
                 if mx_i < menu_x + left_w {
                     let pinned_apps = crate::app_lifecycle::pinned_apps();
-                    let item_h = 40i32;
+                    let item_h = if prefs.compact { 32i32 } else { 40i32 };
                     let items_y = menu_y + left_hdr_h + 8;
-                    if my_i >= items_y && my_i < items_y + item_h * pinned_apps.len() as i32 {
+                    let srch_x = menu_x + 8;
+                    let srch_y = bar_y + 7;
+                    let srch_w = left_w - 16;
+                    let srch_h = 20i32;
+                    let limit = pinned_apps.len().min(start_menu_pinned_limit(
+                        menu_h, bottom_h, left_hdr_h, item_h,
+                    ));
+                    let all_y = bar_y - item_h;
+                    if mx_i >= srch_x
+                        && mx_i < srch_x + srch_w
+                        && my_i >= srch_y
+                        && my_i < srch_y + srch_h
+                    {
+                        self.launcher = Some(LauncherState {
+                            query: String::new(),
+                            selected: 0,
+                        });
+                        self.start_menu_open = false;
+                        crate::wm::request_repaint();
+                    } else if my_i >= items_y && my_i < items_y + item_h * limit as i32 {
                         let item_idx = ((my_i - items_y) / item_h) as usize;
-                        if item_idx < pinned_apps.len() {
+                        if item_idx < limit {
                             let off = self.windows.len() as i32 * 16;
                             let wx = (10 + off).min(sw as i32 - 200);
                             let wy = (10 + off).min(bar_y - 80);
-                            self.launch_app(&pinned_apps[item_idx], wx, wy);
+                            self.activate_start_item(&pinned_apps[item_idx], wx, wy);
                             self.start_menu_open = false;
                             crate::wm::request_repaint();
                         }
+                    } else if my_i >= all_y && my_i < all_y + item_h {
+                        self.launcher = Some(LauncherState {
+                            query: String::new(),
+                            selected: 0,
+                        });
+                        self.start_menu_open = false;
+                        crate::wm::request_repaint();
                     }
                 } else {
                     let banner_x = rc_x + 6;
@@ -2466,9 +2684,13 @@ impl WindowManager {
                     let settings_w = 104i32;
                     let settings_h = 20i32;
                     let settings_x = banner_x + 56;
-                    let settings_y = banner_y + 30;
+                    let settings_y = banner_y + 38;
                     let link_h = 24i32;
                     let links_y = banner_y + banner_h + 8;
+                    let sd_w = 96i32;
+                    let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
+                    let sd_y = bar_y + 8;
+                    let sd_h = 20i32;
                     if mx_i >= settings_x
                         && mx_i < settings_x + settings_w
                         && my_i >= settings_y
@@ -2480,16 +2702,27 @@ impl WindowManager {
                         self.launch_app("Display Settings", wx, wy);
                         self.start_menu_open = false;
                         crate::wm::request_repaint();
+                    } else if mx_i >= sd_x
+                        && mx_i < sd_x + sd_w
+                        && my_i >= sd_y
+                        && my_i < sd_y + sd_h
+                    {
+                        let off = self.windows.len() as i32 * 16;
+                        let wx = (10 + off).min(sw as i32 - 200);
+                        let wy = (10 + off).min(bar_y - 80);
+                        self.run_inline_launcher_action("shutdown", wx, wy);
+                        self.start_menu_open = false;
+                        crate::wm::request_repaint();
                     } else if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
                         let link_idx = ((my_i - links_y) / link_h) as usize;
-                        if let Some(&label) = FileManagerApp::START_MENU_LINKS.get(link_idx) {
+                        let entries = start_menu_entries();
+                        if let Some(entry) = entries.get(link_idx) {
                             let ly = links_y + link_idx as i32 * link_h;
                             if ly + link_h <= bar_y - 8 {
                                 let off = self.windows.len() as i32 * 16;
                                 let wx = (10 + off).min(sw as i32 - 200);
                                 let wy = (10 + off).min(bar_y - 80);
-                                let path = FileManagerApp::shell_link_path(label);
-                                self.launch_file_manager_at(&path, wx, wy);
+                                self.activate_launcher_kind(&entry.kind, wx, wy);
                                 self.start_menu_open = false;
                                 crate::wm::request_repaint();
                             }
@@ -2949,9 +3182,10 @@ impl WindowManager {
 
             // ── Start menu — shell hub with pinned and quick-launch areas ─────────
             if self.start_menu_open {
-                let menu_w = 460i32;
-                let menu_h = 320i32;
-                let left_w = 240i32;
+                let prefs = crate::app_lifecycle::start_menu_prefs();
+                let menu_w = prefs.width.clamp(460, sw as i32 - 8);
+                let menu_h = prefs.height.clamp(320, taskbar_y - 4);
+                let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
                 let right_w = menu_w - left_w;
                 let bottom_h = 36i32;
                 let left_hdr_h = 32i32;
@@ -3039,7 +3273,7 @@ impl WindowManager {
                     sw,
                     menu_x + 10,
                     left_hdr_y + 8,
-                    "PINNED",
+                    "PINNED + FAVORITES",
                     0x00_00_EE_FF,
                     left_hdr_bg,
                     menu_x + left_w - 12,
@@ -3049,7 +3283,7 @@ impl WindowManager {
                     sw,
                     menu_x + 10,
                     left_hdr_y + 20,
-                    "quick access",
+                    "Ctrl+1..9 quick launch",
                     0x00_33_66_88,
                     left_hdr_bg,
                     menu_x + left_w - 12,
@@ -3077,7 +3311,7 @@ impl WindowManager {
                     sw,
                     sg_x + 10,
                     srch_y + 6,
-                    "Search programs and files",
+                    "Search apps, files, commands",
                     sg_col,
                     srch_bg,
                     srch_x + srch_w - 4,
@@ -3112,24 +3346,28 @@ impl WindowManager {
                     sd_x + sd_w - 4,
                 );
 
-                let item_h = 40i32;
+                let item_h = if prefs.compact { 32i32 } else { 40i32 };
                 let items_y = menu_y + left_hdr_h + 8;
                 let pinned_apps = crate::app_lifecycle::pinned_apps();
+                let pinned_limit = pinned_apps.len().min(start_menu_pinned_limit(
+                    menu_h, bottom_h, left_hdr_h, item_h,
+                ));
                 let mut left_hov: Option<usize> = None;
                 if mx_i > menu_x
                     && mx_i < menu_x + left_w
                     && my_i >= items_y
-                    && my_i < items_y + item_h * pinned_apps.len() as i32
+                    && my_i < items_y + item_h * pinned_limit as i32
                 {
                     left_hov = Some(((my_i - items_y) / item_h) as usize);
                 }
 
-                for (i, name) in pinned_apps.iter().enumerate() {
+                for (i, name) in pinned_apps.iter().take(pinned_limit).enumerate() {
                     let iy = items_y + i as i32 * item_h;
                     let is_hov = left_hov == Some(i);
                     let row_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_07_18 };
-                    let acc = window_accent(name);
-                    let glyph = window_glyph(name);
+                    let kind = start_item_kind(name);
+                    let acc = launcher_kind_accent(&kind);
+                    let glyph = launcher_kind_glyph(&kind);
                     if is_hov {
                         s_fill(s, sw, menu_x + 1, iy, left_w - 1, item_h - 1, row_bg);
                         s_fill(s, sw, menu_x + 1, iy + 8, 3, item_h - 17, ACCENT);
@@ -3152,7 +3390,8 @@ impl WindowManager {
                     );
                     let text_left = menu_x + 40;
                     let text_right = menu_x + left_w - 24;
-                    let text_w = name.chars().count() as i32 * 8;
+                    let display_name = start_item_label(name);
+                    let text_w = display_name.chars().count() as i32 * 8;
                     let text_x = text_left + ((text_right - text_left - text_w).max(0) / 2);
                     let text_y = iy + (item_h - 8) / 2;
                     s_draw_str_small(
@@ -3160,12 +3399,12 @@ impl WindowManager {
                         sw,
                         text_x,
                         text_y,
-                        name,
+                        &display_name,
                         if is_hov { WHITE } else { 0x00_AA_DD_FF },
                         row_bg,
                         text_right,
                     );
-                    if i + 1 < pinned_apps.len() {
+                    if i + 1 < pinned_limit {
                         s_fill(
                             s,
                             sw,
@@ -3309,7 +3548,9 @@ impl WindowManager {
 
                 let link_h = 24i32;
                 let links_y = banner_y + banner_h + 8;
-                for (i, &link_name) in FileManagerApp::START_MENU_LINKS.iter().enumerate() {
+                let entries = start_menu_entries();
+                let mut last_section = "";
+                for (i, entry) in entries.iter().enumerate() {
                     let ly = links_y + i as i32 * link_h;
                     if ly + link_h > bar_y - 8 {
                         break;
@@ -3321,15 +3562,60 @@ impl WindowManager {
                         s_fill(s, sw, rc_x, ly, rc_w, link_h - 1, link_bg);
                         s_fill(s, sw, rc_x, ly + 6, 2, link_h - 13, ACCENT);
                     }
+                    if entry.section != last_section {
+                        s_draw_str_small(
+                            s,
+                            sw,
+                            rc_x + 10,
+                            ly + 2,
+                            entry.section,
+                            0x00_44_77_99,
+                            link_bg,
+                            rc_x + rc_w - 4,
+                        );
+                        last_section = entry.section;
+                    }
+                    let glyph = launcher_kind_glyph(&entry.kind);
                     s_draw_str_small(
                         s,
                         sw,
                         rc_x + 10,
                         ly + 8,
-                        link_name,
+                        glyph,
+                        launcher_kind_accent(&entry.kind),
+                        link_bg,
+                        rc_x + 28,
+                    );
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        rc_x + 34,
+                        ly + 8,
+                        &entry.label,
                         if is_hov { WHITE } else { 0x00_88_CC_FF },
                         link_bg,
+                        rc_x + rc_w - 72,
+                    );
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        rc_x + rc_w - 68,
+                        ly + 8,
+                        &entry.detail,
+                        0x00_44_77_99,
+                        link_bg,
                         rc_x + rc_w - 4,
+                    );
+                }
+
+                if prefs.show_widgets {
+                    draw_start_menu_widgets(
+                        s,
+                        sw,
+                        banner_x + 56,
+                        banner_y + 62,
+                        (banner_w - 66).max(64),
+                        16,
                     );
                 }
             }
@@ -5607,8 +5893,8 @@ fn draw_notification_toasts(s: &mut [u32], sw: usize, taskbar_y: i32, ticks: u64
 }
 
 fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &LauncherState) {
-    let panel_w = 560i32.min(sw as i32 - 24);
-    let panel_h = 292i32;
+    let panel_w = 680i32.min(sw as i32 - 24);
+    let panel_h = 340i32;
     let x = ((sw as i32 - panel_w) / 2).max(0);
     let y = ((taskbar_y - panel_h) / 4).max(8);
     let bg = 0x00_00_08_18;
@@ -5622,7 +5908,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
         sw,
         x + 16,
         y + 14,
-        "LAUNCHER",
+        "LAUNCHER / COMMAND PALETTE",
         WHITE,
         bg,
         x + panel_w - 16,
@@ -5632,7 +5918,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
         sw,
         x + panel_w - 178,
         y + 14,
-        "Ctrl+Space",
+        "Ctrl+Space  > commands",
         0x00_55_88_AA,
         bg,
         x + panel_w - 16,
@@ -5660,7 +5946,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
         0x00_00_66_BB,
     );
     let query = if state.query.is_empty() {
-        "type app, file, or command..."
+        "type app, file, command, @category, or > reboot..."
     } else {
         &state.query
     };
@@ -5694,14 +5980,14 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
         return;
     }
 
-    let max_rows = 7usize.min(matches.len());
+    let max_rows = 8usize.min(matches.len());
     for i in 0..max_rows {
         let entry = &matches[i];
-        let row_y = y + 82 + i as i32 * 28;
+        let row_y = y + 82 + i as i32 * 29;
         let selected = i == state.selected.min(matches.len() - 1);
         let row_bg = if selected { 0x00_00_1A_38 } else { bg };
         if selected {
-            s_fill(s, sw, x + 10, row_y, panel_w - 20, 24, row_bg);
+            s_fill(s, sw, x + 10, row_y, panel_w - 20, 25, row_bg);
             s_fill(s, sw, x + 10, row_y + 5, 3, 14, ACCENT);
         }
         let glyph = launcher_kind_glyph(&entry.kind);
@@ -5711,7 +5997,11 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             x + 22,
             row_y + 8,
             glyph,
-            if selected { ACCENT_HOV } else { 0x00_55_88_AA },
+            if selected {
+                launcher_kind_accent(&entry.kind)
+            } else {
+                0x00_55_88_AA
+            },
             row_bg,
             x + 48,
         );
@@ -5723,7 +6013,7 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             &entry.label,
             if selected { WHITE } else { 0x00_AA_DD_FF },
             row_bg,
-            x + panel_w - 140,
+            x + panel_w - 210,
         );
         s_draw_str_small(
             s,
@@ -5733,8 +6023,20 @@ fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &Launc
             &entry.detail,
             0x00_55_88_AA,
             row_bg,
-            x + panel_w - 18,
+            x + panel_w - 210,
         );
+        if selected {
+            s_draw_str_small(
+                s,
+                sw,
+                x + panel_w - 202,
+                row_y + 8,
+                "Enter open  C-P pin  C-L loc  C-C copy",
+                0x00_44_88_AA,
+                row_bg,
+                x + panel_w - 18,
+            );
+        }
     }
 }
 
@@ -5743,14 +6045,100 @@ fn launcher_kind_glyph(kind: &LauncherMatchKind) -> &'static str {
         LauncherMatchKind::App(app) => window_glyph(app),
         LauncherMatchKind::Path(_) => "FS",
         LauncherMatchKind::Command(_) => "$>",
+        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => "DS",
+        LauncherMatchKind::Inline(action) if action.starts_with("category:") => "AP",
+        LauncherMatchKind::Inline(action) if action == "refresh-index" => "IX",
+        LauncherMatchKind::Inline(action)
+            if action == "shutdown" || action == "reboot" || action == "sleep" =>
+        {
+            "PW"
+        }
         LauncherMatchKind::Inline(_) => "!!",
     }
 }
 
+fn launcher_kind_accent(kind: &LauncherMatchKind) -> u32 {
+    match kind {
+        LauncherMatchKind::App(app) => window_accent(app),
+        LauncherMatchKind::Path(_) => 0x00_55_DD_FF,
+        LauncherMatchKind::Command(_) => 0x00_00_FF_88,
+        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => 0x00_66_CC_FF,
+        LauncherMatchKind::Inline(action)
+            if action == "shutdown" || action == "reboot" || action == "sleep" =>
+        {
+            0x00_FF_DD_55
+        }
+        LauncherMatchKind::Inline(_) => ACCENT_HOV,
+    }
+}
+
 fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
+    let query = query.trim();
+    if query.starts_with('>') {
+        return command_palette_matches(query);
+    }
+
     let mut matches = Vec::new();
+    let category_filter = query
+        .strip_prefix('@')
+        .map(str::trim)
+        .filter(|category| !category.is_empty());
+    let search_query = if category_filter.is_some() { "" } else { query };
+
+    for app in crate::app_metadata::APPS {
+        let category_match = category_filter
+            .map(|category| app.category.label().eq_ignore_ascii_case(category))
+            .unwrap_or(false);
+        let detail = app_launcher_detail(app);
+        let mut score = if category_match { Some(80) } else { None };
+        if score.is_none() {
+            score = launcher_score(app.name, &detail, search_query);
+        }
+        if score.is_none() {
+            for alias in app.aliases {
+                if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
+                    score = Some(alias_score.saturating_sub(1));
+                    break;
+                }
+            }
+        }
+        if let Some(score) = score {
+            matches.push(LauncherMatch {
+                label: String::from(app.name),
+                detail,
+                kind: LauncherMatchKind::App(String::from(app.name)),
+                score: score + recent_app_boost(app.name),
+            });
+        }
+    }
+
+    for manifest in crate::app_metadata::installed_app_manifests() {
+        let detail = manifest_launcher_detail(&manifest);
+        let category_match = category_filter
+            .map(|category| manifest.category.eq_ignore_ascii_case(category))
+            .unwrap_or(false);
+        if category_match || launcher_score(&manifest.name, &detail, search_query).is_some() {
+            let score = if category_match {
+                70
+            } else {
+                launcher_score(&manifest.name, &detail, search_query).unwrap_or(1)
+            };
+            matches.push(LauncherMatch {
+                label: manifest.name.clone(),
+                detail,
+                kind: LauncherMatchKind::App(manifest.name.clone()),
+                score,
+            });
+        }
+    }
+    if category_filter.is_some() {
+        matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
+        matches.truncate(12);
+        return matches;
+    }
+
     for &entry in crate::app_metadata::LAUNCHER_ENTRIES.iter() {
-        if let Some(score) = launcher_score(entry.label, entry.detail, query) {
+        if let Some(score) = launcher_score(entry.label, entry.detail, search_query) {
             matches.push(LauncherMatch {
                 label: String::from(entry.label),
                 detail: String::from(entry.detail),
@@ -5770,8 +6158,18 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
         }
     }
 
+    for app in crate::app_lifecycle::recent_apps().iter() {
+        if let Some(score) = launcher_score(app, "recent app", search_query) {
+            matches.push(LauncherMatch {
+                label: app.clone(),
+                detail: String::from("recent app"),
+                kind: LauncherMatchKind::App(app.clone()),
+                score: score + 10,
+            });
+        }
+    }
     for command in crate::app_lifecycle::recent_commands().iter() {
-        if let Some(score) = launcher_score(command, "recent command", query) {
+        if let Some(score) = launcher_score(command, "recent command", search_query) {
             matches.push(LauncherMatch {
                 label: command.clone(),
                 detail: String::from("recent command"),
@@ -5781,7 +6179,7 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
         }
     }
     for file in crate::app_lifecycle::recent_files().iter() {
-        if let Some(score) = launcher_score(file, "recent file", query) {
+        if let Some(score) = launcher_score(file, "recent file", search_query) {
             matches.push(LauncherMatch {
                 label: file_name(file),
                 detail: String::from("recent file"),
@@ -5790,20 +6188,75 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
             });
         }
     }
-    for entry in crate::search_index::search(query, 8).iter() {
+    for search in crate::app_lifecycle::recent_searches().iter() {
+        if let Some(score) = launcher_score(search, "recent search", search_query) {
+            matches.push(LauncherMatch {
+                label: search.clone(),
+                detail: String::from("recent search"),
+                kind: LauncherMatchKind::Inline({
+                    let mut action = String::from("search:");
+                    action.push_str(search);
+                    action
+                }),
+                score: score + 2,
+            });
+        }
+    }
+    for category in crate::app_metadata::APP_CATEGORIES {
+        let label = category.label();
+        if let Some(score) = launcher_score(label, "app category", search_query) {
+            let mut action = String::from("category:");
+            action.push_str(label);
+            matches.push(LauncherMatch {
+                label: {
+                    let mut out = String::from(label);
+                    out.push_str(" apps");
+                    out
+                },
+                detail: String::from("app category"),
+                kind: LauncherMatchKind::Inline(action),
+                score: score + 1,
+            });
+        }
+    }
+    for shortcut in settings_shortcuts() {
+        if let Some(score) = launcher_score(shortcut.0, "settings shortcut", search_query) {
+            matches.push(LauncherMatch {
+                label: String::from(shortcut.0),
+                detail: String::from("settings shortcut"),
+                kind: LauncherMatchKind::Inline({
+                    let mut action = String::from("settings:");
+                    action.push_str(shortcut.1);
+                    action
+                }),
+                score: score + 5,
+            });
+        }
+    }
+    for action in power_actions() {
+        if let Some(score) = launcher_score(action.0, "power/session action", search_query) {
+            matches.push(LauncherMatch {
+                label: String::from(action.0),
+                detail: String::from("power/session"),
+                kind: LauncherMatchKind::Inline(String::from(action.1)),
+                score: score + 4,
+            });
+        }
+    }
+    for entry in crate::search_index::search(search_query, 8).iter() {
         matches.push(LauncherMatch {
             label: entry.name.clone(),
             detail: entry.path.clone(),
             kind: LauncherMatchKind::Path(entry.path.clone()),
-            score: crate::search_index::fuzzy_score(&entry.name, query).unwrap_or(1) + 2,
+            score: crate::search_index::fuzzy_score(&entry.name, search_query).unwrap_or(1) + 2,
         });
     }
-    if launcher_score("Refresh search index", "inline action", query).is_some() {
+    if launcher_score("Refresh search index", "inline action", search_query).is_some() {
         matches.push(LauncherMatch {
             label: String::from("Refresh search index"),
             detail: String::from("inline action"),
             kind: LauncherMatchKind::Inline(String::from("refresh-index")),
-            score: if query.is_empty() { 1 } else { 24 },
+            score: if search_query.is_empty() { 1 } else { 24 },
         });
     }
     matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
@@ -5825,6 +6278,370 @@ fn launcher_score(label: &str, detail: &str, query: &str) -> Option<usize> {
     } else {
         Some(score)
     }
+}
+
+fn command_palette_matches(query: &str) -> Vec<LauncherMatch> {
+    let command = query.trim_start_matches('>').trim();
+    if command.is_empty() {
+        return alloc::vec![
+            launcher_inline("Reboot", "power action", "reboot", 40),
+            launcher_inline("Shutdown", "power action", "shutdown", 38),
+            launcher_command("Run fsck", "filesystem check", "fsck", 36),
+            launcher_command("HTTP example.com", "userspace HTTP", "http example.com", 34),
+            launcher_path("Open /Documents", "open folder", "/Documents", 32),
+        ];
+    }
+    if let Some(rest) = command.strip_prefix("open ") {
+        return alloc::vec![launcher_path(rest.trim(), "open path", rest.trim(), 70)];
+    }
+    if let Some(rest) = command.strip_prefix("http ") {
+        let mut cmd = String::from("http ");
+        cmd.push_str(rest.trim());
+        return alloc::vec![launcher_command(&cmd, "HTTP client", &cmd, 70)];
+    }
+    if let Some(rest) = command.strip_prefix("dns ") {
+        let mut cmd = String::from("dns ");
+        cmd.push_str(rest.trim());
+        return alloc::vec![launcher_command(&cmd, "DNS resolver", &cmd, 70)];
+    }
+    if let Some(rest) = command.strip_prefix("settings ") {
+        let page = rest.trim();
+        return alloc::vec![launcher_inline(
+            command,
+            "settings page",
+            &settings_action(page),
+            70
+        )];
+    }
+    match command {
+        "reboot" | "restart" => {
+            alloc::vec![launcher_inline("Reboot", "power action", "reboot", 80)]
+        }
+        "shutdown" | "poweroff" => {
+            alloc::vec![launcher_inline("Shutdown", "power action", "shutdown", 80)]
+        }
+        "sleep" => alloc::vec![launcher_inline("Sleep", "power action", "sleep", 80)],
+        "lock" => alloc::vec![launcher_inline("Lock", "session action", "lock", 80)],
+        "logout" => alloc::vec![launcher_inline("Logout", "session action", "logout", 80)],
+        "restore" | "restore session" => alloc::vec![launcher_inline(
+            "Restore session",
+            "session action",
+            "restore-session",
+            80,
+        )],
+        "restart desktop" => alloc::vec![launcher_inline(
+            "Restart desktop",
+            "desktop action",
+            "restart-desktop",
+            80,
+        )],
+        _ => alloc::vec![launcher_command(command, "terminal command", command, 50)],
+    }
+}
+
+fn launcher_inline(label: &str, detail: &str, action: &str, score: usize) -> LauncherMatch {
+    LauncherMatch {
+        label: String::from(label),
+        detail: String::from(detail),
+        kind: LauncherMatchKind::Inline(String::from(action)),
+        score,
+    }
+}
+
+fn launcher_command(label: &str, detail: &str, command: &str, score: usize) -> LauncherMatch {
+    LauncherMatch {
+        label: String::from(label),
+        detail: String::from(detail),
+        kind: LauncherMatchKind::Command(String::from(command)),
+        score,
+    }
+}
+
+fn launcher_path(label: &str, detail: &str, path: &str, score: usize) -> LauncherMatch {
+    LauncherMatch {
+        label: String::from(label),
+        detail: String::from(detail),
+        kind: LauncherMatchKind::Path(String::from(path)),
+        score,
+    }
+}
+
+fn app_launcher_detail(app: &crate::app_metadata::AppMetadata) -> String {
+    let mut detail = String::from(app.category.label());
+    detail.push_str(" app, permission ");
+    detail.push_str(app.permission);
+    if !app.associations.is_empty() {
+        detail.push_str(", opens ");
+        for (idx, assoc) in app.associations.iter().enumerate() {
+            if idx > 0 {
+                detail.push(',');
+            }
+            detail.push_str(assoc);
+        }
+    }
+    detail
+}
+
+fn manifest_launcher_detail(manifest: &crate::app_metadata::AppManifest) -> String {
+    let mut detail = String::from("/APPS manifest ");
+    detail.push_str(&manifest.icon);
+    detail.push(' ');
+    detail.push_str(&manifest.category);
+    detail.push_str(", permission ");
+    detail.push_str(&manifest.permission);
+    detail.push_str(", command ");
+    detail.push_str(&manifest.command);
+    detail.push_str(", id ");
+    detail.push_str(&manifest.id);
+    if !manifest.associations.is_empty() {
+        detail.push_str(", opens ");
+        for (idx, assoc) in manifest.associations.iter().enumerate() {
+            if idx > 0 {
+                detail.push(',');
+            }
+            detail.push_str(assoc);
+        }
+    }
+    detail
+}
+
+fn recent_app_boost(app: &str) -> usize {
+    crate::app_lifecycle::recent_apps()
+        .iter()
+        .position(|recent| recent.eq_ignore_ascii_case(app))
+        .map(|idx| 10usize.saturating_sub(idx))
+        .unwrap_or(0)
+}
+
+fn settings_shortcuts() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("Display settings", "desktop"),
+        ("Accessibility settings", "accessibility"),
+        ("Network settings", "network"),
+        ("Storage settings", "storage"),
+        ("Log viewer settings", "logs"),
+        ("Power settings", "power"),
+        ("Updates", "logs"),
+    ]
+}
+
+fn power_actions() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("Shutdown", "shutdown"),
+        ("Reboot", "reboot"),
+        ("Sleep", "sleep"),
+        ("Lock", "lock"),
+        ("Logout", "logout"),
+        ("Restart desktop", "restart-desktop"),
+        ("Restore session", "restore-session"),
+    ]
+}
+
+fn settings_action(page: &str) -> String {
+    let mut action = String::from("settings:");
+    action.push_str(page);
+    action
+}
+
+fn start_menu_entries() -> Vec<StartMenuEntry> {
+    let prefs = crate::app_lifecycle::start_menu_prefs();
+    let mut out = Vec::new();
+    if prefs.show_recent {
+        for app in crate::app_lifecycle::recent_apps().iter().take(3) {
+            out.push(StartMenuEntry {
+                section: "RECENT",
+                label: app.clone(),
+                detail: String::from("app"),
+                kind: LauncherMatchKind::App(app.clone()),
+            });
+        }
+        for file in crate::app_lifecycle::recent_files().iter().take(3) {
+            out.push(StartMenuEntry {
+                section: "RECENT",
+                label: file_name(file),
+                detail: String::from("file"),
+                kind: LauncherMatchKind::Path(file.clone()),
+            });
+        }
+        for command in crate::app_lifecycle::recent_commands().iter().take(2) {
+            out.push(StartMenuEntry {
+                section: "RECENT",
+                label: command.clone(),
+                detail: String::from("cmd"),
+                kind: LauncherMatchKind::Command(command.clone()),
+            });
+        }
+    }
+
+    for &place in FileManagerApp::START_MENU_LINKS.iter().take(4) {
+        out.push(StartMenuEntry {
+            section: "PLACES",
+            label: String::from(place),
+            detail: String::from("folder"),
+            kind: LauncherMatchKind::Path(FileManagerApp::shell_link_path(place)),
+        });
+    }
+
+    for shortcut in settings_shortcuts().iter().take(6) {
+        out.push(StartMenuEntry {
+            section: "SETTINGS",
+            label: String::from(shortcut.0),
+            detail: String::from("page"),
+            kind: LauncherMatchKind::Inline(settings_action(shortcut.1)),
+        });
+    }
+    for category in crate::app_metadata::APP_CATEGORIES.iter().take(6) {
+        let mut action = String::from("category:");
+        action.push_str(category.label());
+        out.push(StartMenuEntry {
+            section: "CATEGORIES",
+            label: {
+                let mut label = String::from(category.label());
+                label.push_str(" apps");
+                label
+            },
+            detail: String::from("apps"),
+            kind: LauncherMatchKind::Inline(action),
+        });
+    }
+    for action in power_actions().iter().take(5) {
+        out.push(StartMenuEntry {
+            section: "POWER",
+            label: String::from(action.0),
+            detail: String::from("session"),
+            kind: LauncherMatchKind::Inline(String::from(action.1)),
+        });
+    }
+    out
+}
+
+fn start_menu_pinned_limit(menu_h: i32, bottom_h: i32, left_hdr_h: i32, item_h: i32) -> usize {
+    ((menu_h - bottom_h - left_hdr_h - item_h - 18).max(0) / item_h.max(1)) as usize
+}
+
+fn start_item_kind(item: &str) -> LauncherMatchKind {
+    if let Some(path) = item.strip_prefix("path:") {
+        LauncherMatchKind::Path(String::from(path.trim()))
+    } else if let Some(command) = item.strip_prefix("cmd:") {
+        LauncherMatchKind::Command(String::from(command.trim()))
+    } else if let Some(action) = item.strip_prefix("setting:") {
+        LauncherMatchKind::Inline(settings_action(action.trim()))
+    } else if let Some(action) = item.strip_prefix("inline:") {
+        LauncherMatchKind::Inline(String::from(action.trim()))
+    } else if item.starts_with('/') {
+        LauncherMatchKind::Path(String::from(item))
+    } else if crate::app_metadata::app_by_id_or_command(item).is_some()
+        || crate::app_metadata::app_by_name(item).is_some()
+    {
+        let app = crate::app_metadata::app_by_id_or_command(item)
+            .or_else(|| crate::app_metadata::app_by_name(item));
+        LauncherMatchKind::App(String::from(app.map(|meta| meta.name).unwrap_or(item)))
+    } else {
+        LauncherMatchKind::App(String::from(item))
+    }
+}
+
+fn start_item_label(item: &str) -> String {
+    if let Some(path) = item.strip_prefix("path:") {
+        file_name(path.trim())
+    } else if let Some(command) = item.strip_prefix("cmd:") {
+        let mut label = String::from("Run ");
+        label.push_str(command.trim());
+        label
+    } else if let Some(page) = item.strip_prefix("setting:") {
+        let mut label = String::from(page.trim());
+        label.push_str(" settings");
+        label
+    } else if let Some(action) = item.strip_prefix("inline:") {
+        String::from(action.trim())
+    } else {
+        String::from(item)
+    }
+}
+
+fn launcher_pin_label(entry: &LauncherMatch) -> String {
+    match &entry.kind {
+        LauncherMatchKind::App(app) => app.clone(),
+        LauncherMatchKind::Path(path) => {
+            let mut item = String::from("path:");
+            item.push_str(path);
+            item
+        }
+        LauncherMatchKind::Command(command) => {
+            let mut item = String::from("cmd:");
+            item.push_str(command);
+            item
+        }
+        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => {
+            let mut item = String::from("setting:");
+            item.push_str(action.trim_start_matches("settings:"));
+            item
+        }
+        LauncherMatchKind::Inline(action) => {
+            let mut item = String::from("inline:");
+            item.push_str(action);
+            item
+        }
+    }
+}
+
+fn launcher_copy_text(entry: &LauncherMatch) -> String {
+    match &entry.kind {
+        LauncherMatchKind::App(app) => app.clone(),
+        LauncherMatchKind::Path(path) => path.clone(),
+        LauncherMatchKind::Command(command) => command.clone(),
+        LauncherMatchKind::Inline(action) => action.clone(),
+    }
+}
+
+fn parent_path(path: &str) -> &str {
+    if path == "/" {
+        return "/";
+    }
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((parent, _)) => parent,
+    }
+}
+
+fn ctrl_number_slot(c: char) -> Option<usize> {
+    match c {
+        '1' => Some(0),
+        '2' => Some(1),
+        '3' => Some(2),
+        '4' => Some(3),
+        '5' => Some(4),
+        '6' => Some(5),
+        '7' => Some(6),
+        '8' => Some(7),
+        '9' => Some(8),
+        '0' => Some(9),
+        _ => None,
+    }
+}
+
+fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32) {
+    let bg = 0x00_00_05_12;
+    s_fill(s, sw, x, y, w, h, bg);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_00_33_66);
+    let mut line = String::new();
+    if let Some(stats) = crate::fat32::stats() {
+        line.push_str("disk ");
+        push_decimal(&mut line, stats.free_clusters as u64);
+        line.push_str(" free");
+    } else {
+        line.push_str("disk ?");
+    }
+    line.push_str("  net ");
+    line.push_str(if crate::net::protocol_lines().is_empty() {
+        "idle"
+    } else {
+        "ready"
+    });
+    line.push_str("  jobs ");
+    push_decimal(&mut line, crate::jobs::recent(6).len() as u64);
+    s_draw_str_small(s, sw, x + 6, y + 5, &line, 0x00_66_AA_DD, bg, x + w - 6);
 }
 
 fn file_name(path: &str) -> String {

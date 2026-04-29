@@ -49,6 +49,11 @@ pub struct DisplaySettingsApp {
 
 impl DisplaySettingsApp {
     pub fn new(x: i32, y: i32) -> Self {
+        Self::with_page(x, y, "desktop")
+    }
+
+    pub fn with_page(x: i32, y: i32, page_name: &str) -> Self {
+        let page = page_from_name(page_name);
         let mut app = DisplaySettingsApp {
             window: Window::new(
                 x,
@@ -60,8 +65,8 @@ impl DisplaySettingsApp {
             last_width: DISPLAY_SETTINGS_W,
             last_height: DISPLAY_SETTINGS_H,
             last_settings: desktop_settings::snapshot(),
-            page: SettingsPage::Desktop,
-            last_page: SettingsPage::Desktop,
+            page,
+            last_page: page,
         };
         app.render();
         app
@@ -76,6 +81,9 @@ impl DisplaySettingsApp {
             desktop_settings::set_show_icons(!settings.show_icons);
         } else if self.page == SettingsPage::Desktop && self.hit_toggle(lx, ly, 152) {
             desktop_settings::set_compact_spacing(!settings.compact_spacing);
+        } else if self.page == SettingsPage::Desktop && self.hit_toggle(lx, ly, 184) {
+            let prefs = crate::app_lifecycle::start_menu_prefs();
+            crate::app_lifecycle::set_start_menu_compact(!prefs.compact);
         } else if self.page == SettingsPage::Desktop {
             if let Some(mode) = self.hit_sort_button(lx, ly) {
                 desktop_settings::set_sort_mode(mode);
@@ -194,6 +202,14 @@ impl DisplaySettingsApp {
             panel_w.saturating_sub(24),
             "Compact icon spacing",
             settings.compact_spacing,
+        );
+        self.draw_toggle_row(
+            stride,
+            28,
+            184,
+            panel_w.saturating_sub(24),
+            "Compact Start menu layout",
+            crate::app_lifecycle::start_menu_prefs().compact,
         );
 
         self.put_str(stride, 28, 244, "SORT ORDER", LABEL);
@@ -450,6 +466,16 @@ impl DisplaySettingsApp {
                 }
             }
         }
+    }
+}
+
+fn page_from_name(name: &str) -> SettingsPage {
+    match name.to_ascii_lowercase().as_str() {
+        "access" | "accessibility" => SettingsPage::Accessibility,
+        "logs" | "log" | "profiler" => SettingsPage::Logs,
+        "net" | "network" => SettingsPage::Network,
+        "storage" | "disk" => SettingsPage::Storage,
+        _ => SettingsPage::Desktop,
     }
 }
 

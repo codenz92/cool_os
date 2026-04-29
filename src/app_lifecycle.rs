@@ -1,12 +1,13 @@
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 const CONFIG_DIR: &str = "/CONFIG";
 const STATE_PATH: &str = "/CONFIG/APPS.CFG";
 const MAX_RECENT: usize = 12;
+const MAX_PINNED: usize = 10;
 const DEFAULT_PINNED: &[&str] = &[
     "Terminal",
     "File Manager",
@@ -14,6 +15,23 @@ const DEFAULT_PINNED: &[&str] = &[
     "Display Settings",
     "Personalize",
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct StartMenuPrefs {
+    pub width: i32,
+    pub height: i32,
+    pub compact: bool,
+    pub show_recent: bool,
+    pub show_widgets: bool,
+}
+
+const DEFAULT_START_MENU_PREFS: StartMenuPrefs = StartMenuPrefs {
+    width: 620,
+    height: 420,
+    compact: false,
+    show_recent: true,
+    show_widgets: true,
+};
 
 #[derive(Clone)]
 pub struct AppGeometry {
@@ -28,18 +46,24 @@ pub struct AppGeometry {
 struct LifecycleState {
     pinned_apps: Vec<String>,
     startup_apps: Vec<String>,
+    recent_apps: Vec<String>,
     recent_files: Vec<String>,
     recent_commands: Vec<String>,
+    recent_searches: Vec<String>,
     geometries: Vec<AppGeometry>,
+    start_menu: StartMenuPrefs,
 }
 
 static LOADED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<LifecycleState> = Mutex::new(LifecycleState {
     pinned_apps: Vec::new(),
     startup_apps: Vec::new(),
+    recent_apps: Vec::new(),
     recent_files: Vec::new(),
     recent_commands: Vec::new(),
+    recent_searches: Vec::new(),
     geometries: Vec::new(),
+    start_menu: DEFAULT_START_MENU_PREFS,
 });
 
 pub fn init() {
@@ -58,9 +82,12 @@ pub fn load_from_disk() {
             .map(|app| String::from(*app))
             .collect(),
         startup_apps: alloc::vec![String::from("Terminal")],
+        recent_apps: Vec::new(),
         recent_files: Vec::new(),
         recent_commands: Vec::new(),
+        recent_searches: Vec::new(),
         geometries: Vec::new(),
+        start_menu: DEFAULT_START_MENU_PREFS,
     };
     if let Some(bytes) = crate::fat32::read_file(STATE_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
@@ -71,8 +98,23 @@ pub fn load_from_disk() {
                 match key.trim() {
                     "pinned" => next.pinned_apps = parse_list(value),
                     "startup" => next.startup_apps = parse_list(value),
+                    "recent_app" => push_unique(&mut next.recent_apps, value.trim()),
                     "recent_file" => push_unique(&mut next.recent_files, value.trim()),
                     "recent_command" => push_unique(&mut next.recent_commands, value.trim()),
+                    "recent_search" => push_unique(&mut next.recent_searches, value.trim()),
+                    "menu_width" => {
+                        if let Ok(width) = value.trim().parse::<i32>() {
+                            next.start_menu.width = width.clamp(460, 760);
+                        }
+                    }
+                    "menu_height" => {
+                        if let Ok(height) = value.trim().parse::<i32>() {
+                            next.start_menu.height = height.clamp(320, 520);
+                        }
+                    }
+                    "menu_compact" => next.start_menu.compact = parse_bool(value),
+                    "menu_recent" => next.start_menu.show_recent = parse_bool(value),
+                    "menu_widgets" => next.start_menu.show_widgets = parse_bool(value),
                     "geometry" => {
                         if let Some(geometry) = parse_geometry(value) {
                             next.geometries.push(geometry);
@@ -107,9 +149,30 @@ pub fn recent_files() -> Vec<String> {
     STATE.lock().recent_files.clone()
 }
 
+pub fn recent_apps() -> Vec<String> {
+    ensure_loaded();
+    STATE.lock().recent_apps.clone()
+}
+
 pub fn recent_commands() -> Vec<String> {
     ensure_loaded();
     STATE.lock().recent_commands.clone()
+}
+
+pub fn recent_searches() -> Vec<String> {
+    ensure_loaded();
+    STATE.lock().recent_searches.clone()
+}
+
+pub fn start_menu_prefs() -> StartMenuPrefs {
+    ensure_loaded();
+    STATE.lock().start_menu
+}
+
+pub fn set_start_menu_compact(compact: bool) {
+    ensure_loaded();
+    STATE.lock().start_menu.compact = compact;
+    let _ = save_to_disk();
 }
 
 pub fn record_file(path: &str) {
@@ -120,6 +183,15 @@ pub fn record_file(path: &str) {
     push_recent_locked(|state| &mut state.recent_files, path);
 }
 
+pub fn record_app(app: &str) {
+    let app = app.trim();
+    if app.is_empty() {
+        return;
+    }
+    ensure_loaded();
+    push_recent_locked(|state| &mut state.recent_apps, app);
+}
+
 pub fn record_command(command: &str) {
     let command = command.trim();
     if command.is_empty() {
@@ -127,6 +199,56 @@ pub fn record_command(command: &str) {
     }
     ensure_loaded();
     push_recent_locked(|state| &mut state.recent_commands, command);
+}
+
+pub fn record_search(query: &str) {
+    let query = query.trim();
+    if query.is_empty() {
+        return;
+    }
+    ensure_loaded();
+    push_recent_locked(|state| &mut state.recent_searches, query);
+}
+
+pub fn pin_item(item: &str) {
+    let item = item.trim();
+    if item.is_empty() {
+        return;
+    }
+    ensure_loaded();
+    {
+        let mut state = STATE.lock();
+        push_unique(&mut state.pinned_apps, item);
+        if state.pinned_apps.len() > MAX_PINNED {
+            state.pinned_apps.truncate(MAX_PINNED);
+        }
+    }
+    let _ = save_to_disk();
+}
+
+pub fn unpin_item(item: &str) -> bool {
+    ensure_loaded();
+    let removed = {
+        let mut state = STATE.lock();
+        let before = state.pinned_apps.len();
+        state
+            .pinned_apps
+            .retain(|existing| !existing.eq_ignore_ascii_case(item));
+        before != state.pinned_apps.len()
+    };
+    if removed {
+        let _ = save_to_disk();
+    }
+    removed
+}
+
+pub fn is_pinned(item: &str) -> bool {
+    ensure_loaded();
+    STATE
+        .lock()
+        .pinned_apps
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(item))
 }
 
 pub fn remember_geometry(app: &str, x: i32, y: i32, w: i32, h: i32) {
@@ -187,8 +309,18 @@ pub fn lines() -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(join_label("pinned", &state.pinned_apps));
     lines.push(join_label("startup", &state.startup_apps));
+    lines.push(join_label("recent apps", &state.recent_apps));
     lines.push(join_label("recent files", &state.recent_files));
     lines.push(join_label("recent commands", &state.recent_commands));
+    lines.push(join_label("recent searches", &state.recent_searches));
+    lines.push(format!(
+        "start menu: {}x{} compact={} recent={} widgets={}",
+        state.start_menu.width,
+        state.start_menu.height,
+        state.start_menu.compact,
+        state.start_menu.show_recent,
+        state.start_menu.show_widgets
+    ));
     for geometry in state.geometries.iter() {
         lines.push(alloc::format!(
             "geometry {} {} {} {} {}",
@@ -246,6 +378,13 @@ fn parse_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn parse_geometry(value: &str) -> Option<AppGeometry> {
     let mut parts = value.split('|');
     Some(AppGeometry {
@@ -267,6 +406,38 @@ fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     out.push_str("startup=");
     push_joined(&mut out, &state.startup_apps);
     out.push('\n');
+    out.push_str("menu_width=");
+    push_i32(&mut out, state.start_menu.width);
+    out.push('\n');
+    out.push_str("menu_height=");
+    push_i32(&mut out, state.start_menu.height);
+    out.push('\n');
+    out.push_str("menu_compact=");
+    out.push_str(if state.start_menu.compact {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('\n');
+    out.push_str("menu_recent=");
+    out.push_str(if state.start_menu.show_recent {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('\n');
+    out.push_str("menu_widgets=");
+    out.push_str(if state.start_menu.show_widgets {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('\n');
+    for app in state.recent_apps.iter() {
+        out.push_str("recent_app=");
+        out.push_str(app);
+        out.push('\n');
+    }
     for file in state.recent_files.iter() {
         out.push_str("recent_file=");
         out.push_str(file);
@@ -275,6 +446,11 @@ fn save_to_disk() -> Result<(), crate::fat32::FsError> {
     for command in state.recent_commands.iter() {
         out.push_str("recent_command=");
         out.push_str(command);
+        out.push('\n');
+    }
+    for search in state.recent_searches.iter() {
+        out.push_str("recent_search=");
+        out.push_str(search);
         out.push('\n');
     }
     for geometry in state.geometries.iter() {

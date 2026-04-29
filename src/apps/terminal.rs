@@ -398,7 +398,15 @@ impl TerminalApp {
 
             Some("apps") => self.cmd_lines("APP LIFECYCLE", crate::app_lifecycle::lines()),
 
+            Some("appcats") => {
+                self.cmd_lines("APP CATEGORIES", crate::app_metadata::category_lines())
+            }
+
             Some("pinned") => self.cmd_pinned(words.collect()),
+
+            Some("unpin") => self.cmd_unpin(collect_words(words)),
+
+            Some("startmenu") => self.cmd_startmenu(words.next()),
 
             Some("recent") => self.cmd_recent(),
 
@@ -719,8 +727,11 @@ impl TerminalApp {
             ("icons", "desktop icon positions"),
             ("access [key on/off]", "accessibility settings"),
             ("apps", "app lifecycle metadata"),
+            ("appcats", "app categories"),
             ("pinned [apps...]", "view/set pinned apps"),
-            ("recent", "recent files and commands"),
+            ("unpin <item>", "remove pinned Start item"),
+            ("startmenu [compact|full]", "view/set Start menu layout"),
+            ("recent", "recent apps, files, commands, searches"),
             ("startup [apps...]", "view/set startup apps"),
             ("search <query>", "search indexed files"),
             ("index", "rebuild desktop search index"),
@@ -1063,11 +1074,33 @@ impl TerminalApp {
 
     fn cmd_recent(&mut self) {
         let mut lines = Vec::new();
+        lines.push(String::from("apps:"));
+        lines.extend(crate::app_lifecycle::recent_apps());
         lines.push(String::from("files:"));
         lines.extend(crate::app_lifecycle::recent_files());
         lines.push(String::from("commands:"));
         lines.extend(crate::app_lifecycle::recent_commands());
+        lines.push(String::from("searches:"));
+        lines.extend(crate::app_lifecycle::recent_searches());
         self.cmd_lines("RECENT", lines);
+    }
+
+    fn cmd_startmenu(&mut self, mode: Option<&str>) {
+        match mode {
+            Some("compact") => {
+                crate::app_lifecycle::set_start_menu_compact(true);
+                self.print_str("Start menu compact layout enabled\n");
+            }
+            Some("full") => {
+                crate::app_lifecycle::set_start_menu_compact(false);
+                self.print_str("Start menu full layout enabled\n");
+            }
+            Some(_) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: startmenu [compact|full]\n");
+            }
+            None => self.cmd_lines("START MENU", crate::app_lifecycle::lines()),
+        }
     }
 
     fn cmd_pinned(&mut self, apps: Vec<&str>) {
@@ -1078,6 +1111,20 @@ impl TerminalApp {
         crate::app_lifecycle::set_pinned(apps.iter().map(|app| String::from(*app)).collect());
         self.set_fg(FG_ACCENT);
         self.print_str("pinned apps updated\n");
+    }
+
+    fn cmd_unpin(&mut self, item: String) {
+        if item.is_empty() {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: unpin <item>\n");
+            return;
+        }
+        if crate::app_lifecycle::unpin_item(&item) {
+            self.print_str("pinned item removed\n");
+        } else {
+            self.set_fg(FG_WARN);
+            self.print_str("pinned item not found\n");
+        }
     }
 
     fn cmd_startup(&mut self, apps: Vec<&str>) {
