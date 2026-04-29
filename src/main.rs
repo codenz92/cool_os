@@ -218,6 +218,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     wm::init();
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
     wm::compose_if_needed();
+    println!("[boot] desktop ready");
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()

@@ -2,8 +2,12 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 use core::panic::PanicInfo;
+use spin::Mutex;
 
 const CRASH_PATH: &str = "/LOGS/CRASH.TXT";
+const MAX_TASK_REPORTS: usize = 24;
+
+static TASK_REPORTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn record_panic(info: &PanicInfo) {
     let _ = crate::fat32::create_dir("/LOGS");
@@ -22,15 +26,17 @@ pub fn record_panic(info: &PanicInfo) {
 }
 
 pub fn record_task_report(pid: usize, reason: &str) {
-    let _ = crate::fat32::create_dir("/LOGS");
-    let path = format!("/LOGS/TASK{}.TXT", pid);
-    let data = format!(
-        "pid={}\nreason={}\ntick={}\n",
+    let report = format!(
+        "task pid={} reason={} tick={}",
         pid,
         reason,
         crate::interrupts::ticks()
     );
-    let _ = crate::fat32::safe_write_file(&path, data.as_bytes());
+    let mut reports = TASK_REPORTS.lock();
+    reports.push(report);
+    if reports.len() > MAX_TASK_REPORTS {
+        reports.remove(0);
+    }
 }
 
 pub fn lines() -> Vec<String> {
@@ -42,6 +48,12 @@ pub fn lines() -> Vec<String> {
             }
             return lines;
         }
+    }
+    for line in TASK_REPORTS.lock().iter().rev().take(10) {
+        lines.push(String::from(line));
+    }
+    if !lines.is_empty() {
+        return lines;
     }
     lines.push(String::from("no crash dump recorded"));
     lines

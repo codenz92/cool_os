@@ -422,7 +422,7 @@ pub fn exit_current(code: u64) {
 
     crate::vfs::drop_task(task_id);
     crate::crashdump::record_task_report(task_id, "task exited");
-    crate::notifications::push("Task exited", &format!("pid {} exit {}", task_id, code));
+    crate::notifications::push_transient("Task exited", &format!("pid {} exit {}", task_id, code));
 
     let mut sched = SCHEDULER.lock();
     if let Some(task) = sched.tasks.get_mut(task_id) {
@@ -465,7 +465,7 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
     }
     crate::vfs::drop_task(task_id);
     crate::crashdump::record_task_report(task_id, "task killed");
-    crate::notifications::push("Task killed", &format!("pid {} exit {}", task_id, code));
+    crate::notifications::push_transient("Task killed", &format!("pid {} exit {}", task_id, code));
     Ok(())
 }
 
@@ -494,7 +494,7 @@ pub fn send_signal(
         }
         task.pending_signal = Some(signal);
     }
-    crate::notifications::push(
+    crate::notifications::push_transient(
         "Signal queued",
         &format!("pid {} {}", task_id, signal.label()),
     );

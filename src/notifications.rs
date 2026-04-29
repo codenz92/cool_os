@@ -23,6 +23,14 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static NOTIFICATIONS: Mutex<Vec<Notification>> = Mutex::new(Vec::new());
 
 pub fn push(title: &str, body: &str) {
+    push_inner(title, body, true);
+}
+
+pub fn push_transient(title: &str, body: &str) {
+    push_inner(title, body, false);
+}
+
+fn push_inner(title: &str, body: &str, persist: bool) {
     let notification = Notification {
         id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         tick: crate::interrupts::ticks(),
@@ -39,7 +47,9 @@ pub fn push(title: &str, body: &str) {
     if notifications.len() > MAX_NOTIFICATIONS {
         notifications.remove(0);
     }
-    let _ = flush_history_locked(&notifications);
+    if persist {
+        let _ = flush_history_locked(&notifications);
+    }
     crate::wm::request_repaint();
 }
 

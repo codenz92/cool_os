@@ -96,7 +96,8 @@ smoke: build
 		--seconds 6 \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
-		--expect "[ring3 pid=2] sentinel ok"
+		--expect "[ring3 pid=2] sentinel ok" \
+		--expect "[boot] desktop ready"
 
 smoke-ui: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -106,7 +107,8 @@ smoke-ui: build
 		--expect "FB 1280x720" \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
-		--expect "[ring3 pid=2] sentinel ok"
+		--expect "[ring3 pid=2] sentinel ok" \
+		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -118,7 +120,8 @@ smoke-usb-init: build-usb-init
 		--expect "[input] USB keyboard detected; PS/2 keyboard fallback disabled" \
 		--expect "[input] USB mouse detected; PS/2 mouse fallback disabled" \
 		--expect "[ring3 pid=1] sentinel ok" \
-		--expect "[ring3 pid=2] sentinel ok"
+		--expect "[ring3 pid=2] sentinel ok" \
+		--expect "[boot] desktop ready"
 
 smoke-hotplug-usb-init: build-usb-init
 	python3 $(CURDIR)/scripts/qemu_hotplug_smoke.py \
